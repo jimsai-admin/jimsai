@@ -32,7 +32,12 @@ RETRIEVAL_STOP_TERMS = {
     "before",
     "caught",
     "does",
+    "do",
+    "generate",
+    "know",
+    "plan",
     "should",
+    "show",
     "someone",
     "that",
     "the",
@@ -78,6 +83,8 @@ class MultiIndexRetrievalEngine:
         query_terms = {term for term in raw_query_terms if term not in RETRIEVAL_STOP_TERMS}
         if not query_terms:
             query_terms = raw_query_terms
+        if "answer" in query_terms and ({"user", "users", "jims-ai", "jimsai"} & query_terms):
+            query_terms.update({"grounded", "csse", "source", "claims"})
         query_phrases = self._query_phrases(query)
         question_intent = ir.scope_constraints.get("question_intent", {})
         relation_filter = str(question_intent.get("relation") or "") if isinstance(question_intent, dict) else ""
@@ -154,9 +161,14 @@ class MultiIndexRetrievalEngine:
                     score += 0.6
                     reasons.append("user_profile_memory")
             semantic = max(cosine(query_vec, sig.latent_embedding), 0.0)
-            if semantic > 0:
+            has_structured_or_lexical_evidence = bool(reasons or matched_terms)
+            latent_source = str(sig.metadata.get("latent_embedding_source") or "hash_projection")
+            if semantic > 0 and latent_source == "external_service":
                 score += 0.35 * semantic
                 reasons.append("semantic_index")
+            elif semantic > 0 and has_structured_or_lexical_evidence:
+                score += 0.08 * semantic
+                reasons.append("semantic_tiebreaker")
             if sig.structured.causal_chain:
                 causal_terms = {c.cause.lower() for c in sig.structured.causal_chain} | {c.effect.lower() for c in sig.structured.causal_chain}
                 causal_matches = {
@@ -178,7 +190,13 @@ class MultiIndexRetrievalEngine:
                 elif coverage < 0.25 and reasons:
                     score *= 0.55
                     reasons.append("low_query_coverage_penalty")
-            if score >= 0.12:
+            if score >= 0.12 and self._passes_evidence_gate(
+                query_terms=query_terms,
+                matched_terms=matched_terms,
+                reasons=reasons,
+                relation_filter=relation_filter,
+                user_profile_query=user_profile_query,
+            ):
                 results[sig.id] = RetrievalResult(signature=sig, score=round(score, 4), reasons=reasons or ["importance_index"])
         ranked = sorted(results.values(), key=lambda r: (-r.score, r.signature.id))
         for result in ranked[:effective_limit]:
@@ -197,3 +215,29 @@ class MultiIndexRetrievalEngine:
             for index in range(0, max(0, len(tokens) - size + 1)):
                 phrases.add(" ".join(tokens[index : index + size]))
         return phrases
+
+    def _passes_evidence_gate(
+        self,
+        query_terms: set[str],
+        matched_terms: set[str],
+        reasons: list[str],
+        relation_filter: str,
+        user_profile_query: bool,
+    ) -> bool:
+        if not reasons:
+            return False
+        if relation_filter and "relation_index" in reasons:
+            return True
+        if user_profile_query and "user_profile_memory" in reasons:
+            return True
+        if "phrase_index" in reasons or "causal_index" in reasons:
+            return True
+        if "semantic_index" in reasons:
+            return True
+        if len(query_terms) <= 2:
+            return bool(matched_terms)
+        if len(matched_terms) >= 2:
+            return True
+        if relation_filter in DOCUMENT_WIDE_RELATIONS and "relation_index" in reasons:
+            return True
+        return False

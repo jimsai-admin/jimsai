@@ -278,6 +278,27 @@ def correction_candidates(outcomes: list[EvalOutcome]) -> list[dict[str, Any]]:
     return candidates
 
 
+def provider_usage_analysis(outcomes: list[EvalOutcome]) -> dict[str, Any]:
+    total = len(outcomes)
+    provider_model_calls = sum(1 for outcome in outcomes if outcome.used_groq)
+    by_capability: dict[str, dict[str, int]] = {}
+    for outcome in outcomes:
+        capability = outcome.capability or "unknown"
+        row = by_capability.setdefault(capability, {"total": 0, "provider_model_calls": 0, "provider_model_bypassed": 0})
+        row["total"] += 1
+        if outcome.used_groq:
+            row["provider_model_calls"] += 1
+        else:
+            row["provider_model_bypassed"] += 1
+    return {
+        "eval_total": total,
+        "provider_model_calls": provider_model_calls,
+        "provider_model_bypassed": total - provider_model_calls,
+        "provider_model_call_rate": round(provider_model_calls / total, 4) if total else 0.0,
+        "by_capability": by_capability,
+    }
+
+
 def write_report(
     report_dir: Path,
     ingested: list[dict[str, Any]],
@@ -299,6 +320,7 @@ def write_report(
         "eval_failed": len(outcomes) - passed,
         "outcomes": [asdict(outcome) for outcome in outcomes],
         "correction_candidates": candidates,
+        "provider_usage_analysis": provider_usage_analysis(outcomes),
     }
     report_path.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
     if candidates:
@@ -365,6 +387,12 @@ async def run_iteration(args: argparse.Namespace) -> int:
     print(f"ingested={len(ingested)} production_write={production_write}")
     print(f"eval_passed={passed}/{len(outcomes)}")
     print(f"correction_candidates={len(candidates)}")
+    usage = provider_usage_analysis(outcomes)
+    print(
+        "provider_model_usage="
+        f"{usage['provider_model_calls']}/{usage['eval_total']} "
+        f"rate={usage['provider_model_call_rate']}"
+    )
     print(f"report={report_path}")
     if candidates:
         print("failed_cases=" + ",".join(outcome.id for outcome in outcomes if not outcome.passed))

@@ -1,0 +1,548 @@
+{
+  "correction_candidates": [
+    {
+      "content": "Evaluation case multimodal_reasoning_public failed for prompt: How should JimsAI reason over an uploaded image before saving it to memory?. Observed capability memory_chat; target IR WORKSPACE_QUERY; confidence 0.82; sources 4; gaps 0. Failures: missing phrase: visible evidence. This record is a correction candidate and requires human review before promotion.",
+      "domain_hint": "iterative_failure_correction",
+      "expected_focus": [
+        "evaluation_failure",
+        "human_review_required"
+      ],
+      "source_trust": 0.72
+    }
+  ],
+  "created_at": "20260530T183553Z",
+  "eval_failed": 1,
+  "eval_passed": 18,
+  "eval_total": 19,
+  "ingested": [
+    {
+      "confidence": 0.94,
+      "domain_hint": "frontier_memory_chat",
+      "signature_id": "sig_d00386c5848e03e3",
+      "sppe_accepted": true,
+      "world_model_candidates": 2
+    },
+    {
+      "confidence": 0.93,
+      "domain_hint": "frontier_code_generation",
+      "signature_id": "sig_34f46d77d4dfdc8e",
+      "sppe_accepted": true,
+      "world_model_candidates": 3
+    },
+    {
+      "confidence": 0.92,
+      "domain_hint": "frontier_reasoning_science",
+      "signature_id": "sig_f36d644e30219dec",
+      "sppe_accepted": true,
+      "world_model_candidates": 2
+    },
+    {
+      "confidence": 0.91,
+      "domain_hint": "frontier_business_education",
+      "signature_id": "sig_f6fe6135b0275b61",
+      "sppe_accepted": true,
+      "world_model_candidates": 2
+    },
+    {
+      "confidence": 0.9,
+      "domain_hint": "frontier_media_generation",
+      "signature_id": "sig_2fb40f89ff435b83",
+      "sppe_accepted": true,
+      "world_model_candidates": 1
+    },
+    {
+      "confidence": 0.9,
+      "domain_hint": "frontier_agentic_tasks",
+      "signature_id": "sig_56c2a7f21c68e517",
+      "sppe_accepted": true,
+      "world_model_candidates": 3
+    },
+    {
+      "confidence": 0.9,
+      "domain_hint": "frontier_energy_efficiency",
+      "signature_id": "sig_92a9cf2825d56cf9",
+      "sppe_accepted": true,
+      "world_model_candidates": 3
+    },
+    {
+      "confidence": 0.94,
+      "domain_hint": "public_ai_governance",
+      "signature_id": "sig_835ad3e2a94a25d2",
+      "sppe_accepted": true,
+      "world_model_candidates": 1
+    },
+    {
+      "confidence": 0.94,
+      "domain_hint": "public_health_hypertension",
+      "signature_id": "sig_f58dea568b4565e0",
+      "sppe_accepted": true,
+      "world_model_candidates": 0
+    },
+    {
+      "confidence": 0.94,
+      "domain_hint": "public_climate_science",
+      "signature_id": "sig_bdc2c55c5377dae7",
+      "sppe_accepted": true,
+      "world_model_candidates": 1
+    },
+    {
+      "confidence": 0.94,
+      "domain_hint": "public_consumer_safety",
+      "signature_id": "sig_598b1b7732e648e0",
+      "sppe_accepted": true,
+      "world_model_candidates": 0
+    },
+    {
+      "confidence": 0.94,
+      "domain_hint": "public_finance_investing",
+      "signature_id": "sig_51676b5dcb6a3223",
+      "sppe_accepted": true,
+      "world_model_candidates": 1
+    },
+    {
+      "confidence": 0.94,
+      "domain_hint": "public_tax_withholding",
+      "signature_id": "sig_577d4ca7b7f0b90c",
+      "sppe_accepted": true,
+      "world_model_candidates": 2
+    },
+    {
+      "confidence": 0.92,
+      "domain_hint": "public_python_testing",
+      "signature_id": "sig_02d7965e53a7ff6f",
+      "sppe_accepted": true,
+      "world_model_candidates": 0
+    },
+    {
+      "confidence": 0.92,
+      "domain_hint": "public_web_fetch",
+      "signature_id": "sig_13544de2978310a0",
+      "sppe_accepted": true,
+      "world_model_candidates": 0
+    },
+    {
+      "confidence": 0.94,
+      "domain_hint": "public_emergency_beach_safety",
+      "signature_id": "sig_94153779fd95ad97",
+      "sppe_accepted": true,
+      "world_model_candidates": 1
+    },
+    {
+      "confidence": 0.9,
+      "domain_hint": "public_education_fafsa",
+      "signature_id": "sig_74426e352a7ccc83",
+      "sppe_accepted": true,
+      "world_model_candidates": 0
+    },
+    {
+      "confidence": 0.9,
+      "domain_hint": "public_business_operations",
+      "signature_id": "sig_19db382010ec9b2c",
+      "sppe_accepted": true,
+      "world_model_candidates": 0
+    },
+    {
+      "confidence": 0.9,
+      "domain_hint": "public_media_generation_prompts",
+      "signature_id": "sig_3a965a9b99904496",
+      "sppe_accepted": true,
+      "world_model_candidates": 0
+    },
+    {
+      "confidence": 0.9,
+      "domain_hint": "public_agentic_task_safety",
+      "signature_id": "sig_9134d0af5fd47afb",
+      "sppe_accepted": true,
+      "world_model_candidates": 2
+    },
+    {
+      "confidence": 0.9,
+      "domain_hint": "public_multimodal_reasoning",
+      "signature_id": "sig_f8e2130f73296631",
+      "sppe_accepted": true,
+      "world_model_candidates": 1
+    },
+    {
+      "confidence": 0.92,
+      "domain_hint": "live_project_documentation",
+      "signature_id": "sig_cd5b63d3b7b8d070",
+      "sppe_accepted": true,
+      "world_model_candidates": 0
+    },
+    {
+      "confidence": 0.9,
+      "domain_hint": "live_project_documentation",
+      "signature_id": "sig_8572b9119dd693aa",
+      "sppe_accepted": true,
+      "world_model_candidates": 0
+    },
+    {
+      "confidence": 0.89,
+      "domain_hint": "live_project_documentation",
+      "signature_id": "sig_134d97201b980f26",
+      "sppe_accepted": true,
+      "world_model_candidates": 1
+    },
+    {
+      "confidence": 0.8,
+      "domain_hint": "live_project_documentation",
+      "signature_id": "sig_8ae1e6fee559471f",
+      "sppe_accepted": true,
+      "world_model_candidates": 0
+    },
+    {
+      "confidence": 0.92,
+      "domain_hint": "live_project_documentation",
+      "signature_id": "sig_d68012a1d7e9c0f2",
+      "sppe_accepted": true,
+      "world_model_candidates": 1
+    },
+    {
+      "confidence": 0.92,
+      "domain_hint": "live_project_documentation",
+      "signature_id": "sig_beaf5cbac6b3ac9c",
+      "sppe_accepted": true,
+      "world_model_candidates": 0
+    },
+    {
+      "confidence": 0.92,
+      "domain_hint": "live_project_documentation",
+      "signature_id": "sig_badbef5d87e91710",
+      "sppe_accepted": true,
+      "world_model_candidates": 2
+    },
+    {
+      "confidence": 0.92,
+      "domain_hint": "live_project_documentation",
+      "signature_id": "sig_ac369a031d6ce065",
+      "sppe_accepted": true,
+      "world_model_candidates": 1
+    },
+    {
+      "confidence": 0.92,
+      "domain_hint": "live_project_documentation",
+      "signature_id": "sig_300dc501b7f9097f",
+      "sppe_accepted": true,
+      "world_model_candidates": 0
+    },
+    {
+      "confidence": 0.92,
+      "domain_hint": "live_project_documentation",
+      "signature_id": "sig_bba12214af5a5baf",
+      "sppe_accepted": true,
+      "world_model_candidates": 0
+    },
+    {
+      "confidence": 0.92,
+      "domain_hint": "live_project_documentation",
+      "signature_id": "sig_0c67e167f5494abe",
+      "sppe_accepted": true,
+      "world_model_candidates": 0
+    },
+    {
+      "confidence": 0.92,
+      "domain_hint": "live_project_documentation",
+      "signature_id": "sig_5556023ea6832cbd",
+      "sppe_accepted": true,
+      "world_model_candidates": 0
+    },
+    {
+      "confidence": 0.9,
+      "domain_hint": "live_project_documentation",
+      "signature_id": "sig_1369b8e084ab2ae9",
+      "sppe_accepted": true,
+      "world_model_candidates": 0
+    }
+  ],
+  "ingested_count": 34,
+  "outcomes": [
+    {
+      "capability": "memory_chat",
+      "confidence": 0.7795,
+      "failures": [],
+      "gaps": 0,
+      "id": "memory_profile",
+      "passed": true,
+      "prompt": "What do you know about how JIMS-AI should answer users?",
+      "response": "Here's what I can verify from memory:\nThe goal is to become a structured intelligence system that uses transformers and generators as bounded interfaces/tools while JIMS-AI owns memory, routing, source grounding, retrieval, causal reasoning, verification, human review, and continuous improvement. The codebase already reflects the core idea from the spec: transformer calls are bounded at T1/T2, while memory, retrieval, graph reasoning, verification, capability routing, and CSSE are separate runtime pieces. The implementation follows the document's core separation: language is interpreted by a bounded transformer interface, converted into typed Semantic IR, processed through structured memory, graph, simulation, validation, planning, and CSSE layers, then rendered from verified state.\n\n- The goal is to become a structured intelligence system that uses transformers and generators as bounded interfaces/tools while JIMS-AI owns memory, routing, source grounding, retrieval, causal reasoning, verification, human review, and continuous improvement.\n- The codebase already reflects the core idea from the spec: transformer calls are bounded at T1/T2, while memory, retrieval, graph reasoning, verification, capability routing, and CSSE are separate runtime pieces.\n- The implementation follows the document's core separation: language is interpreted by a bounded transformer interface, converted into typed Semantic IR, processed through structured memory, graph, simulation, validation, planning, and CSSE layers, then rendered from verified state.\n- Scoped user signatures cause personalized answers with source traces.\n- A fluent answer is a grounded CSSE rendering with visible confidence and no unsupported claims.\n- CSSE/SRE deterministic renderer using semantic primitives and source citations.\n\nConfidence: 0.78\n\nSource signatures:\n- sig_134d97201b980f26\n- sig_badbef5d87e91710\n- sig_beaf5cbac6b3ac9c\n- sig_cd5b63d3b7b8d070\n- sig_d00386c5848e03e3",
+      "sources": 5,
+      "target_ir": "WORKSPACE_QUERY",
+      "used_groq": false
+    },
+    {
+      "capability": "coding",
+      "confidence": 0.7657,
+      "failures": [],
+      "gaps": 1,
+      "id": "code_generation_route",
+      "passed": true,
+      "prompt": "Write a Python function and tests for a retry wrapper.",
+      "response": "Here's what I can verify from memory:\nTestable Python code requires small functions, dependency injection, meaningful assertions, and deterministic tests. PythonMockTesting depends on replacing collaborators with Mock or MagicMock, asserting calls and arguments, using specs to constrain mocks, and resetting mocks between cases. CodeGeneration depends on project memory, package documentation, sandbox execution, and tests.\n\n- Testable Python code requires small functions, dependency injection, meaningful assertions, and deterministic tests.\n- PythonMockTesting depends on replacing collaborators with Mock or MagicMock, asserting calls and arguments, using specs to constrain mocks, and resetting mocks between cases.\n- CodeGeneration depends on project memory, package documentation, sandbox execution, and tests.\n\nExplicit gaps:\n- Capability coding needs adapter(s) code_docs,test_runner,package_metadata; status=unavailable.\n\nConfidence: 0.77\n\nSource signatures:\n- sig_02d7965e53a7ff6f",
+      "sources": 1,
+      "target_ir": "CODE_GENERATE",
+      "used_groq": false
+    },
+    {
+      "capability": "image_generation",
+      "confidence": 0.6824,
+      "failures": [],
+      "gaps": 1,
+      "id": "media_generation_route",
+      "passed": true,
+      "prompt": "Generate an image prompt for a solar powered bakery dashboard.",
+      "response": "Here's what I can verify from memory:\nImageGenerationPrompt requires prompt safety and asset provenance. ImageGenerationPrompt depends on scene graph, style constraints, safety policy, and asset provenance. VideoGenerationPrompt requires storyboard, shot list, motion constraints, and human approval before risky execution.\n\n- ImageGenerationPrompt requires prompt safety and asset provenance.\n- ImageGenerationPrompt depends on scene graph, style constraints, safety policy, and asset provenance.\n- VideoGenerationPrompt requires storyboard, shot list, motion constraints, and human approval before risky execution.\n- MediaGenerationPrompt depends on user goal, subject, scene graph, style constraints, safety policy, rights status, asset provenance, and negative constraints.\n\nExplicit gaps:\n- Capability image_generation needs adapter(s) image_generation; status=unavailable.\n\nConfidence: 0.68\n\nSource signatures:\n- sig_2fb40f89ff435b83\n- sig_3a965a9b99904496",
+      "sources": 2,
+      "target_ir": "WORKSPACE_QUERY",
+      "used_groq": false
+    },
+    {
+      "capability": "agentic_task",
+      "confidence": 0.6758,
+      "failures": [],
+      "gaps": 1,
+      "id": "agentic_safety_route",
+      "passed": true,
+      "prompt": "Schedule an automated deployment task with rollback checks.",
+      "response": "Here's what I can verify from memory:\nAgenticTaskExecution depends on typed plans, permission checks, dry runs, audit events, rollback metadata, and human approval for irreversible actions. AgenticTaskExecution depends on typed plans, permission checks, dry runs, audit events, and rollback metadata. Constraint validator with schema, contradiction, gap, and source checks.\n\n- AgenticTaskExecution depends on typed plans, permission checks, dry runs, audit events, rollback metadata, and human approval for irreversible actions.\n- AgenticTaskExecution depends on typed plans, permission checks, dry runs, audit events, and rollback metadata.\n- Constraint validator with schema, contradiction, gap, and source checks.\n\nExplicit gaps:\n- Capability agentic_task needs adapter(s) tool_registry,browser,api_executor,job_queue; status=blocked.\n\nConfidence: 0.68\n\nSource signatures:\n- sig_134d97201b980f26\n- sig_56c2a7f21c68e517\n- sig_9134d0af5fd47afb",
+      "sources": 3,
+      "target_ir": "WORKSPACE_QUERY",
+      "used_groq": false
+    },
+    {
+      "capability": "memory_chat",
+      "confidence": 0.8125,
+      "failures": [],
+      "gaps": 0,
+      "id": "energy_efficiency_memory",
+      "passed": true,
+      "prompt": "How does adaptive transformer thinning reduce repeated inference cost?",
+      "response": "Here's what I can verify from memory:\nPersistent retrieval causes lower repeated inference cost. AdaptiveTransformerThinning depends on deterministic intent confidence and sourced CSSE answers. The long-term target is to reduce T1/T2 calls as the encoder, compiler, retrieval, and CSSE improve, while still allowing bounded external interfaces for messy input and fluent output when useful.\n\n- Persistent retrieval causes lower repeated inference cost.\n- AdaptiveTransformerThinning depends on deterministic intent confidence and sourced CSSE answers.\n- The long-term target is to reduce T1/T2 calls as the encoder, compiler, retrieval, and CSSE improve, while still allowing bounded external interfaces for messy input and fluent output when useful.\n- New weights are activated only after validation and human approval.\n\nConfidence: 0.81\n\nSource signatures:\n- sig_92a9cf2825d56cf9\n- sig_bba12214af5a5baf",
+      "sources": 2,
+      "target_ir": "WORKSPACE_QUERY",
+      "used_groq": false
+    },
+    {
+      "capability": "memory_chat",
+      "confidence": 0.758,
+      "failures": [],
+      "gaps": 0,
+      "id": "ai_governance_public",
+      "passed": true,
+      "prompt": "How should an AI team manage risk before deploying a new model?",
+      "response": "Here's what I can verify from memory:\nAI risk management requires documented context, human oversight, reliability checks, privacy consideration, safety analysis, security review, transparency, accountability, and bias monitoring. VideoGenerationPrompt requires storyboard, shot list, motion constraints, and human approval before risky execution. TrustworthyAI depends on governance, mapping risks, measuring risk, and managing risk.\n\n- AI risk management requires documented context, human oversight, reliability checks, privacy consideration, safety analysis, security review, transparency, accountability, and bias monitoring.\n- VideoGenerationPrompt requires storyboard, shot list, motion constraints, and human approval before risky execution.\n- TrustworthyAI depends on governance, mapping risks, measuring risk, and managing risk.\n\nConfidence: 0.76\n\nSource signatures:\n- sig_3a965a9b99904496\n- sig_835ad3e2a94a25d2",
+      "sources": 2,
+      "target_ir": "WORKSPACE_QUERY",
+      "used_groq": false
+    },
+    {
+      "capability": "memory_chat",
+      "confidence": 0.7537,
+      "failures": [],
+      "gaps": 0,
+      "id": "health_hypertension_public",
+      "passed": true,
+      "prompt": "What should a user know about high blood pressure symptoms?",
+      "response": "Here's what I can verify from memory:\nHigh blood pressure often has no symptoms. Health advice requires conservative wording, source grounding, and referral to a qualified clinician for personal diagnosis or treatment. The codebase already reflects the core idea from the spec: transformer calls are bounded at T1/T2, while memory, retrieval, graph reasoning, verification, capability routing, and CSSE are separate runtime pieces.\n\n- High blood pressure often has no symptoms.\n- Health advice requires conservative wording, source grounding, and referral to a qualified clinician for personal diagnosis or treatment.\n- The codebase already reflects the core idea from the spec: transformer calls are bounded at T1/T2, while memory, retrieval, graph reasoning, verification, capability routing, and CSSE are separate runtime pieces.\n- The implementation follows the document's core separation: language is interpreted by a bounded transformer interface, converted into typed Semantic IR, processed through structured memory, graph, simulation, validation, planning, and CSSE layers, then rendered from verified state.\n\nConfidence: 0.75\n\nSource signatures:\n- sig_beaf5cbac6b3ac9c\n- sig_cd5b63d3b7b8d070\n- sig_f58dea568b4565e0",
+      "sources": 3,
+      "target_ir": "WORKSPACE_QUERY",
+      "used_groq": false
+    },
+    {
+      "capability": "memory_chat",
+      "confidence": 0.7833,
+      "failures": [],
+      "gaps": 0,
+      "id": "climate_science_public",
+      "passed": true,
+      "prompt": "What evidence supports climate change?",
+      "response": "Here's what I can verify from memory:\nClimateChangeEvidence depends on global temperature records, ocean heat observations, shrinking ice sheets, glacier retreat, snow cover change, and sea level measurements. Climate answers require source traces and uncertainty boundaries when discussing projections.\n\n- ClimateChangeEvidence depends on global temperature records, ocean heat observations, shrinking ice sheets, glacier retreat, snow cover change, and sea level measurements.\n- Climate answers require source traces and uncertainty boundaries when discussing projections.\n\nConfidence: 0.78\n\nSource signatures:\n- sig_bdc2c55c5377dae7",
+      "sources": 1,
+      "target_ir": "WORKSPACE_QUERY",
+      "used_groq": false
+    },
+    {
+      "capability": "memory_chat",
+      "confidence": 0.8175,
+      "failures": [],
+      "gaps": 0,
+      "id": "phishing_safety_public",
+      "passed": true,
+      "prompt": "How can I recognize a phishing scam text message?",
+      "response": "Here's what I can verify from memory:\nPhishingScamDetection depends on checking sender identity, suspicious links, unexpected account warnings, fake invoices, requests for personal information, and urgent payment pressure. Suspicious messages should not be answered with private data. Scam reports can be directed to official fraud reporting channels.\n\n- PhishingScamDetection depends on checking sender identity, suspicious links, unexpected account warnings, fake invoices, requests for personal information, and urgent payment pressure.\n- Suspicious messages should not be answered with private data.\n- Scam reports can be directed to official fraud reporting channels.\n- Safety-critical advice requires clear caution and no invented verification.\n\nConfidence: 0.82\n\nSource signatures:\n- sig_598b1b7732e648e0",
+      "sources": 1,
+      "target_ir": "WORKSPACE_QUERY",
+      "used_groq": false
+    },
+    {
+      "capability": "memory_chat",
+      "confidence": 0.7161,
+      "failures": [],
+      "gaps": 0,
+      "id": "finance_compound_public",
+      "passed": true,
+      "prompt": "Explain compound interest in simple terms and name the assumptions.",
+      "response": "Here's what I can verify from memory:\nCompoundInterest depends on principal, regular contributions, interest rate, compounding frequency, and time. Unsupported market assumptions cause explicit caveats. BusinessPlanning depends on workspace goals, market assumptions, and risk constraints.\n\n- CompoundInterest depends on principal, regular contributions, interest rate, compounding frequency, and time.\n- Unsupported market assumptions cause explicit caveats.\n- BusinessPlanning depends on workspace goals, market assumptions, and risk constraints.\n\nConfidence: 0.72\n\nSource signatures:\n- sig_51676b5dcb6a3223\n- sig_f6fe6135b0275b61",
+      "sources": 2,
+      "target_ir": "WORKSPACE_QUERY",
+      "used_groq": false
+    },
+    {
+      "capability": "memory_chat",
+      "confidence": 0.7512,
+      "failures": [],
+      "gaps": 0,
+      "id": "tax_withholding_public",
+      "passed": true,
+      "prompt": "Why should an employee check tax withholding after a life change?",
+      "response": "Here's what I can verify from memory:\nToo little withholding can cause a tax bill or penalty. TaxWithholding means income tax withheld from pay and paid to the IRS by an employer. Too much withholding can delay access to money until refund.\n\n- Too little withholding can cause a tax bill or penalty.\n- TaxWithholding means income tax withheld from pay and paid to the IRS by an employer.\n- Too much withholding can delay access to money until refund.\n- Tax answers require current-source caution and should not invent personal tax liability.\n\nConfidence: 0.75\n\nSource signatures:\n- sig_577d4ca7b7f0b90c",
+      "sources": 1,
+      "target_ir": "WORKSPACE_QUERY",
+      "used_groq": false
+    },
+    {
+      "capability": "coding",
+      "confidence": 0.7164,
+      "failures": [],
+      "gaps": 1,
+      "id": "python_testing_public",
+      "passed": true,
+      "prompt": "How should I test Python code that calls an external service?",
+      "response": "Here's what I can verify from memory:\nTestable Python code requires small functions, dependency injection, meaningful assertions, and deterministic tests. PythonMockTesting depends on replacing collaborators with Mock or MagicMock, asserting calls and arguments, using specs to constrain mocks, and resetting mocks between cases. The long-term target is to reduce T1/T2 calls as the encoder, compiler, retrieval, and CSSE improve, while still allowing bounded external interfaces for messy input and fluent output when useful.\n\n- Testable Python code requires small functions, dependency injection, meaningful assertions, and deterministic tests.\n- PythonMockTesting depends on replacing collaborators with Mock or MagicMock, asserting calls and arguments, using specs to constrain mocks, and resetting mocks between cases.\n- The long-term target is to reduce T1/T2 calls as the encoder, compiler, retrieval, and CSSE improve, while still allowing bounded external interfaces for messy input and fluent output when useful.\n- CodeGeneration depends on project memory, package documentation, sandbox execution, and tests.\n- Failed tests cause correction loops instead of confident code claims.\n- The codebase already reflects the core idea from the spec: transformer calls are bounded at T1/T2, while memory, retrieval, graph reasoning, verification, capability routing, and CSSE are separate runtime pieces.\n\nExplicit gaps:\n- Capability coding needs adapter(s) code_docs,test_runner,package_metadata; status=unavailable.\n\nConfidence: 0.72\n\nSource signatures:\n- sig_02d7965e53a7ff6f\n- sig_34f46d77d4dfdc8e\n- sig_bba12214af5a5baf\n- sig_beaf5cbac6b3ac9c",
+      "sources": 4,
+      "target_ir": "CODE_GENERATE",
+      "used_groq": false
+    },
+    {
+      "capability": "coding",
+      "confidence": 0.7275,
+      "failures": [],
+      "gaps": 1,
+      "id": "web_fetch_public",
+      "passed": true,
+      "prompt": "Show the safe design considerations for JavaScript fetch API calls.",
+      "response": "Here's what I can verify from memory:\nJavaScript code using fetch should check response status, handle network errors, parse JSON deliberately, and avoid leaking secrets to untrusted origins. FetchAPI depends on Request objects, Response objects, promises, HTTP status handling, CORS, and body parsing. AI risk management requires documented context, human oversight, reliability checks, privacy consideration, safety analysis, security review, transparency, accountability, and bias monitoring.\n\n- JavaScript code using fetch should check response status, handle network errors, parse JSON deliberately, and avoid leaking secrets to untrusted origins.\n- FetchAPI depends on Request objects, Response objects, promises, HTTP status handling, CORS, and body parsing.\n- AI risk management requires documented context, human oversight, reliability checks, privacy consideration, safety analysis, security review, transparency, accountability, and bias monitoring.\n\nExplicit gaps:\n- Capability coding needs adapter(s) code_docs,test_runner,package_metadata; status=unavailable.\n\nConfidence: 0.73\n\nSource signatures:\n- sig_13544de2978310a0\n- sig_835ad3e2a94a25d2",
+      "sources": 2,
+      "target_ir": "CODE_GENERATE",
+      "used_groq": false
+    },
+    {
+      "capability": "memory_chat",
+      "confidence": 0.6594,
+      "failures": [],
+      "gaps": 0,
+      "id": "emergency_rip_current_public",
+      "passed": true,
+      "prompt": "What should someone do if caught in a rip current?",
+      "response": "Here's what I can verify from memory:\nSafer response is to stay calm, float if needed, swim parallel to shore, and return at an angle when free. RipCurrentSafety depends on recognizing powerful narrow currents moving away from shore. Fighting a rip current directly causes fatigue risk.\n\n- Safer response is to stay calm, float if needed, swim parallel to shore, and return at an angle when free.\n- RipCurrentSafety depends on recognizing powerful narrow currents moving away from shore.\n- Fighting a rip current directly causes fatigue risk.\n- Web development answers require version awareness and source grounding.\n\nConfidence: 0.66\n\nSource signatures:\n- sig_13544de2978310a0\n- sig_94153779fd95ad97",
+      "sources": 2,
+      "target_ir": "WORKSPACE_QUERY",
+      "used_groq": false
+    },
+    {
+      "capability": "memory_chat",
+      "confidence": 0.6372,
+      "failures": [],
+      "gaps": 0,
+      "id": "education_fafsa_public",
+      "passed": true,
+      "prompt": "What information is usually needed when applying for FAFSA?",
+      "response": "Here's what I can verify from memory:\nFAFSAApplication depends on student identity information, contributor financial information, school selection, submission, and correction workflow. Safer response is to stay calm, float if needed, swim parallel to shore, and return at an angle when free. Education financial aid answers should direct users to official student aid sources, explain uncertainty, and avoid inventing eligibility decisions.\n\n- FAFSAApplication depends on student identity information, contributor financial information, school selection, submission, and correction workflow.\n- Safer response is to stay calm, float if needed, swim parallel to shore, and return at an angle when free.\n- Education financial aid answers should direct users to official student aid sources, explain uncertainty, and avoid inventing eligibility decisions.\n\nConfidence: 0.64\n\nSource signatures:\n- sig_74426e352a7ccc83\n- sig_94153779fd95ad97",
+      "sources": 2,
+      "target_ir": "WORKSPACE_QUERY",
+      "used_groq": false
+    },
+    {
+      "capability": "memory_chat",
+      "confidence": 0.7654,
+      "failures": [],
+      "gaps": 0,
+      "id": "business_ops_public",
+      "passed": true,
+      "prompt": "What operational risks should a small business owner track?",
+      "response": "Here's what I can verify from memory:\nBusinessPlanning answers should separate facts from assumptions, name risks, and propose next actions that can be verified. BusinessPlanning depends on workspace goals, market assumptions, and risk constraints. BusinessOperations depends on cash flow management, legal compliance, customer records, hiring practices, tax obligations, cybersecurity, and continuity planning.\n\n- BusinessPlanning answers should separate facts from assumptions, name risks, and propose next actions that can be verified.\n- BusinessPlanning depends on workspace goals, market assumptions, and risk constraints.\n- BusinessOperations depends on cash flow management, legal compliance, customer records, hiring practices, tax obligations, cybersecurity, and continuity planning.\n\nConfidence: 0.77\n\nSource signatures:\n- sig_19db382010ec9b2c\n- sig_f6fe6135b0275b61",
+      "sources": 2,
+      "target_ir": "WORKSPACE_QUERY",
+      "used_groq": false
+    },
+    {
+      "capability": "video_generation",
+      "confidence": 0.6292,
+      "failures": [],
+      "gaps": 1,
+      "id": "video_generation_public",
+      "passed": true,
+      "prompt": "Generate a video plan for a safety training clip about phishing prevention.",
+      "response": "Here's what I can verify from memory:\nSafer response is to stay calm, float if needed, swim parallel to shore, and return at an angle when free. RipCurrentSafety depends on recognizing powerful narrow currents moving away from shore. VideoGenerationPrompt requires storyboard, shot list, motion constraints, and human approval before risky execution.\n\n- Safer response is to stay calm, float if needed, swim parallel to shore, and return at an angle when free.\n- RipCurrentSafety depends on recognizing powerful narrow currents moving away from shore.\n- VideoGenerationPrompt requires storyboard, shot list, motion constraints, and human approval before risky execution.\n- MediaGenerationPrompt depends on user goal, subject, scene graph, style constraints, safety policy, rights status, asset provenance, and negative constraints.\n\nExplicit gaps:\n- Capability video_generation needs adapter(s) video_generation; status=blocked.\n\nConfidence: 0.63\n\nSource signatures:\n- sig_3a965a9b99904496\n- sig_94153779fd95ad97",
+      "sources": 2,
+      "target_ir": "WORKSPACE_QUERY",
+      "used_groq": false
+    },
+    {
+      "capability": "audio_generation",
+      "confidence": 0.7421,
+      "failures": [],
+      "gaps": 1,
+      "id": "audio_generation_public",
+      "passed": true,
+      "prompt": "Generate an audio script plan for a calm emergency preparedness announcement.",
+      "response": "Here's what I can verify from memory:\nAudioGenerationPrompt requires script, voice rights, pronunciation notes, and provenance. AudioGenerationPrompt depends on voice rights, script structure, pronunciation notes, and asset provenance. Safer response is to stay calm, float if needed, swim parallel to shore, and return at an angle when free.\n\n- AudioGenerationPrompt requires script, voice rights, pronunciation notes, and provenance.\n- AudioGenerationPrompt depends on voice rights, script structure, pronunciation notes, and asset provenance.\n- Safer response is to stay calm, float if needed, swim parallel to shore, and return at an angle when free.\n- Emergency safety answers require concise action steps and no overconfident guarantees.\n\nExplicit gaps:\n- Capability audio_generation needs adapter(s) tts_audio_generation; status=unavailable.\n\nConfidence: 0.74\n\nSource signatures:\n- sig_2fb40f89ff435b83\n- sig_3a965a9b99904496\n- sig_94153779fd95ad97",
+      "sources": 3,
+      "target_ir": "WORKSPACE_QUERY",
+      "used_groq": false
+    },
+    {
+      "capability": "memory_chat",
+      "confidence": 0.8247,
+      "failures": [
+        "missing phrase: visible evidence"
+      ],
+      "gaps": 0,
+      "id": "multimodal_reasoning_public",
+      "passed": false,
+      "prompt": "How should JimsAI reason over an uploaded image before saving it to memory?",
+      "response": "Here's what I can verify from memory:\nMultimodalReasoning depends on image observations, text metadata, source provenance, modality-specific encoder confidence, and cross-checking against structured memory. Low visual certainty causes explicit gaps and review before permanent memory promotion. The codebase already reflects the core idea from the spec: transformer calls are bounded at T1/T2, while memory, retrieval, graph reasoning, verification, capability routing, and CSSE are separate runtime pieces.\n\n- MultimodalReasoning depends on image observations, text metadata, source provenance, modality-specific encoder confidence, and cross-checking against structured memory.\n- Low visual certainty causes explicit gaps and review before permanent memory promotion.\n- The codebase already reflects the core idea from the spec: transformer calls are bounded at T1/T2, while memory, retrieval, graph reasoning, verification, capability routing, and CSSE are separate runtime pieces.\n- | | T1/T2 interfaces | `prototype/jimsai/model_bridge.py`, `prototype/jimsai/runtime_layers.py` | Bounded Groq calls with adaptive skip reasons in trace output.\n- | | L2 memory | `prototype/jimsai/memory.py` | Four-layer memory, entity/temporal/causal indexes, workspace/user visibility.\n- The goal is to become a structured intelligence system that uses transformers and generators as bounded interfaces/tools while JIMS-AI owns memory, routing, source grounding, retrieval, causal reasoning, verification, human review, and continuous improvement.\n\nConfidence: 0.82\n\nSource signatures:\n- sig_300dc501b7f9097f\n- sig_badbef5d87e91710\n- sig_beaf5cbac6b3ac9c\n- sig_f8e2130f73296631",
+      "sources": 4,
+      "target_ir": "WORKSPACE_QUERY",
+      "used_groq": false
+    }
+  ],
+  "production_write": false,
+  "provider_usage_analysis": {
+    "by_capability": {
+      "agentic_task": {
+        "provider_model_bypassed": 1,
+        "provider_model_calls": 0,
+        "total": 1
+      },
+      "audio_generation": {
+        "provider_model_bypassed": 1,
+        "provider_model_calls": 0,
+        "total": 1
+      },
+      "coding": {
+        "provider_model_bypassed": 3,
+        "provider_model_calls": 0,
+        "total": 3
+      },
+      "image_generation": {
+        "provider_model_bypassed": 1,
+        "provider_model_calls": 0,
+        "total": 1
+      },
+      "memory_chat": {
+        "provider_model_bypassed": 12,
+        "provider_model_calls": 0,
+        "total": 12
+      },
+      "video_generation": {
+        "provider_model_bypassed": 1,
+        "provider_model_calls": 0,
+        "total": 1
+      }
+    },
+    "eval_total": 19,
+    "provider_model_bypassed": 19,
+    "provider_model_call_rate": 0.0,
+    "provider_model_calls": 0
+  }
+}

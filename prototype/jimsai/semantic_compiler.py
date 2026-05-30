@@ -11,7 +11,8 @@ from .models import ExecutionMode, Hypothesis, IntentDomain, SemanticIR
 STOP_WORDS = {
     "a", "an", "the", "yo", "please", "just", "over", "that", "we", "back", "in", "for",
     "to", "of", "and", "or", "on", "with", "can", "you", "i", "me", "my", "is", "are",
-    "do", "does", "did", "would", "become",
+    "do", "does", "did", "would", "become", "what", "why", "how", "when", "where", "who", "which",
+    "should", "someone",
 }
 QUESTION_WORDS = {"What", "Why", "How", "When", "Where", "Who", "Which"}
 IMPACT_TOKENS = {
@@ -120,6 +121,7 @@ PUBLIC_MEMORY_QUERY_TOKENS = {
     "change",
     "climate",
     "compliance",
+    "compound",
     "consumer",
     "current",
     "emergency",
@@ -132,6 +134,7 @@ PUBLIC_MEMORY_QUERY_TOKENS = {
     "interest",
     "message",
     "operational",
+    "principal",
     "phishing",
     "pressure",
     "risk",
@@ -144,6 +147,8 @@ PUBLIC_MEMORY_QUERY_TOKENS = {
     "tax",
     "temperature",
     "withholding",
+    "assumption",
+    "assumptions",
 }
 
 INTENT_TEMPLATES: dict[str, str] = {

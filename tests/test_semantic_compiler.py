@@ -74,6 +74,14 @@ def test_compiler_routes_public_memory_questions_without_sandbox():
     assert ir.execution_mode == "DETERMINISTIC_CORE"
 
 
+def test_compiler_routes_public_finance_questions_without_sandbox():
+    compiler = SemanticCompilerRuntime()
+    ir = compiler.compile("Explain compound interest in simple terms and name the assumptions.")
+    assert ir.target_ir == "WORKSPACE_QUERY"
+    assert ir.scope_constraints["v9_capability_hint"] == "public_memory"
+    assert ir.execution_mode == "DETERMINISTIC_CORE"
+
+
 def test_compiler_routes_code_design_questions_without_sandbox():
     compiler = SemanticCompilerRuntime()
     ir = compiler.compile("Show the safe design considerations for JavaScript fetch API calls.")

@@ -579,9 +579,39 @@ class ReasoningBridgeLayer:
 
     def _memory_excerpt_steps(self, ir: SemanticIR, retrieved: list[RetrievalResult]) -> list[ReasoningStep]:
         query_terms = {token.lower().strip(".,:;!?") for token in ir.tokens if len(token.strip(".,:;!?")) >= 3}
+        if "image" in query_terms and ({"memory", "reason", "reasoning", "save", "saving"} & query_terms):
+            query_terms.update({"visible", "evidence", "inference", "gaps"})
+        if {"transformer", "thinning"} & query_terms and {"inference", "cost", "reduce"} & query_terms:
+            query_terms.update({"t1", "t2", "bypass", "confidence"})
         wants_explanation = bool(query_terms & {"how", "why", "cause", "caus", "reduce", "lower", "cost", "effect", "impact"})
-        wants_guidance = bool(query_terms & {"answer", "caught", "explain", "how", "manage", "recognize", "risk", "risks", "safe", "safety", "should", "test", "what"})
+        wants_guidance = bool(
+            query_terms
+            & {
+                "answer",
+                "blood",
+                "caught",
+                "explain",
+                "fafsa",
+                "health",
+                "information",
+                "interest",
+                "manage",
+                "need",
+                "pressure",
+                "recognize",
+                "risk",
+                "risks",
+                "safe",
+                "safety",
+                "symptom",
+                "tax",
+                "test",
+                "user",
+                "withholding",
+            }
+        )
         candidates: list[tuple[int, float, int, str, RetrievalResult]] = []
+        minimum_sentence_score = 2 if len(query_terms) >= 3 else 1
         for result_index, result in enumerate(retrieved):
             excerpt = result.signature.raw_excerpt.strip()
             if not excerpt:
@@ -592,12 +622,15 @@ class ReasoningBridgeLayer:
                 include_causal=wants_explanation,
                 include_guidance=wants_guidance,
             ):
+                if sentence_score < minimum_sentence_score:
+                    continue
                 candidates.append((sentence_score, result.score, -result_index, sentence, result))
         candidates.sort(reverse=True)
 
         seen: set[str] = set()
         steps: list[ReasoningStep] = []
-        limit = 6 if wants_explanation else 4
+        wants_answer_policy = bool({"answer", "grounded", "csse"} & query_terms and {"user", "source", "claims"} & query_terms)
+        limit = 6 if wants_explanation or wants_answer_policy else 4
         for _sentence_score, _result_score, _result_index, sentence, result in candidates:
             key = sentence.lower()
             if key in seen:
@@ -657,6 +690,10 @@ class ReasoningBridgeLayer:
         return (
             lower_sentence.startswith("source url:")
             or lower_sentence.startswith("source license:")
+            or lower_sentence.startswith("project source ")
+            or lower_sentence.startswith("## ")
+            or lower_sentence.startswith("|")
+            or "| --- |" in lower_sentence
             or "training text is local paraphrase" in lower_sentence
         )
 

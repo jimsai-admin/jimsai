@@ -87,6 +87,17 @@ def test_encoder_extracts_user_profile_memory_with_sentence_case():
     assert ("user", "is_building", "JIMS-AI") in relations
 
 
+def test_encoder_excerpts_do_not_cut_mid_word():
+    text = (
+        "Health advice requires conservative wording, source grounding, and referral to a qualified clinician "
+        "for personal diagnosis or treatment. "
+        + "Additional context sentence. " * 80
+    )
+    signature = DualRepresentationEncoder().encode_text(text)
+    assert "treatme." not in signature.raw_excerpt
+    assert signature.raw_excerpt.endswith((".", "!", "?"))
+
+
 def test_graph_deduplicates_relation_and_causal_edges():
     signature = DualRepresentationEncoder().encode_text(
         "UserModel.id_change causes AuthService.token_invalidation."
@@ -637,6 +648,17 @@ async def test_guidance_queries_keep_action_sentences_from_retrieved_memory():
         TrainingIngestRequest(
             user_id="test",
             content=(
+                "FetchAPI depends on Request objects, Response objects, promises, HTTP status handling, CORS, and body parsing. "
+                "JavaScript code using fetch should check response status, handle network errors, parse JSON deliberately, and avoid leaking secrets to untrusted origins."
+            ),
+            source_trust=0.92,
+            domain_hint="public_web_fetch",
+        )
+    )
+    await pipeline.ingest_training(
+        TrainingIngestRequest(
+            user_id="test",
+            content=(
                 "RipCurrentSafety depends on recognizing powerful narrow currents moving away from shore. "
                 "Fighting a rip current directly causes fatigue risk. "
                 "Safer response is to stay calm, float if needed, swim parallel to shore, and return at an angle when free."
@@ -650,4 +672,5 @@ async def test_guidance_queries_keep_action_sentences_from_retrieved_memory():
 
     assert "parallel" in result.response
     assert "shore" in result.response
+    assert "JavaScript code using fetch" not in result.response
     assert result.sources

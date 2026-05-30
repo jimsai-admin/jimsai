@@ -1,4 +1,4 @@
-from scripts.iterative_training_loop import EvalOutcome, correction_candidates, eval_prompts, training_records
+from scripts.iterative_training_loop import EvalOutcome, correction_candidates, eval_prompts, provider_usage_analysis, training_records
 
 
 def test_iterative_training_loop_loads_training_and_eval_jsonl(tmp_path):
@@ -47,3 +47,41 @@ def test_iterative_training_loop_creates_review_only_correction_candidates():
     assert candidates[0]["domain_hint"] == "iterative_failure_correction"
     assert candidates[0]["source_trust"] < 0.75
     assert "requires human review before promotion" in candidates[0]["content"]
+
+
+def test_iterative_training_loop_summarizes_provider_usage():
+    outcomes = [
+        EvalOutcome(
+            id="memory",
+            passed=True,
+            failures=[],
+            prompt="What do you remember?",
+            response="Memory answer.",
+            confidence=0.8,
+            sources=1,
+            gaps=0,
+            target_ir="WORKSPACE_QUERY",
+            capability="memory_chat",
+            used_groq=False,
+        ),
+        EvalOutcome(
+            id="creative",
+            passed=True,
+            failures=[],
+            prompt="Rewrite this.",
+            response="Rendered answer.",
+            confidence=0.7,
+            sources=1,
+            gaps=0,
+            target_ir="WORKSPACE_QUERY",
+            capability="creative_text",
+            used_groq=True,
+        ),
+    ]
+
+    usage = provider_usage_analysis(outcomes)
+
+    assert usage["provider_model_calls"] == 1
+    assert usage["provider_model_bypassed"] == 1
+    assert usage["provider_model_call_rate"] == 0.5
+    assert usage["by_capability"]["memory_chat"]["provider_model_bypassed"] == 1

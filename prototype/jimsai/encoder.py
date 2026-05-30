@@ -86,6 +86,21 @@ ENTITY_TYPE_HINTS = [
 ]
 
 
+def bounded_excerpt(text: str, max_chars: int = 1200) -> str:
+    """Keep a retrievable excerpt without cutting through words or sentences."""
+    cleaned = re.sub(r"\s+", " ", text).strip()
+    if len(cleaned) <= max_chars:
+        return cleaned
+    candidate = cleaned[:max_chars].rstrip()
+    sentence_end = max(candidate.rfind("."), candidate.rfind("!"), candidate.rfind("?"))
+    if sentence_end >= max_chars * 0.55:
+        return candidate[: sentence_end + 1].strip()
+    word_end = candidate.rfind(" ")
+    if word_end >= max_chars * 0.55:
+        return candidate[:word_end].rstrip(" ,;:")
+    return candidate.rstrip(" ,;:")
+
+
 @dataclass(frozen=True)
 class EncoderExtraction:
     entities: list[Entity]
@@ -186,7 +201,7 @@ class DualRepresentationEncoder:
             confidence=Confidence(score=extraction.confidence, source="dual_encoder_structured_hash_latent"),
             modality=modality,
             linked_signatures=[],
-            raw_excerpt=text[:500],
+            raw_excerpt=bounded_excerpt(text),
             workspace_id=workspace_id,
             user_id=user_id,
             metadata=extraction.metadata,
