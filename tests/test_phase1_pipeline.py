@@ -577,3 +577,77 @@ async def test_user_profile_training_answers_back_from_memory():
     assert name.sources
     assert "software engineer" in profile.response
     assert "JIMS-AI" in profile.response
+
+
+@pytest.mark.asyncio
+async def test_architecture_memory_question_uses_retrieved_excerpts():
+    pipeline = JimsAIPipeline()
+    await pipeline.ingest_training(
+        TrainingIngestRequest(
+            user_id="test",
+            content=(
+                "AdaptiveTransformerThinning depends on deterministic intent confidence and sourced CSSE answers. "
+                "High deterministic confidence causes T1 bypass. "
+                "High sourced answer confidence causes T2 bypass. "
+                "Persistent retrieval causes lower repeated inference cost."
+            ),
+            source_trust=0.92,
+            domain_hint="frontier_energy_efficiency",
+        )
+    )
+
+    result = await pipeline.run(
+        PipelineRequest(user_id="test", query="How does adaptive transformer thinning reduce repeated inference cost?")
+    )
+
+    assert result.ir.target_ir == "WORKSPACE_QUERY"
+    assert result.sources
+    assert "T1 bypass" in result.response
+    assert "T2 bypass" in result.response
+
+
+@pytest.mark.asyncio
+async def test_retrieval_does_not_use_prior_prompts_as_source_claims():
+    pipeline = JimsAIPipeline()
+    await pipeline.ingest_training(
+        TrainingIngestRequest(
+            user_id="test",
+            content=(
+                "HighBloodPressure means blood pressure consistently at or above 130 over 80 millimeters of mercury. "
+                "High blood pressure often has no symptoms. "
+                "Health advice requires conservative wording, source grounding, and referral to a qualified clinician for personal diagnosis or treatment."
+            ),
+            source_trust=0.95,
+            domain_hint="public_health_hypertension",
+        )
+    )
+
+    await pipeline.run(PipelineRequest(user_id="test", query="What do you know about how JIMS-AI should answer users?"))
+    result = await pipeline.run(PipelineRequest(user_id="test", query="What should a user know about high blood pressure symptoms?"))
+
+    assert "What do you know about how JIMS-AI should answer users" not in result.response
+    assert "clinician" in result.response
+    assert result.sources
+
+
+@pytest.mark.asyncio
+async def test_guidance_queries_keep_action_sentences_from_retrieved_memory():
+    pipeline = JimsAIPipeline()
+    await pipeline.ingest_training(
+        TrainingIngestRequest(
+            user_id="test",
+            content=(
+                "RipCurrentSafety depends on recognizing powerful narrow currents moving away from shore. "
+                "Fighting a rip current directly causes fatigue risk. "
+                "Safer response is to stay calm, float if needed, swim parallel to shore, and return at an angle when free."
+            ),
+            source_trust=0.95,
+            domain_hint="public_emergency_beach_safety",
+        )
+    )
+
+    result = await pipeline.run(PipelineRequest(user_id="test", query="What should someone do if caught in a rip current?"))
+
+    assert "parallel" in result.response
+    assert "shore" in result.response
+    assert result.sources

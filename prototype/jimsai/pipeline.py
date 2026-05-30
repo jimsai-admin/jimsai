@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from .capability_router import CapabilityAdapterRegistry, CapabilityRouter
@@ -147,6 +148,7 @@ class JimsAIPipeline:
             user_id=request.user_id,
             exclude_ids={input_signature_id},
         )
+        signatures.extend(self._lexical_persistent_hydration(request, exclude_ids={input_signature_id, *[signature.id for signature in signatures]}))
         count = 0
         for signature in signatures:
             if self.memory.get(signature.id):
@@ -156,6 +158,40 @@ class JimsAIPipeline:
             count += 1
         self.hydrated_signatures += count
         return count
+
+    def _lexical_persistent_hydration(self, request: PipelineRequest, exclude_ids: set[str], limit: int = 150) -> list:
+        recent = self.production.load_recent_signatures(limit=limit)
+        if not recent:
+            return []
+        query_terms = {
+            term
+            for term in re.findall(r"[a-z0-9_\-.]+", request.query.lower())
+            if len(term) >= 3 and term not in {"what", "how", "why", "the", "and", "for", "with"}
+        }
+        if not query_terms:
+            return []
+        scored = []
+        for signature in recent:
+            if signature.id in exclude_ids:
+                continue
+            if not self.production._visible_to_scope(signature, workspace_id=request.workspace_id, user_id=request.user_id):
+                continue
+            score = self._lexical_signature_score(signature, query_terms)
+            if score >= 2:
+                scored.append((score, signature.confidence.score, signature.created_at, signature))
+        scored.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
+        return [item[3] for item in scored[:8]]
+
+    def _lexical_signature_score(self, signature, query_terms: set[str]) -> int:
+        haystack_parts = [
+            signature.raw_excerpt.lower(),
+            " ".join(signature.abstraction_tags).lower(),
+            " ".join(entity.name for entity in signature.structured.entities).lower(),
+            " ".join(f"{relation.subject} {relation.predicate} {relation.object}" for relation in signature.structured.relations).lower(),
+            " ".join(f"{link.cause} {link.effect}" for link in signature.structured.causal_chain).lower(),
+        ]
+        haystack = " ".join(haystack_parts)
+        return sum(1 for term in query_terms if term in haystack)
 
     def _reset_request_cache(self) -> None:
         if self.cloud_authoritative:

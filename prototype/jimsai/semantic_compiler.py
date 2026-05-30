@@ -52,6 +52,99 @@ PROFILE_QUERY_PATTERNS = (
     r"\btell\s+me\s+about\s+me\b",
     r"\bmy\s+profile\b",
 )
+GENERATION_ACTION_TOKENS = {"write", "create", "build", "generate", "make", "draw", "produce", "implement", "scaffold"}
+CODE_CAPABILITY_TOKENS = {
+    "api",
+    "bug",
+    "class",
+    "code",
+    "debug",
+    "fastapi",
+    "function",
+    "javascript",
+    "library",
+    "package",
+    "python",
+    "react",
+    "refactor",
+    "sdk",
+    "test",
+    "tests",
+    "typescript",
+}
+CODE_DESIGN_TOKENS = {"calls", "consideration", "considerations", "design", "external", "fetch", "http", "safe", "security", "service"}
+IMAGE_CAPABILITY_TOKENS = {"image", "picture", "photo", "logo", "poster", "illustration", "dashboard"}
+VIDEO_CAPABILITY_TOKENS = {"video", "animation", "clip", "movie", "storyboard"}
+AUDIO_CAPABILITY_TOKENS = {"audio", "voice", "speech", "tts", "sound", "music"}
+CREATIVE_CAPABILITY_TOKENS = {"story", "poem", "script", "rewrite", "tone", "email", "proposal", "copy"}
+AGENTIC_CAPABILITY_TOKENS = {
+    "agent",
+    "automate",
+    "automat",
+    "book",
+    "browser",
+    "click",
+    "deploy",
+    "deployment",
+    "rollback",
+    "schedule",
+    "send",
+    "task",
+}
+JIMS_ARCHITECTURE_TOKENS = {
+    "adaptive",
+    "architecture",
+    "answer",
+    "answers",
+    "csse",
+    "energy",
+    "inference",
+    "jims-ai",
+    "jimsai",
+    "memory",
+    "retrieval",
+    "sppe",
+    "t1",
+    "t2",
+    "thinning",
+    "transformer",
+    "users",
+}
+PUBLIC_MEMORY_QUERY_TOKENS = {
+    "account",
+    "applying",
+    "blood",
+    "business",
+    "cash",
+    "caught",
+    "change",
+    "climate",
+    "compliance",
+    "consumer",
+    "current",
+    "emergency",
+    "evidence",
+    "fafsa",
+    "financial",
+    "health",
+    "hypertension",
+    "information",
+    "interest",
+    "message",
+    "operational",
+    "phishing",
+    "pressure",
+    "risk",
+    "risks",
+    "rip",
+    "safety",
+    "scam",
+    "shore",
+    "symptoms",
+    "tax",
+    "temperature",
+    "withholding",
+}
 
 INTENT_TEMPLATES: dict[str, str] = {
     "FETCH_DOCUMENT": "pull layout document manifest file pdf page download view open retrieve",
@@ -186,6 +279,33 @@ class SemanticCompilerRuntime:
             scope["entities"] = sorted(set(camel_entities))
         return scope
 
+    def _v9_capability_override(self, tokens: list[str], raw_input: str) -> tuple[str, float, str] | None:
+        token_set = {token.strip(".,:;!?").lower() for token in tokens}
+        raw_lower = raw_input.lower()
+        has_generation_action = bool(token_set & GENERATION_ACTION_TOKENS)
+        if (token_set & CODE_CAPABILITY_TOKENS) and (
+            has_generation_action
+            or bool(token_set & {"bug", "debug", "refactor", "test", "tests"})
+            or bool(token_set & CODE_DESIGN_TOKENS)
+        ):
+            return "CODE_GENERATE", 0.3, "coding"
+        if has_generation_action and token_set & IMAGE_CAPABILITY_TOKENS:
+            return "WORKSPACE_QUERY", 0.28, "image_generation"
+        if has_generation_action and token_set & VIDEO_CAPABILITY_TOKENS:
+            return "WORKSPACE_QUERY", 0.28, "video_generation"
+        if has_generation_action and token_set & AUDIO_CAPABILITY_TOKENS:
+            return "WORKSPACE_QUERY", 0.28, "audio_generation"
+        creative_match = has_generation_action and bool(token_set & CREATIVE_CAPABILITY_TOKENS)
+        if creative_match or re.search(r"\b(rewrite|draft|compose)\b", raw_lower):
+            return "WORKSPACE_QUERY", 0.24, "creative_text"
+        if token_set & AGENTIC_CAPABILITY_TOKENS:
+            return "WORKSPACE_QUERY", 0.28, "agentic_task"
+        if len(token_set & JIMS_ARCHITECTURE_TOKENS) >= 2:
+            return "WORKSPACE_QUERY", 0.28, "jims_architecture"
+        if len(token_set & PUBLIC_MEMORY_QUERY_TOKENS) >= 2:
+            return "WORKSPACE_QUERY", 0.28, "public_memory"
+        return None
+
     def compile(self, raw_input: str, namespace: str = "TECHNICAL", session: dict[str, Any] | None = None) -> SemanticIR:
         session = session or {}
         tokens = sanitize(raw_input)
@@ -205,6 +325,11 @@ class SemanticCompilerRuntime:
         if scope.get("entities") and ((set(tokens) & IMPACT_TOKENS) or causal_question or scope.get("question_intent")):
             target_ir = "WORKSPACE_QUERY"
             confidence = max(confidence, 0.22)
+        v9_override = self._v9_capability_override(tokens, raw_input)
+        if v9_override:
+            target_ir, override_confidence, capability_hint = v9_override
+            confidence = max(confidence, override_confidence)
+            scope["v9_capability_hint"] = capability_hint
         execution_mode = ExecutionMode.DETERMINISTIC_CORE
         if target_ir == "OP_ESCAPE_TO_SANDBOX" or confidence < self.confidence_threshold:
             target_ir = "OP_ESCAPE_TO_SANDBOX"

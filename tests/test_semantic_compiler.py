@@ -32,3 +32,51 @@ def test_compiler_marks_profile_memory_queries():
     assert ir.target_ir == "WORKSPACE_QUERY"
     assert ir.scope_constraints["profile_query"] is True
     assert ir.execution_mode == "DETERMINISTIC_CORE"
+
+
+def test_compiler_routes_known_v9_code_generation_without_sandbox():
+    compiler = SemanticCompilerRuntime()
+    ir = compiler.compile("Write a Python function and tests for a retry wrapper.")
+    assert ir.target_ir == "CODE_GENERATE"
+    assert ir.scope_constraints["v9_capability_hint"] == "coding"
+    assert ir.execution_mode == "DETERMINISTIC_CORE"
+
+
+def test_compiler_routes_known_v9_media_generation_without_sandbox():
+    compiler = SemanticCompilerRuntime()
+    ir = compiler.compile("Generate an image of a solar powered bakery dashboard.")
+    assert ir.target_ir == "WORKSPACE_QUERY"
+    assert ir.scope_constraints["v9_capability_hint"] == "image_generation"
+    assert ir.execution_mode == "DETERMINISTIC_CORE"
+
+
+def test_compiler_routes_jims_architecture_memory_questions_without_sandbox():
+    compiler = SemanticCompilerRuntime()
+    ir = compiler.compile("How does adaptive transformer thinning reduce repeated inference cost?")
+    assert ir.target_ir == "WORKSPACE_QUERY"
+    assert ir.scope_constraints["v9_capability_hint"] == "jims_architecture"
+    assert ir.execution_mode == "DETERMINISTIC_CORE"
+
+
+def test_compiler_routes_agentic_safety_tasks_without_sandbox():
+    compiler = SemanticCompilerRuntime()
+    ir = compiler.compile("Schedule an automated deployment task with rollback checks.")
+    assert ir.target_ir == "WORKSPACE_QUERY"
+    assert ir.scope_constraints["v9_capability_hint"] == "agentic_task"
+    assert ir.execution_mode == "DETERMINISTIC_CORE"
+
+
+def test_compiler_routes_public_memory_questions_without_sandbox():
+    compiler = SemanticCompilerRuntime()
+    ir = compiler.compile("What evidence supports climate change?")
+    assert ir.target_ir == "WORKSPACE_QUERY"
+    assert ir.scope_constraints["v9_capability_hint"] == "public_memory"
+    assert ir.execution_mode == "DETERMINISTIC_CORE"
+
+
+def test_compiler_routes_code_design_questions_without_sandbox():
+    compiler = SemanticCompilerRuntime()
+    ir = compiler.compile("Show the safe design considerations for JavaScript fetch API calls.")
+    assert ir.target_ir == "CODE_GENERATE"
+    assert ir.scope_constraints["v9_capability_hint"] == "coding"
+    assert ir.execution_mode == "DETERMINISTIC_CORE"

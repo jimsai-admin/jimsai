@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from .constraints import ConstraintValidator
@@ -528,6 +529,8 @@ class ReasoningBridgeLayer:
         plan = self._plan_with_layer_names(ir)
         reasoning_chain = self._direct_reasoning_steps(ir, retrieved)
         if not reasoning_chain:
+            reasoning_chain = self._memory_excerpt_steps(ir, retrieved)
+        if not reasoning_chain:
             reasoning_chain = [
                 ReasoningStep(
                     claim=f"Retrieved signature {result.signature.id} supports intent {ir.target_ir}",
@@ -573,6 +576,122 @@ class ReasoningBridgeLayer:
             "Built Verified Cognitive Object from plan, simulation, constraints, graph, and sources.",
             {"confidence": confidence, "sources": sources, "gaps": gaps, "simulation_count": len(simulations)},
         )
+
+    def _memory_excerpt_steps(self, ir: SemanticIR, retrieved: list[RetrievalResult]) -> list[ReasoningStep]:
+        query_terms = {token.lower().strip(".,:;!?") for token in ir.tokens if len(token.strip(".,:;!?")) >= 3}
+        wants_explanation = bool(query_terms & {"how", "why", "cause", "caus", "reduce", "lower", "cost", "effect", "impact"})
+        wants_guidance = bool(query_terms & {"answer", "caught", "explain", "how", "manage", "recognize", "risk", "risks", "safe", "safety", "should", "test", "what"})
+        candidates: list[tuple[int, float, int, str, RetrievalResult]] = []
+        for result_index, result in enumerate(retrieved):
+            excerpt = result.signature.raw_excerpt.strip()
+            if not excerpt:
+                continue
+            for sentence_score, sentence in self._scored_excerpt_sentences(
+                excerpt,
+                query_terms,
+                include_causal=wants_explanation,
+                include_guidance=wants_guidance,
+            ):
+                candidates.append((sentence_score, result.score, -result_index, sentence, result))
+        candidates.sort(reverse=True)
+
+        seen: set[str] = set()
+        steps: list[ReasoningStep] = []
+        limit = 6 if wants_explanation else 4
+        for _sentence_score, _result_score, _result_index, sentence, result in candidates:
+            key = sentence.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            steps.append(
+                ReasoningStep(
+                    claim=sentence,
+                    confidence=round(min(0.92, result.score, result.signature.confidence.score), 4),
+                    sources=[result.signature.id],
+                    relation="MEMORY_EXCERPT",
+                )
+            )
+            if len(steps) >= limit:
+                return steps
+        return steps
+
+    def _scored_excerpt_sentences(
+        self,
+        excerpt: str,
+        query_terms: set[str],
+        include_causal: bool = False,
+        include_guidance: bool = False,
+    ) -> list[tuple[int, str]]:
+        cleaned = re.sub(r"\s+", " ", excerpt).strip()
+        if not cleaned:
+            return []
+        sentences = [
+            sentence.strip(" -")
+            for sentence in re.split(r"(?<=[.!?])\s+", cleaned)
+            if sentence.strip(" -")
+        ]
+        if not sentences:
+            sentences = [cleaned]
+        scored: list[tuple[int, int, str]] = []
+        for index, sentence in enumerate(sentences[:12]):
+            lower = sentence.lower()
+            if self._is_provenance_sentence(lower):
+                continue
+            score = sum(1 for term in query_terms if term and term in lower)
+            if include_causal and (" causes " in lower or " depends on " in lower):
+                score = max(score, 1)
+            if include_guidance:
+                score = max(score, self._guidance_sentence_score(lower, query_terms))
+            if score:
+                scored.append((score, -index, sentence[:320]))
+        if not scored:
+            return []
+        scored.sort(reverse=True)
+        output: list[tuple[int, str]] = []
+        for _score, _index, sentence in scored:
+            clean = sentence.strip()
+            output.append((_score, clean if clean.endswith((".", "?", "!")) else f"{clean}."))
+        return output
+
+    def _is_provenance_sentence(self, lower_sentence: str) -> bool:
+        return (
+            lower_sentence.startswith("source url:")
+            or lower_sentence.startswith("source license:")
+            or "training text is local paraphrase" in lower_sentence
+        )
+
+    def _guidance_sentence_score(self, lower_sentence: str, query_terms: set[str]) -> int:
+        if query_terms & {"answer", "answers", "user", "users"} and any(
+            marker in lower_sentence
+            for marker in ("grounded", "csse", "source trace", "source grounding", "unsupported claim", "unsupported claims")
+        ):
+            return 4
+        if query_terms & {"caught", "emergency", "rip", "safety"} and any(
+            marker in lower_sentence
+            for marker in ("safer ", "stay calm", "float", "parallel", "shore")
+        ):
+            return 3
+        guidance_markers = (
+            " should ",
+            " requires ",
+            " require ",
+            " safer ",
+            " stay calm",
+            " float",
+            " parallel",
+            " shore",
+            " clinician",
+            " diagnosis",
+            " treatment",
+            " private data",
+            " secrets",
+            " assumptions",
+            " compliance",
+            " cash flow",
+            " human approval",
+            " provenance",
+        )
+        return 1 if any(marker in lower_sentence for marker in guidance_markers) else 0
 
     def _direct_reasoning_steps(self, ir: SemanticIR, retrieved: list[RetrievalResult]) -> list[ReasoningStep]:
         entities = [str(entity) for entity in ir.scope_constraints.get("entities", [])]

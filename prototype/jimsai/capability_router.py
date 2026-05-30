@@ -43,7 +43,13 @@ class CapabilityRouter:
             kind, reason, confidence = CapabilityKind.CODING, "Request likely needs code, docs, tests, or sandbox execution.", 0.74
         elif self._matches(tokens, {"calculate", "solve", "equation", "proof", "theorem", "physics", "chemistry", "biology", "math", "derive"}):
             kind, reason, confidence = CapabilityKind.MATH_SCIENCE, "Request needs solver-backed math or science verification.", 0.72
-        elif self._matches(tokens, {"latest", "current", "today", "news", "web", "internet", "search", "browse", "president", "price", "weather"}):
+        elif (
+            self._matches(tokens, {"latest", "today", "news", "web", "internet", "search", "browse", "president", "price", "weather"})
+            or (
+                self._matches(tokens, {"current"})
+                and not self._matches(tokens, {"rip", "shore", "phishing", "blood", "pressure", "tax", "business", "climate"})
+            )
+        ):
             kind, reason, confidence = CapabilityKind.WORLD_KNOWLEDGE, "Request depends on changing or public-world knowledge.", 0.78
         elif self._matches(tokens, {"write", "story", "poem", "script", "rewrite", "tone", "creative", "email", "proposal"}):
             kind, reason, confidence = CapabilityKind.CREATIVE_TEXT, "Request is primarily creative or style-oriented text generation.", 0.64

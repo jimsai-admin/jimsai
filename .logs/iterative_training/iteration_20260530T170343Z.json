@@ -1,0 +1,175 @@
+{
+  "correction_candidates": [
+    {
+      "content": "Evaluation case energy_efficiency_memory failed for prompt: How does adaptive transformer thinning reduce repeated inference cost?. Observed capability memory_chat; target IR WORKSPACE_QUERY; confidence 0.50; sources 3; gaps 0. Failures: missing phrase: T1; missing phrase: T2. This record is a correction candidate and requires human review before promotion.",
+      "domain_hint": "iterative_failure_correction",
+      "expected_focus": [
+        "evaluation_failure",
+        "human_review_required"
+      ],
+      "source_trust": 0.72
+    }
+  ],
+  "created_at": "20260530T170343Z",
+  "eval_failed": 1,
+  "eval_passed": 4,
+  "eval_total": 5,
+  "ingested": [
+    {
+      "confidence": 0.94,
+      "domain_hint": "frontier_memory_chat",
+      "signature_id": "sig_d00386c5848e03e3",
+      "sppe_accepted": true,
+      "world_model_candidates": 2
+    },
+    {
+      "confidence": 0.93,
+      "domain_hint": "frontier_code_generation",
+      "signature_id": "sig_34f46d77d4dfdc8e",
+      "sppe_accepted": true,
+      "world_model_candidates": 3
+    },
+    {
+      "confidence": 0.92,
+      "domain_hint": "frontier_reasoning_science",
+      "signature_id": "sig_f36d644e30219dec",
+      "sppe_accepted": true,
+      "world_model_candidates": 2
+    },
+    {
+      "confidence": 0.91,
+      "domain_hint": "frontier_business_education",
+      "signature_id": "sig_f6fe6135b0275b61",
+      "sppe_accepted": true,
+      "world_model_candidates": 2
+    },
+    {
+      "confidence": 0.9,
+      "domain_hint": "frontier_media_generation",
+      "signature_id": "sig_d522d49afbec8491",
+      "sppe_accepted": true,
+      "world_model_candidates": 1
+    },
+    {
+      "confidence": 0.9,
+      "domain_hint": "frontier_agentic_tasks",
+      "signature_id": "sig_56c2a7f21c68e517",
+      "sppe_accepted": true,
+      "world_model_candidates": 3
+    },
+    {
+      "confidence": 0.9,
+      "domain_hint": "frontier_energy_efficiency",
+      "signature_id": "sig_92a9cf2825d56cf9",
+      "sppe_accepted": true,
+      "world_model_candidates": 3
+    },
+    {
+      "confidence": 0.92,
+      "domain_hint": "live_project_documentation",
+      "signature_id": "sig_cd5b63d3b7b8d070",
+      "sppe_accepted": true,
+      "world_model_candidates": 0
+    },
+    {
+      "confidence": 0.9,
+      "domain_hint": "live_project_documentation",
+      "signature_id": "sig_8572b9119dd693aa",
+      "sppe_accepted": true,
+      "world_model_candidates": 0
+    },
+    {
+      "confidence": 0.89,
+      "domain_hint": "live_project_documentation",
+      "signature_id": "sig_134d97201b980f26",
+      "sppe_accepted": true,
+      "world_model_candidates": 1
+    },
+    {
+      "confidence": 0.8,
+      "domain_hint": "live_project_documentation",
+      "signature_id": "sig_8ae1e6fee559471f",
+      "sppe_accepted": true,
+      "world_model_candidates": 0
+    },
+    {
+      "confidence": 0.92,
+      "domain_hint": "live_project_documentation",
+      "signature_id": "sig_d68012a1d7e9c0f2",
+      "sppe_accepted": true,
+      "world_model_candidates": 1
+    }
+  ],
+  "ingested_count": 12,
+  "outcomes": [
+    {
+      "capability": "memory_chat",
+      "confidence": 0.582,
+      "failures": [],
+      "gaps": 0,
+      "id": "memory_profile",
+      "passed": true,
+      "prompt": "What do you know about how JIMS-AI should answer users?",
+      "response": "Here's what I can verify from memory:\nScoped user signatures cause personalized answers with source traces. MemoryChat depends on scoped user signatures. Low source confidence causes explicit gaps and human review.\n\n- Scoped user signatures cause personalized answers with source traces.\n- MemoryChat depends on scoped user signatures.\n- Low source confidence causes explicit gaps and human review.\n- A fluent answer is a grounded CSSE rendering with visible confidence and no unsupported claims.\n- Sandbox execution causes verified result signatures.\n- Project memory causes context-aware patches.\n\nConfidence: 0.58\n\nSource signatures:\n- sig_34f46d77d4dfdc8e\n- sig_d00386c5848e03e3",
+      "sources": 2,
+      "target_ir": "WORKSPACE_QUERY",
+      "used_groq": false
+    },
+    {
+      "capability": "coding",
+      "confidence": 0.4225,
+      "failures": [],
+      "gaps": 1,
+      "id": "code_generation_route",
+      "passed": true,
+      "prompt": "Write a Python function and tests for a retry wrapper.",
+      "response": "Here's what I can verify from memory:\nFailed tests cause correction loops instead of confident code claims. CodeGeneration depends on project memory, package documentation, sandbox execution, and tests. MemoryChat depends on scoped user signatures.\n\n- Failed tests cause correction loops instead of confident code claims.\n- CodeGeneration depends on project memory, package documentation, sandbox execution, and tests.\n- MemoryChat depends on scoped user signatures.\n\nExplicit gaps:\n- Capability coding needs adapter(s) code_docs,test_runner,package_metadata; status=unavailable.\n\nConfidence: 0.42\n\nSource signatures:\n- sig_34f46d77d4dfdc8e\n- sig_d00386c5848e03e3",
+      "sources": 2,
+      "target_ir": "CODE_GENERATE",
+      "used_groq": false
+    },
+    {
+      "capability": "image_generation",
+      "confidence": 0.505,
+      "failures": [],
+      "gaps": 1,
+      "id": "media_generation_route",
+      "passed": true,
+      "prompt": "Generate an image prompt for a solar powered bakery dashboard.",
+      "response": "Here's what I can verify from memory:\nImageGenerationPrompt depends on scene graph, style constraints, safety policy, and asset provenance. VideoGenerationPrompt depends on storyboard, shot list, motion constraints, and human approval. AudioGenerationPrompt depends on voice rights, script structure, and pronunciation notes.\n\n- ImageGenerationPrompt depends on scene graph, style constraints, safety policy, and asset provenance.\n- VideoGenerationPrompt depends on storyboard, shot list, motion constraints, and human approval.\n- AudioGenerationPrompt depends on voice rights, script structure, and pronunciation notes.\n- MemoryChat depends on scoped user signatures.\n\nExplicit gaps:\n- Capability image_generation needs adapter(s) image_generation; status=unavailable.\n\nConfidence: 0.51\n\nSource signatures:\n- sig_d00386c5848e03e3\n- sig_d522d49afbec8491",
+      "sources": 2,
+      "target_ir": "WORKSPACE_QUERY",
+      "used_groq": false
+    },
+    {
+      "capability": "agentic_task",
+      "confidence": 0.5035,
+      "failures": [],
+      "gaps": 1,
+      "id": "agentic_safety_route",
+      "passed": true,
+      "prompt": "Schedule an automated deployment task with rollback checks.",
+      "response": "Here's what I can verify from memory:\nScientificReasoning depends on source retrieval, calculation traces, and constraint checks. MemoryChat depends on scoped user signatures.\n\n- ScientificReasoning depends on source retrieval, calculation traces, and constraint checks.\n- MemoryChat depends on scoped user signatures.\n\nExplicit gaps:\n- Capability agentic_task needs adapter(s) tool_registry,browser,api_executor,job_queue; status=blocked.\n\nConfidence: 0.50\n\nSource signatures:\n- sig_d00386c5848e03e3\n- sig_f36d644e30219dec",
+      "sources": 2,
+      "target_ir": "WORKSPACE_QUERY",
+      "used_groq": false
+    },
+    {
+      "capability": "memory_chat",
+      "confidence": 0.4964,
+      "failures": [
+        "missing phrase: T1",
+        "missing phrase: T2"
+      ],
+      "gaps": 0,
+      "id": "energy_efficiency_memory",
+      "passed": false,
+      "prompt": "How does adaptive transformer thinning reduce repeated inference cost?",
+      "response": "Here's what I can verify from memory:\nMisconception tracking causes adaptive explanations. EducationTutoring depends on learner memory, examples, and misconception tracking. BusinessPlanning depends on workspace goals, market assumptions, and risk constraints.\n\n- Misconception tracking causes adaptive explanations.\n- EducationTutoring depends on learner memory, examples, and misconception tracking.\n- BusinessPlanning depends on workspace goals, market assumptions, and risk constraints.\n- MemoryChat depends on scoped user signatures.\n- Low source confidence causes explicit gaps and human review.\n- Schedule an automated deployment task with rollback checks.\n\nConfidence: 0.50\n\nSource signatures:\n- sig_a8fed93e74b63a3b\n- sig_d00386c5848e03e3\n- sig_f6fe6135b0275b61",
+      "sources": 3,
+      "target_ir": "WORKSPACE_QUERY",
+      "used_groq": false
+    }
+  ],
+  "production_write": true
+}

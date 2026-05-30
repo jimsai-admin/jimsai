@@ -25,6 +25,7 @@ def training_records() -> list[FrontierTrainingRecord]:
             source_trust=0.94,
             content=(
                 "MemoryChat depends on scoped user signatures. "
+                "JIMS-AI should answer users with grounded CSSE rendering, visible confidence, source traces, and no unsupported claims. "
                 "Scoped user signatures cause personalized answers with source traces. "
                 "Low source confidence causes explicit gaps and human review. "
                 "A fluent answer is a grounded CSSE rendering with visible confidence and no unsupported claims."
@@ -69,7 +70,7 @@ def training_records() -> list[FrontierTrainingRecord]:
             source_trust=0.9,
             content=(
                 "ImageGenerationPrompt depends on scene graph, style constraints, safety policy, and asset provenance. "
-                "AudioGenerationPrompt depends on voice rights, script structure, and pronunciation notes. "
+                "AudioGenerationPrompt depends on voice rights, script structure, pronunciation notes, and asset provenance. "
                 "VideoGenerationPrompt depends on storyboard, shot list, motion constraints, and human approval. "
                 "Human approval causes safe execution for risky media generation."
             ),
