@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import json
 import os
+import re
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -16,6 +17,7 @@ except ImportError:  # pragma: no cover - optional local convenience
 
 from prototype.jimsai.models import Modality, PipelineRequest, TrainingIngestRequest
 from prototype.jimsai.pipeline import JimsAIPipeline
+from prototype.jimsai.semantic_compiler import SemanticCompilerRuntime
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -71,6 +73,112 @@ class EvalOutcome:
     target_ir: str
     capability: str | None
     used_groq: bool
+
+
+@dataclass(frozen=True)
+class LanguageVariant:
+    kind: str
+    text: str
+    source: str = "deterministic"
+
+
+LANGUAGE_VARIANT_KINDS = (
+    "formal_english",
+    "casual_english",
+    "slang",
+    "misspelled",
+    "ocr_corrupted",
+    "shortened_form",
+    "voice_transcription_error",
+    "mixed_language",
+    "pidgin",
+    "regional_dialect",
+)
+
+DETERMINISTIC_VARIANT_KINDS = {
+    "formal_english",
+    "casual_english",
+    "slang",
+    "misspelled",
+    "ocr_corrupted",
+    "shortened_form",
+}
+
+
+def language_variants(text: str, corpus_variants: dict[str, list[str]] | None = None) -> list[LanguageVariant]:
+    normalized = recompact(text)
+    corpus_variants = corpus_variants or {}
+    variants = [
+        LanguageVariant("formal_english", normalized),
+        LanguageVariant("casual_english", casual_variant(normalized)),
+        LanguageVariant("slang", abbreviation_variant(normalized)),
+        LanguageVariant("misspelled", typo_variant(normalized)),
+        LanguageVariant("ocr_corrupted", ocr_variant(normalized)),
+        LanguageVariant("shortened_form", shortened_variant(normalized)),
+    ]
+    for kind in sorted(set(LANGUAGE_VARIANT_KINDS) - DETERMINISTIC_VARIANT_KINDS):
+        for variant in corpus_variants.get(kind, []):
+            cleaned = recompact(variant)
+            if cleaned:
+                variants.append(LanguageVariant(kind, cleaned, source="corpus"))
+    return variants
+
+
+def recompact(text: str) -> str:
+    return " ".join(str(text or "").strip().split())
+
+
+def casual_variant(text: str) -> str:
+    return recompact(re.sub(r"[?!]+$", "", text.lower()))
+
+
+def abbreviation_variant(text: str) -> str:
+    words = text.split()
+    output: list[str] = []
+    abbreviated = 0
+    for word in words:
+        bare = word.strip(".,?!;:")
+        if abbreviated < 3 and len(bare) >= 5 and bare.isalpha():
+            output.append(re.sub(r"(?i)[aeiou]", "", bare) or bare)
+            abbreviated += 1
+        else:
+            output.append(word)
+    return recompact(" ".join(output))
+
+
+def typo_variant(text: str) -> str:
+    words = text.split()
+    output: list[str] = []
+    changed = 0
+    for word in words:
+        bare = word.strip(".,?!;:")
+        if changed < 2 and len(bare) >= 6 and bare.isalpha():
+            middle = len(bare) // 2
+            output.append(bare[:middle] + bare[middle + 1 :])
+            changed += 1
+        else:
+            output.append(word)
+    return recompact(" ".join(output))
+
+
+def ocr_variant(text: str) -> str:
+    table = str.maketrans({"o": "0", "O": "0", "l": "1", "I": "1", "i": "1"})
+    words = text.split()
+    output: list[str] = []
+    changed = 0
+    for word in words:
+        if changed < 2 and any(char in word for char in "oOlIiI"):
+            output.append(word.translate(table))
+            changed += 1
+        else:
+            output.append(word)
+    return recompact(" ".join(output))
+
+
+def shortened_variant(text: str) -> str:
+    drop = {"a", "an", "the", "do", "does", "should", "can", "please"}
+    words = [word for word in text.split() if word.strip(".,?!").lower() not in drop]
+    return recompact(" ".join(words)) or text
 
 
 def load_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -299,11 +407,91 @@ def provider_usage_analysis(outcomes: list[EvalOutcome]) -> dict[str, Any]:
     }
 
 
+def intent_signature(compiler: SemanticCompilerRuntime, prompt: str) -> dict[str, Any]:
+    ir = compiler.compile(prompt)
+    question_intent = ir.scope_constraints.get("question_intent", {})
+    relation = question_intent.get("relation") if isinstance(question_intent, dict) else None
+    direction = question_intent.get("direction") if isinstance(question_intent, dict) else None
+    return {
+        "target_ir": ir.target_ir,
+        "capability_hint": ir.scope_constraints.get("v9_capability_hint"),
+        "relation": relation,
+        "direction": direction,
+        "profile_query": bool(ir.scope_constraints.get("profile_query")),
+    }
+
+
+def intent_stability_analysis(compiler: SemanticCompilerRuntime, prompts: list[EvalPrompt]) -> dict[str, Any]:
+    total = 0
+    stable = 0
+    by_kind = {kind: {"stable": 0, "total": 0} for kind in LANGUAGE_VARIANT_KINDS}
+    failures: list[dict[str, Any]] = []
+    for prompt in prompts:
+        baseline = intent_signature(compiler, prompt.prompt)
+        for variant in language_variants(prompt.prompt):
+            observed = intent_signature(compiler, variant.text)
+            total += 1
+            by_kind.setdefault(variant.kind, {"stable": 0, "total": 0})
+            by_kind[variant.kind]["total"] += 1
+            if observed == baseline:
+                stable += 1
+                by_kind[variant.kind]["stable"] += 1
+                continue
+            failures.append(
+                {
+                    "id": prompt.id,
+                    "kind": variant.kind,
+                    "prompt": variant.text,
+                    "expected": baseline,
+                    "observed": observed,
+                }
+            )
+    available_kinds = {kind for kind, counts in by_kind.items() if counts["total"] > 0}
+    missing_kinds = [kind for kind in LANGUAGE_VARIANT_KINDS if kind not in available_kinds]
+    return {
+        "target_score": 0.95,
+        "intent_stability_score": round(stable / total, 4) if total else 0.0,
+        "stable": stable,
+        "total": total,
+        "variant_kind_coverage": round(len(available_kinds) / len(LANGUAGE_VARIANT_KINDS), 4),
+        "available_variant_kinds": sorted(available_kinds),
+        "missing_variant_kinds": missing_kinds,
+        "by_kind": {
+            kind: {
+                **counts,
+                "score": round(counts["stable"] / counts["total"], 4) if counts["total"] else 0.0,
+            }
+            for kind, counts in by_kind.items()
+        },
+        "failures": failures[:50],
+        "failure_count": len(failures),
+    }
+
+
+def training_variant_summary(records: list[TrainingRecord]) -> dict[str, Any]:
+    by_kind = {kind: 0 for kind in LANGUAGE_VARIANT_KINDS}
+    for record in records:
+        for variant in language_variants(record.content):
+            by_kind[variant.kind] = by_kind.get(variant.kind, 0) + 1
+    return {
+        "record_count": len(records),
+        "variant_kinds": list(LANGUAGE_VARIANT_KINDS),
+        "deterministic_variant_kinds": sorted(DETERMINISTIC_VARIANT_KINDS),
+        "corpus_required_variant_kinds": sorted(set(LANGUAGE_VARIANT_KINDS) - DETERMINISTIC_VARIANT_KINDS),
+        "generated_total": sum(by_kind.values()),
+        "by_kind": by_kind,
+        "ingested_as_training": False,
+        "reason": "Deterministic variants cover language-agnostic perturbations; dialect and multilingual variants require corpus or provider-assisted generation before promotion.",
+    }
+
+
 def write_report(
     report_dir: Path,
     ingested: list[dict[str, Any]],
     outcomes: list[EvalOutcome],
     candidates: list[dict[str, Any]],
+    language_analysis: dict[str, Any],
+    training_variants: dict[str, Any],
     production_write: bool,
 ) -> Path:
     report_dir.mkdir(parents=True, exist_ok=True)
@@ -321,6 +509,8 @@ def write_report(
         "outcomes": [asdict(outcome) for outcome in outcomes],
         "correction_candidates": candidates,
         "provider_usage_analysis": provider_usage_analysis(outcomes),
+        "language_variant_analysis": language_analysis,
+        "training_variant_summary": training_variants,
     }
     report_path.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
     if candidates:
@@ -381,7 +571,9 @@ async def run_iteration(args: argparse.Namespace) -> int:
     prompts = eval_prompts(Path(args.eval_data))
     outcomes = await run_eval(pipeline, prompts, args.user_id, args.workspace_id)
     candidates = correction_candidates(outcomes)
-    report_path = write_report(Path(args.report_dir), ingested, outcomes, candidates, production_write)
+    language_analysis = intent_stability_analysis(pipeline.compiler, prompts)
+    training_variants = training_variant_summary(records)
+    report_path = write_report(Path(args.report_dir), ingested, outcomes, candidates, language_analysis, training_variants, production_write)
 
     passed = sum(1 for outcome in outcomes if outcome.passed)
     print(f"ingested={len(ingested)} production_write={production_write}")
@@ -393,6 +585,13 @@ async def run_iteration(args: argparse.Namespace) -> int:
         f"{usage['provider_model_calls']}/{usage['eval_total']} "
         f"rate={usage['provider_model_call_rate']}"
     )
+    print(
+        "intent_stability_score="
+        f"{language_analysis['intent_stability_score']} "
+        f"stable={language_analysis['stable']}/{language_analysis['total']} "
+        f"coverage={language_analysis['variant_kind_coverage']}"
+    )
+    print(f"training_variants_generated={training_variants['generated_total']}")
     print(f"report={report_path}")
     if candidates:
         print("failed_cases=" + ",".join(outcome.id for outcome in outcomes if not outcome.passed))

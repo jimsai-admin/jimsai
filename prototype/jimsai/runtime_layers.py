@@ -62,6 +62,7 @@ DOCUMENT_FACT_PREDICATES = {
     "is_building",
 }
 USER_PROFILE_QUERY_TOKENS = {"i", "me", "my", "mine", "myself", "name", "profile", "know", "remember", "building"}
+IMPORTANT_SHORT_QUERY_TERMS = {"ai", "ui", "ux", "db", "t1", "t2", "r2"}
 
 
 def _layer(layer: str, activated: bool, summary: str, data: dict[str, Any] | None = None, deterministic: bool = True) -> LayerResult:
@@ -578,7 +579,11 @@ class ReasoningBridgeLayer:
         )
 
     def _memory_excerpt_steps(self, ir: SemanticIR, retrieved: list[RetrievalResult]) -> list[ReasoningStep]:
-        query_terms = {token.lower().strip(".,:;!?") for token in ir.tokens if len(token.strip(".,:;!?")) >= 3}
+        query_terms = {
+            token.lower().strip(".,:;!?")
+            for token in ir.tokens
+            if len(token.strip(".,:;!?")) >= 3 or token.lower().strip(".,:;!?") in IMPORTANT_SHORT_QUERY_TERMS
+        }
         if "image" in query_terms and ({"memory", "reason", "reasoning", "save", "saving"} & query_terms):
             query_terms.update({"visible", "evidence", "inference", "gaps"})
         if {"transformer", "thinning"} & query_terms and {"inference", "cost", "reduce"} & query_terms:
@@ -674,7 +679,7 @@ class ReasoningBridgeLayer:
             if include_causal and (" causes " in lower or " depends on " in lower):
                 score = max(score, 1)
             if include_guidance:
-                score = max(score, self._guidance_sentence_score(lower, query_terms))
+                score += self._guidance_sentence_score(lower, query_terms)
             if score:
                 scored.append((score, -index, sentence[:320]))
         if not scored:
@@ -703,28 +708,21 @@ class ReasoningBridgeLayer:
             for marker in ("grounded", "csse", "source trace", "source grounding", "unsupported claim", "unsupported claims")
         ):
             return 4
-        if query_terms & {"caught", "emergency", "rip", "safety"} and any(
-            marker in lower_sentence
-            for marker in ("safer ", "stay calm", "float", "parallel", "shore")
-        ):
-            return 3
         guidance_markers = (
             " should ",
+            " should not ",
+            " must ",
             " requires ",
             " require ",
+            " depends on ",
+            " do not ",
+            " avoid ",
+            " check ",
+            " verify ",
+            " risk",
+            " risks",
             " safer ",
-            " stay calm",
-            " float",
-            " parallel",
-            " shore",
-            " clinician",
-            " diagnosis",
-            " treatment",
-            " private data",
             " secrets",
-            " assumptions",
-            " compliance",
-            " cash flow",
             " human approval",
             " provenance",
         )

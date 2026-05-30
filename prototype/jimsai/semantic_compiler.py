@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import re
+import unicodedata
 from collections import Counter
 from typing import Any
 
@@ -53,7 +54,7 @@ PROFILE_QUERY_PATTERNS = (
     r"\btell\s+me\s+about\s+me\b",
     r"\bmy\s+profile\b",
 )
-GENERATION_ACTION_TOKENS = {"write", "create", "build", "generate", "make", "draw", "produce", "implement", "scaffold"}
+GENERATION_ACTION_TOKENS = {"write", "create", "build", "generate", "make", "draw", "produce", "implement", "scaffold", "want"}
 CODE_CAPABILITY_TOKENS = {
     "api",
     "bug",
@@ -92,7 +93,7 @@ AGENTIC_CAPABILITY_TOKENS = {
     "send",
     "task",
 }
-JIMS_ARCHITECTURE_TOKENS = {
+ARCHITECTURE_TOKENS = {
     "adaptive",
     "architecture",
     "answer",
@@ -100,8 +101,6 @@ JIMS_ARCHITECTURE_TOKENS = {
     "csse",
     "energy",
     "inference",
-    "jims-ai",
-    "jimsai",
     "memory",
     "retrieval",
     "sppe",
@@ -152,14 +151,14 @@ PUBLIC_MEMORY_QUERY_TOKENS = {
 }
 
 INTENT_TEMPLATES: dict[str, str] = {
-    "FETCH_DOCUMENT": "pull layout document manifest file pdf page download view open retrieve",
+    "FETCH_DOCUMENT": "pull layout document manifest file pdf page download view open retrieve upload attach",
     "SYSTEM_DIAGNOSTIC": "error broken status crash failure bug log deployment timeout diagnostic",
     "WORKSPACE_QUERY": "metrics analysis progress overview stats tracking services dependencies affected happen impact change downstream upstream cause late delay why means meaning title company case study objectives modules scope technologies used tools",
     "CODE_GENERATE": "create build scaffold generate api route function class code implementation",
     "RUN_CANVAS": "analyse analyze deep scan full codebase corpus dataset synthesis everything uploaded",
     "RUN_INVENTION": "invent design novel architecture theorem hypothesis protocol plan new solution",
     "GENERAL_FACT": "what explain define describe capital concept general knowledge means meaning title company case study objectives modules technologies",
-    "EMOTIONAL_CATCH": "stressed overwhelmed anxious confused giving up frustrated hard worried",
+    "EMOTIONAL_CATCH": "stressed overwhelmed anxious confused giving up frustrated hard worried help greeting hello hi",
     "META_INQUIRY": "why answer confidence memory trace sources reasoning gaps explain yourself",
 }
 
@@ -169,18 +168,149 @@ INTENT_DOMAINS: dict[str, IntentDomain] = {
     "META_INQUIRY": IntentDomain.META_SYSTEM,
 }
 
+TOKEN_RE = re.compile(r"[a-z0-9_+\-.#]+")
+CHAR_CONFUSABLES = str.maketrans(
+    {
+        "0": "o",
+        "1": "l",
+        "3": "e",
+        "4": "a",
+        "5": "s",
+        "7": "t",
+        "8": "b",
+    }
+)
+QUESTION_TOKENS = {word.lower() for word in QUESTION_WORDS}
+CONTROL_TOKENS = {"if"}
+
 
 def _stem(token: str) -> str:
+    if token in STOP_WORDS or token in QUESTION_TOKENS or token in CONTROL_TOKENS:
+        return token
     for suffix in ("ing", "ingly", "edly", "ed", "es", "s"):
         if len(token) > len(suffix) + 3 and token.endswith(suffix):
             return token[: -len(suffix)]
     return token
 
 
+def normalize_language(raw: str) -> str:
+    normalized = unicodedata.normalize("NFKC", str(raw or ""))
+    normalized = normalized.translate(CHAR_CONFUSABLES)
+    normalized = re.sub(r"([A-Za-z])\1{2,}", r"\1\1", normalized)
+    return re.sub(r"\s+", " ", normalized).strip()
+
+
 def sanitize(raw: str) -> list[str]:
-    cleaned = re.sub(r"[^A-Za-z0-9_\-.\s]", " ", raw.lower())
-    tokens = [_stem(t) for t in cleaned.split() if t and t not in STOP_WORDS]
+    surface_tokens = canonical_terms(raw, keep_stop=True)
+    vocabulary = _semantic_vocabulary()
+    tokens = [token for token in surface_tokens if token not in STOP_WORDS and len(token) > 1]
+    known_tokens = [token for token in tokens if token in vocabulary]
+    if not known_tokens and _looks_like_short_conversation(surface_tokens):
+        return ["greet"]
     return tokens
+
+
+def canonical_terms(raw: str, keep_stop: bool = False) -> list[str]:
+    return [
+        token
+        for token in (_canonical_token(token) for token in _basic_tokens(raw))
+        if token and (keep_stop or token not in STOP_WORDS)
+    ]
+
+
+def _basic_tokens(raw: str) -> list[str]:
+    normalized = normalize_language(raw).lower()
+    return [_stem(match.group(0).strip("._-")) for match in TOKEN_RE.finditer(normalized) if match.group(0).strip("._-")]
+
+
+def _canonical_token(token: str) -> str:
+    if not token:
+        return ""
+    vocabulary = _semantic_vocabulary()
+    if token in vocabulary or len(token) <= 1:
+        return token
+    collapsed = re.sub(r"([a-z])\1+", r"\1", token)
+    if collapsed in vocabulary:
+        return collapsed
+    best = token
+    best_score = 0.0
+    for candidate in vocabulary:
+        score = _token_similarity(token, candidate)
+        if score > best_score:
+            best = candidate
+            best_score = score
+    threshold = 0.84 if len(token) <= 3 else 0.72
+    return best if best_score >= threshold else token
+
+
+def _semantic_vocabulary() -> set[str]:
+    raw_terms: set[str] = set(STOP_WORDS) | QUESTION_TOKENS | CONTROL_TOKENS
+    raw_terms.update(IMPACT_TOKENS)
+    for values in (
+        GENERATION_ACTION_TOKENS,
+        CODE_CAPABILITY_TOKENS,
+        CODE_DESIGN_TOKENS,
+        IMAGE_CAPABILITY_TOKENS,
+        VIDEO_CAPABILITY_TOKENS,
+        AUDIO_CAPABILITY_TOKENS,
+        CREATIVE_CAPABILITY_TOKENS,
+        AGENTIC_CAPABILITY_TOKENS,
+        ARCHITECTURE_TOKENS,
+        PUBLIC_MEMORY_QUERY_TOKENS,
+    ):
+        raw_terms.update(values)
+    for template in INTENT_TEMPLATES.values():
+        raw_terms.update(_basic_tokens_without_canonicalization(template))
+    return {_stem(term.lower()) for term in raw_terms if term}
+
+
+def _basic_tokens_without_canonicalization(raw: str) -> list[str]:
+    normalized = unicodedata.normalize("NFKC", str(raw or "")).translate(CHAR_CONFUSABLES).lower()
+    return [_stem(match.group(0).strip("._-")) for match in TOKEN_RE.finditer(normalized) if match.group(0).strip("._-")]
+
+
+def _token_similarity(left: str, right: str) -> float:
+    if left == right:
+        return 1.0
+    if len(left) >= 3 and right.startswith(left):
+        return 0.86
+    if len(right) >= 3 and left.startswith(right):
+        return 0.78
+    if _consonant_skeleton(left) and _consonant_skeleton(left) == _consonant_skeleton(right):
+        return 0.88
+    distance = _edit_distance(left, right)
+    edit_score = 1.0 - distance / max(len(left), len(right), 1)
+    ngram_score = _ngram_jaccard(left, right)
+    return max(edit_score, ngram_score)
+
+
+def _consonant_skeleton(token: str) -> str:
+    return re.sub(r"[aeiou]+", "", token)
+
+
+def _edit_distance(left: str, right: str) -> int:
+    if left == right:
+        return 0
+    previous = list(range(len(right) + 1))
+    for row, left_char in enumerate(left, start=1):
+        current = [row]
+        for col, right_char in enumerate(right, start=1):
+            cost = 0 if left_char == right_char else 1
+            current.append(min(current[-1] + 1, previous[col] + 1, previous[col - 1] + cost))
+        previous = current
+    return previous[-1]
+
+
+def _ngram_jaccard(left: str, right: str, size: int = 2) -> float:
+    if len(left) < size or len(right) < size:
+        return 0.0
+    left_ngrams = {left[index : index + size] for index in range(len(left) - size + 1)}
+    right_ngrams = {right[index : index + size] for index in range(len(right) - size + 1)}
+    return len(left_ngrams & right_ngrams) / max(len(left_ngrams | right_ngrams), 1)
+
+
+def _looks_like_short_conversation(surface_tokens: list[str]) -> bool:
+    return len(surface_tokens) <= 4 and bool(set(surface_tokens) & QUESTION_TOKENS)
 
 
 def _vectorize(tokens: list[str]) -> Counter[str]:
@@ -228,6 +358,8 @@ class SemanticCompilerRuntime:
 
     def _scope_from_tokens(self, tokens: list[str], raw_input: str) -> dict[str, Any]:
         scope: dict[str, Any] = {"raw_length": len(raw_input), "token_count": len(tokens)}
+        surface_tokens = canonical_terms(raw_input, keep_stop=True)
+        surface_set = set(surface_tokens)
         for token in tokens:
             if re.fullmatch(r"\d+", token):
                 scope.setdefault("numbers", []).append(int(token))
@@ -250,9 +382,10 @@ class SemanticCompilerRuntime:
             camel_entities.extend(f"{entity}_change" for entity in list(camel_entities) if "." in entity)
         raw_lower = raw_input.lower()
         question_intent: dict[str, str] = {}
-        if re.search(r"\bwhat\s+(happens?|breaks?|is\s+affected)\s+if\b", raw_lower) or re.search(r"\bif\b.*\b(occurs?|changes?|fails?|breaks?)\b", raw_lower):
+        impact_surface = bool(surface_set & IMPACT_TOKENS)
+        if ("if" in surface_set and impact_surface) or re.search(r"\bwhat\s+(happens?|breaks?|is\s+affected)\s+if\b", raw_lower):
             question_intent = {"kind": "causal_impact", "relation": "causes", "direction": "outgoing"}
-        elif raw_lower.startswith("why "):
+        elif "why" in surface_tokens[:3]:
             question_intent = {"kind": "causal_explanation", "relation": "causes", "direction": "incoming"}
         elif re.search(r"\bwhat\s+(does|do)\b.*\bdepend\s+on\b", raw_lower):
             question_intent = {"kind": "dependency_upstream", "relation": "depends_on", "direction": "outgoing"}
@@ -305,21 +438,22 @@ class SemanticCompilerRuntime:
             return "WORKSPACE_QUERY", 0.24, "creative_text"
         if token_set & AGENTIC_CAPABILITY_TOKENS:
             return "WORKSPACE_QUERY", 0.28, "agentic_task"
-        if len(token_set & JIMS_ARCHITECTURE_TOKENS) >= 2:
-            return "WORKSPACE_QUERY", 0.28, "jims_architecture"
+        if len(token_set & ARCHITECTURE_TOKENS) >= 2:
+            return "WORKSPACE_QUERY", 0.28, "system_architecture"
         if len(token_set & PUBLIC_MEMORY_QUERY_TOKENS) >= 2:
             return "WORKSPACE_QUERY", 0.28, "public_memory"
         return None
 
     def compile(self, raw_input: str, namespace: str = "TECHNICAL", session: dict[str, Any] | None = None) -> SemanticIR:
         session = session or {}
+        normalized_input = normalize_language(raw_input)
         tokens = sanitize(raw_input)
         hypotheses = self.resolve_hypotheses(self.score_intents(tokens))
         primary = hypotheses[0]
         target_ir = primary.target_ir
         confidence = primary.score
-        scope = self._scope_from_tokens(tokens, raw_input)
-        raw_lower = raw_input.lower()
+        scope = self._scope_from_tokens(tokens, normalized_input)
+        raw_lower = normalized_input.lower()
         causal_question = raw_lower.startswith("why ") and scope.get("entities")
         if scope.get("question_intent"):
             target_ir = "WORKSPACE_QUERY"
@@ -330,7 +464,7 @@ class SemanticCompilerRuntime:
         if scope.get("entities") and ((set(tokens) & IMPACT_TOKENS) or causal_question or scope.get("question_intent")):
             target_ir = "WORKSPACE_QUERY"
             confidence = max(confidence, 0.22)
-        v9_override = self._v9_capability_override(tokens, raw_input)
+        v9_override = self._v9_capability_override(tokens, normalized_input)
         if v9_override:
             target_ir, override_confidence, capability_hint = v9_override
             confidence = max(confidence, override_confidence)

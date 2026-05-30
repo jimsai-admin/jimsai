@@ -77,6 +77,12 @@ def test_encoder_extracts_clean_relations():
     assert ("UserModel.id_change", "causes", "AuthService.token_invalidation") in relations
 
 
+def test_persistent_hydration_uses_generic_lexical_terms_without_brand_boost():
+    terms = JimsAIPipeline()._lexical_query_terms("What do you know about how JIMS-AI should answer users?")
+    assert {"answer", "user"} <= terms
+    assert not ({"grounded", "csse", "source", "claims"} & terms)
+
+
 def test_encoder_extracts_user_profile_memory_with_sentence_case():
     signature = DualRepresentationEncoder().encode_text(
         "User profile: My name is Ajibew Irekanmi. I am a software engineer. I am building JIMS-AI."
@@ -674,3 +680,46 @@ async def test_guidance_queries_keep_action_sentences_from_retrieved_memory():
     assert "shore" in result.response
     assert "JavaScript code using fetch" not in result.response
     assert result.sources
+
+
+@pytest.mark.asyncio
+async def test_public_guidance_queries_keep_retrieved_key_terms():
+    pipeline = JimsAIPipeline()
+    records = [
+        (
+            "TrustworthyAI depends on governance, mapping risks, measuring risk, and managing risk. "
+            "AI risk management requires documented context, human oversight, reliability checks, privacy consideration, "
+            "safety analysis, security review, transparency, accountability, and bias monitoring."
+        ),
+        (
+            "PhishingScamDetection depends on checking sender identity, suspicious links, unexpected account warnings, "
+            "fake invoices, requests for personal information, and urgent payment pressure. "
+            "Suspicious messages should not be answered with private data."
+        ),
+        (
+            "CompoundInterest depends on principal, regular contributions, interest rate, compounding frequency, and time. "
+            "Finance answers require educational framing, assumptions, and no personalized investment recommendation without user-specific context."
+        ),
+        (
+            "BusinessOperations depends on cash flow management, legal compliance, customer records, hiring practices, "
+            "tax obligations, cybersecurity, and continuity planning. "
+            "BusinessPlanning answers should separate facts from assumptions, name risks, and propose next actions that can be verified."
+        ),
+    ]
+    for content in records:
+        await pipeline.ingest_training(
+            TrainingIngestRequest(user_id="test", content=content, source_trust=0.94, domain_hint="public_guidance")
+        )
+
+    cases = [
+        ("How should an AI team manage risk before deploying a new model?", ["governance", "risk"]),
+        ("How can I recognize a phishing scam text message?", ["links", "private data"]),
+        ("Explain compound interest in simple terms and name the assumptions.", ["principal", "assumptions"]),
+        ("What operational risks should a small business owner track?", ["cash flow", "compliance"]),
+    ]
+    for query, expected_phrases in cases:
+        result = await pipeline.run(PipelineRequest(user_id="test", query=query))
+        response = result.response.lower()
+        assert result.sources
+        for phrase in expected_phrases:
+            assert phrase in response

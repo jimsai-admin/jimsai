@@ -1,4 +1,16 @@
-from scripts.iterative_training_loop import EvalOutcome, correction_candidates, eval_prompts, provider_usage_analysis, training_records
+from pathlib import Path
+
+from prototype.jimsai.semantic_compiler import SemanticCompilerRuntime
+from scripts.iterative_training_loop import (
+    EvalOutcome,
+    correction_candidates,
+    eval_prompts,
+    intent_stability_analysis,
+    language_variants,
+    provider_usage_analysis,
+    training_records,
+    training_variant_summary,
+)
 
 
 def test_iterative_training_loop_loads_training_and_eval_jsonl(tmp_path):
@@ -85,3 +97,28 @@ def test_iterative_training_loop_summarizes_provider_usage():
     assert usage["provider_model_bypassed"] == 1
     assert usage["provider_model_call_rate"] == 0.5
     assert usage["by_capability"]["memory_chat"]["provider_model_bypassed"] == 1
+
+
+def test_language_variants_preserve_compiler_intent_for_public_prompts():
+    prompts = eval_prompts(Path("datasets/iterative_eval_prompts.jsonl"))
+    sample = [prompt for prompt in prompts if prompt.id in {"code_generation_route", "phishing_safety_public"}]
+
+    analysis = intent_stability_analysis(SemanticCompilerRuntime(), sample)
+
+    assert len(language_variants(sample[0].prompt)) == 6
+    assert analysis["intent_stability_score"] >= 0.95
+    assert analysis["variant_kind_coverage"] < 1.0
+    assert {"pidgin", "mixed_language", "regional_dialect"} <= set(analysis["missing_variant_kinds"])
+
+
+def test_training_variant_summary_does_not_duplicate_memory_claims(tmp_path):
+    training_path = tmp_path / "training.jsonl"
+    training_path.write_text('{"content":"How should I test Python code?","domain_hint":"demo"}\n', encoding="utf-8")
+    records = training_records([training_path])
+
+    summary = training_variant_summary(records)
+
+    assert summary["record_count"] == 1
+    assert summary["generated_total"] == 6
+    assert summary["ingested_as_training"] is False
+    assert "pidgin" in summary["corpus_required_variant_kinds"]

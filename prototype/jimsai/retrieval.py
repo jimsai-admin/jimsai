@@ -83,8 +83,6 @@ class MultiIndexRetrievalEngine:
         query_terms = {term for term in raw_query_terms if term not in RETRIEVAL_STOP_TERMS}
         if not query_terms:
             query_terms = raw_query_terms
-        if "answer" in query_terms and ({"user", "users", "jims-ai", "jimsai"} & query_terms):
-            query_terms.update({"grounded", "csse", "source", "claims"})
         query_phrases = self._query_phrases(query)
         question_intent = ir.scope_constraints.get("question_intent", {})
         relation_filter = str(question_intent.get("relation") or "") if isinstance(question_intent, dict) else ""
@@ -122,7 +120,7 @@ class MultiIndexRetrievalEngine:
                 matched_terms.update(tag_matches)
                 score += 0.18
                 reasons.append("abstraction_tag_index")
-            raw_excerpt = sig.raw_excerpt.lower()
+            raw_excerpt = self._content_excerpt(sig.raw_excerpt).lower()
             phrase_matches = {phrase for phrase in query_phrases if phrase in raw_excerpt}
             if phrase_matches:
                 matched_terms.update(term for phrase in phrase_matches for term in phrase.split())
@@ -215,6 +213,26 @@ class MultiIndexRetrievalEngine:
             for index in range(0, max(0, len(tokens) - size + 1)):
                 phrases.add(" ".join(tokens[index : index + size]))
         return phrases
+
+    def _content_excerpt(self, excerpt: str) -> str:
+        sentences = [
+            sentence.strip()
+            for sentence in re.split(r"(?<=[.!?])\s+", re.sub(r"\s+", " ", excerpt).strip())
+            if sentence.strip()
+        ]
+        content_sentences = [
+            sentence
+            for sentence in sentences
+            if not self._is_provenance_sentence(sentence.lower())
+        ]
+        return " ".join(content_sentences) if content_sentences else excerpt
+
+    def _is_provenance_sentence(self, lower_sentence: str) -> bool:
+        return (
+            lower_sentence.startswith("source url:")
+            or lower_sentence.startswith("source license:")
+            or "training text is local paraphrase" in lower_sentence
+        )
 
     def _passes_evidence_gate(
         self,

@@ -163,11 +163,7 @@ class JimsAIPipeline:
         recent = self.production.load_recent_signatures(limit=limit)
         if not recent:
             return []
-        query_terms = {
-            term
-            for term in re.findall(r"[a-z0-9_\-.]+", request.query.lower())
-            if len(term) >= 3 and term not in {"what", "how", "why", "the", "and", "for", "with"}
-        }
+        query_terms = self._lexical_query_terms(request.query)
         if not query_terms:
             return []
         scored = []
@@ -181,6 +177,19 @@ class JimsAIPipeline:
                 scored.append((score, signature.confidence.score, signature.created_at, signature))
         scored.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
         return [item[3] for item in scored[:8]]
+
+    def _lexical_query_terms(self, query: str) -> set[str]:
+        stop_terms = {"what", "how", "why", "the", "and", "for", "with", "about", "should"}
+        terms = {
+            term
+            for term in re.findall(r"[a-z0-9_\-.]+", query.lower())
+            if len(term) >= 3 and term not in stop_terms
+        }
+        expanded = set(terms)
+        for term in terms:
+            if len(term) > 4 and term.endswith("s"):
+                expanded.add(term[:-1])
+        return expanded
 
     def _lexical_signature_score(self, signature, query_terms: set[str]) -> int:
         haystack_parts = [
