@@ -1,0 +1,71 @@
+openapi: 3.1.0
+info:
+  title: JIMS-AI api-gateway
+  version: 0.1.0
+paths:
+  /health:
+    get:
+      summary: Service health
+      responses:
+        "200":
+          description: OK
+  /metrics:
+    get:
+      summary: Prometheus metrics
+      responses:
+        "200":
+          description: OK
+  /trace:
+    get:
+      summary: Trace policy
+      responses:
+        "200":
+          description: OK
+  /v1/training/ingest:
+    post:
+      summary: Ingest multimodal training content
+      responses:
+        "200":
+          description: Signature and training artifacts stored
+  /v1/training/panels/{panel}/items:
+    get:
+      summary: Cursor-paged stored data for a training panel
+      parameters:
+        - name: panel
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [ingestion, review, ambiguity, memory, world-model, pipeline, sessions, feedback]
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 25
+      responses:
+        "200":
+          description: Paged panel records
+  /v1/training/kaggle/run:
+    post:
+      summary: Submit a Kaggle GPU training experiment for encoder/reranker/world-model/SPPE improvement
+      responses:
+        "200":
+          description: Kaggle run prepared or submitted
+  /v1/training/kaggle/{run_id}/sync:
+    post:
+      summary: Check Kaggle run status and download completed artifacts
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Kaggle run status and artifact state

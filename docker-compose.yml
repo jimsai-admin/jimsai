@@ -1,0 +1,33 @@
+services:
+  api-gateway:
+    build:
+      context: .
+      dockerfile: services/api-gateway/Dockerfile
+    env_file: .env
+    environment:
+      SERVICE_NAME: api-gateway
+      JIMS_STORAGE_BACKEND: production
+      JIMS_STRICT_PROVIDER_STARTUP: "true"
+    ports:
+      - "8000:8000"
+
+  training-worker:
+    build:
+      context: .
+      dockerfile: services/training-pipeline/Dockerfile
+    env_file: .env
+    environment:
+      SERVICE_NAME: training-worker
+      JIMS_STORAGE_BACKEND: production
+      JIMS_STRICT_PROVIDER_STARTUP: "true"
+    command: ["celery", "-A", "prototype.jimsai.celery_runtime:celery_app", "worker", "--loglevel=INFO"]
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    env_file: .env
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api-gateway

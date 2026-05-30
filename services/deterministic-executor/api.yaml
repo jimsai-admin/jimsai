@@ -1,0 +1,23 @@
+openapi: 3.1.0
+info:
+  title: JIMS-AI deterministic-executor
+  version: 0.1.0
+paths:
+  /health:
+    get:
+      summary: Service health
+      responses:
+        "200":
+          description: OK
+  /metrics:
+    get:
+      summary: Prometheus metrics
+      responses:
+        "200":
+          description: OK
+  /trace:
+    get:
+      summary: Trace policy
+      responses:
+        "200":
+          description: OK

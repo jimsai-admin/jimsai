@@ -1,0 +1,10 @@
+runtime:
+  namespace: TECHNICAL
+  deterministic_core: true
+  simulation_time_budget_ms: 200
+compiler:
+  confidence_threshold: 0.18
+  hot_cache_ttl_seconds: 86400
+memory:
+  auto_accept_threshold: 0.90
+  soft_accept_threshold: 0.75

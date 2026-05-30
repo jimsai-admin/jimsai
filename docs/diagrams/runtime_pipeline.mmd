@@ -1,0 +1,33 @@
+sequenceDiagram
+  participant U as User
+  participant API as API Gateway
+  participant T1 as T1 Transformer Intent Interface
+  participant L1 as L1 Full Encoder
+  participant L2 as L2 Real-Time Learning
+  participant L3 as L3 Active Canvas
+  participant L4 as L4 Sparse Activation + Meta-Controller
+  participant L5 as L5 Invention Engine
+  participant L6 as L6 Multi-Index Retrieval
+  participant L7 as L7 Abstraction Engine
+  participant L8 as L8 Latent World Model
+  participant L9 as L9 Reasoning Bridge
+  participant T2 as T2 Transformer Render Interface
+  participant FB as Feedback
+
+  U->>API: POST /v1/query
+  API->>T1: interpret chaotic language to Semantic IR
+  T1-->>API: bounded IR + hypotheses
+  API->>L1: encode raw input to structured signature
+  API->>L2: integrate memory, indexes, SPPE, world-model candidates
+  API->>L3: activate one-shot Canvas when needed
+  API->>L4: route cognitive path
+  API->>L5: generate bounded invention candidates when novel
+  API->>L6: retrieve entity, semantic, temporal, causal, importance indexes
+  API->>L7: form abstractions and analogies
+  API->>L8: activate causal world-model rules
+  API->>L9: simulate, validate, resolve gaps, build VCO
+  API->>T2: render VCO to fluent language
+  T2-->>API: response + gaps + citations + trace
+  API-->>U: auditable response
+  U->>API: POST /v1/feedback
+  API->>FB: update importance, review queues, controller signals
