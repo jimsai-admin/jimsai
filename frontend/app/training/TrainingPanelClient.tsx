@@ -414,6 +414,31 @@ export default function TrainingPanelClient({ panelId }: { panelId: string }) {
     await refresh();
   }
 
+  async function scheduleKaggleRendererRun() {
+    const context = supabaseUserContext();
+    setStatus("Submitting Kaggle SPPE renderer run.");
+    try {
+      const response = await fetch(`${apiBase}/v1/training/kaggle/run`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders() },
+        body: JSON.stringify({
+          user_id: context.userId,
+          workspace_id: context.workspaceId,
+          task_type: "sppe_renderer_finetune",
+          title: "JIMS-AI SPPE renderer fine-tune",
+          notes: `domain:${domainHint}`,
+          gpu: true
+        })
+      });
+      if (!response.ok) throw new Error("kaggle run failed");
+      const data = (await response.json()) as KaggleRunResponse;
+      setStatus(`Kaggle ${data.status}: ${data.kernel_ref ?? data.local_path ?? data.run_id}`);
+    } catch {
+      setStatus("Kaggle renderer submission unavailable.");
+    }
+    await refresh();
+  }
+
   return (
     <main className="trainingPageShell">
       <aside className="panelNav" aria-label="Training panels">
@@ -482,6 +507,9 @@ export default function TrainingPanelClient({ panelId }: { panelId: string }) {
             <div className="buttonRow">
               <button className="iconTextButton" type="button" onClick={scheduleKaggleEncoderRun}>
                 <Cpu size={16} /> Kaggle Encoder
+              </button>
+              <button className="iconTextButton" type="button" onClick={scheduleKaggleRendererRun}>
+                <Cpu size={16} /> Kaggle Renderer
               </button>
             </div>
           </section>

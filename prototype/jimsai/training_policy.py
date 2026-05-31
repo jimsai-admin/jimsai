@@ -33,6 +33,7 @@ class AutoTrainingPolicy:
     def __init__(self) -> None:
         self.enabled = _env_bool("JIMS_AUTO_TRAINING_ENABLED", False)
         self.min_new_sppe_pairs = _env_int("JIMS_AUTO_TRAIN_MIN_SPPE_PAIRS", 25)
+        self.min_sppe_renderer_pairs = _env_int("JIMS_AUTO_TRAIN_MIN_SPPE_RENDER_PAIRS", 10_000)
         self.min_media_pending = _env_int("JIMS_AUTO_TRAIN_MIN_MEDIA_PENDING", 5)
         self.min_reviewed_pairs = _env_int("JIMS_AUTO_TRAIN_MIN_REVIEWED_PAIRS", 10)
         self.max_ambiguity_pending = _env_int("JIMS_AUTO_TRAIN_MAX_AMBIGUITY_PENDING", 200)
@@ -56,6 +57,7 @@ class AutoTrainingPolicy:
         counters: dict[str, int | float | bool] = {
             "sppe_pairs": len(training_history),
             "accepted_sppe_pairs": reviewed_pairs,
+            "sppe_renderer_pairs_threshold": self.min_sppe_renderer_pairs,
             "media_pending_encoder": media_pending,
             "world_model_review_pending": pending_reviews,
             "ambiguity_pending": len(ambiguity_queue),
@@ -84,6 +86,14 @@ class AutoTrainingPolicy:
                 should_schedule=self.enabled,
                 task_type="reranker_finetune",
                 reason="Retrieval miss count crossed the reranker training threshold.",
+                counters=counters,
+            )
+        if reviewed_pairs >= self.min_sppe_renderer_pairs:
+            return AutoTrainingDecision(
+                enabled=self.enabled,
+                should_schedule=self.enabled,
+                task_type="sppe_renderer_finetune",
+                reason="Enough accepted SPPE graph-to-text pairs are available for renderer fine-tuning.",
                 counters=counters,
             )
         if reviewed_pairs >= self.min_reviewed_pairs:

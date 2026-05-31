@@ -1,0 +1,41 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: JIMS-AI FastAPI gateway on AWS Lambda container image.
+
+Globals:
+  Function:
+    Timeout: 60
+    MemorySize: 2048
+    Environment:
+      Variables:
+        JIMS_STORAGE_BACKEND: production
+        JIMS_STRICT_PROVIDER_STARTUP: "true"
+        JIMS_AUTH_PROVIDER: supabase
+        JIMS_AUTH_REQUIRED: "true"
+
+Resources:
+  JimsAiApi:
+    Type: AWS::Serverless::Function
+    Metadata:
+      DockerContext: ../..
+      Dockerfile: services/api-gateway/Dockerfile.lambda
+    Properties:
+      PackageType: Image
+      Architectures:
+        - x86_64
+      Events:
+        Root:
+          Type: HttpApi
+          Properties:
+            Path: /
+            Method: ANY
+        Proxy:
+          Type: HttpApi
+          Properties:
+            Path: /{proxy+}
+            Method: ANY
+
+Outputs:
+  ApiUrl:
+    Description: Public HTTP API URL for NEXT_PUBLIC_API_BASE_URL and CORS_ORIGINS.
+    Value: !Sub "https://${ServerlessHttpApi}.execute-api.${AWS::Region}.amazonaws.com"

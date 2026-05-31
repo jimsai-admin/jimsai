@@ -31,7 +31,7 @@ class EncodeResponse(BaseModel):
 
 class EncoderSettings(BaseModel):
     api_key: str = os.getenv("JIMS_MULTIMODAL_ENCODER_API_KEY", "")
-    text_model: str = os.getenv("ENCODER_TEXT_MODEL", "nomic-ai/nomic-embed-text-v1.5")
+    text_model: str = os.getenv("ENCODER_TEXT_MODEL", "intfloat/multilingual-e5-small")
     code_model: str = os.getenv("ENCODER_CODE_MODEL", "nomic-ai/nomic-embed-code")
     image_model: str = os.getenv("ENCODER_IMAGE_MODEL", "google/siglip-so400m-patch14-384")
     whisper_model: str = os.getenv("ENCODER_WHISPER_MODEL", "base")

@@ -1,0 +1,54 @@
+services:
+  - type: worker
+    name: jimsai-training-worker
+    runtime: docker
+    plan: starter
+    dockerContext: .
+    dockerfilePath: ./services/training-pipeline/Dockerfile
+    dockerCommand: celery -A prototype.jimsai.celery_runtime:celery_app worker --loglevel=INFO
+    autoDeployTrigger: commit
+    envVars:
+      - key: JIMS_STORAGE_BACKEND
+        value: production
+      - key: JIMS_STRICT_PROVIDER_STARTUP
+        value: "true"
+      - key: JIMS_AUTH_PROVIDER
+        value: supabase
+      - key: JIMS_AUTH_REQUIRED
+        value: "true"
+      - key: JIMS_CELERY_KEY_PREFIX
+        value: jimsai_
+      - key: REDIS_URL
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_KEY
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: NEO4J_URI
+        sync: false
+      - key: NEO4J_USER
+        sync: false
+      - key: NEO4J_PASSWORD
+        sync: false
+      - key: CF_ACCOUNT_ID
+        sync: false
+      - key: CF_R2_BUCKET
+        sync: false
+      - key: CF_R2_ACCESS_KEY
+        sync: false
+      - key: CF_R2_SECRET_KEY
+        sync: false
+      - key: CF_VECTORIZE_INDEX
+        sync: false
+      - key: CF_VECTORIZE_API_TOKEN
+        sync: false
+      - key: KAGGLE_USERNAME
+        sync: false
+      - key: KAGGLE_API_TOKEN
+        sync: false
+      - key: KAGGLE_DATASET_OWNER
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false

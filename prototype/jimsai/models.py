@@ -474,7 +474,7 @@ class SPPETrainingPair(BaseModel):
 class AutoTrainingDecision(BaseModel):
     enabled: bool = False
     should_schedule: bool = False
-    task_type: Literal["encoder_finetune", "reranker_finetune", "world_model_extractor", "sppe_refiner"] = "encoder_finetune"
+    task_type: Literal["encoder_finetune", "reranker_finetune", "world_model_extractor", "sppe_refiner", "sppe_renderer_finetune"] = "encoder_finetune"
     reason: str = ""
     counters: dict[str, int | float | bool] = Field(default_factory=dict)
     requires_human_approval: bool = True
@@ -524,7 +524,7 @@ class TrainingPanelPage(BaseModel):
 class KaggleTrainingRequest(BaseModel):
     user_id: str
     workspace_id: str | None = None
-    task_type: Literal["encoder_finetune", "reranker_finetune", "world_model_extractor", "sppe_refiner"] = "encoder_finetune"
+    task_type: Literal["encoder_finetune", "reranker_finetune", "world_model_extractor", "sppe_refiner", "sppe_renderer_finetune"] = "encoder_finetune"
     title: str = "JIMS-AI encoder fine-tune"
     notes: str = ""
     gpu: bool = True

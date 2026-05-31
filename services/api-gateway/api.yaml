@@ -21,12 +21,72 @@ paths:
       responses:
         "200":
           description: OK
+  /v1/auth/config:
+    get:
+      summary: Public Supabase auth configuration status
+      responses:
+        "200":
+          description: Auth provider readiness
+  /v1/auth/signin:
+    post:
+      summary: Sign in with Supabase email/password
+      responses:
+        "200":
+          description: Supabase session payload
+  /v1/auth/signup:
+    post:
+      summary: Create a Supabase email/password account
+      responses:
+        "200":
+          description: Supabase session or confirmation payload
+  /v1/auth/refresh:
+    post:
+      summary: Refresh a Supabase session
+      responses:
+        "200":
+          description: Refreshed Supabase session payload
+  /v1/query:
+    post:
+      summary: Run a protected JIMS-AI query
+      responses:
+        "200":
+          description: Grounded runtime response
   /v1/training/ingest:
     post:
       summary: Ingest multimodal training content
       responses:
         "200":
           description: Signature and training artifacts stored
+  /v1/feedback:
+    post:
+      summary: Store user feedback against a trace
+      responses:
+        "200":
+          description: Feedback accepted
+  /v1/providers/readiness:
+    get:
+      summary: Provider readiness for Supabase, Vectorize, Neo4j, Redis, R2, and encoders
+      responses:
+        "200":
+          description: Provider readiness report
+  /v1/review/action:
+    post:
+      summary: Apply a human review action to a world-model candidate
+      responses:
+        "200":
+          description: Review action result signature
+  /v1/memory/update:
+    post:
+      summary: Supersede a memory signature with corrected content
+      responses:
+        "200":
+          description: Memory update result
+  /v1/memory/delete:
+    post:
+      summary: Delete a memory signature and invalidate dependent records
+      responses:
+        "200":
+          description: Memory delete result
   /v1/training/panels/{panel}/items:
     get:
       summary: Cursor-paged stored data for a training panel

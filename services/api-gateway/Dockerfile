@@ -9,7 +9,7 @@ COPY pyproject.toml README.md /app/
 COPY prototype /app/prototype
 COPY services/api-gateway /app/services/api-gateway
 
-RUN pip install --no-cache-dir -e ".[providers]" uvicorn python-multipart prometheus-client
+RUN pip install --no-cache-dir -e ".[providers]" uvicorn python-multipart prometheus-client sentence-transformers mangum
 
 WORKDIR /app/services/api-gateway
 EXPOSE 8000
