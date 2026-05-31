@@ -179,7 +179,9 @@ SPPE_RENDERER_TEMPLATE_NOTEBOOK = {
 
 class KaggleGPUOrchestrator:
     def __init__(self, workspace_root: str | Path = ".kaggle_runs") -> None:
-        self.workspace_root = Path(workspace_root)
+        import os
+        default = "/tmp/.kaggle_runs" if os.getenv("AWS_LAMBDA_FUNCTION_NAME") else ".kaggle_runs"
+        self.workspace_root = Path(workspace_root if workspace_root != ".kaggle_runs" else default)
         self.workspace_root.mkdir(parents=True, exist_ok=True)
 
     @property

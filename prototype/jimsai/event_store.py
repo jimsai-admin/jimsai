@@ -16,7 +16,9 @@ class AuditEventStore:
     """Durable append-only SQLite event store with CQRS-friendly indexes."""
 
     def __init__(self, path: str | None = None) -> None:
-        default_path = Path(".logs") / "jimsai_events.sqlite3"
+        is_lambda = bool(os.getenv("AWS_LAMBDA_FUNCTION_NAME"))
+        default_dir = Path("/tmp/.logs") if is_lambda else Path(".logs")
+        default_path = default_dir / "jimsai_events.sqlite3"
         self.path = Path(path or os.getenv("JIMS_EVENT_STORE_PATH", str(default_path)))
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
@@ -156,11 +158,13 @@ class VerifiedResultCache:
     """Durable SQLite cache keyed by canonical scoped request signatures."""
 
     def __init__(self, path: str | None = None) -> None:
-        default_path = Path(".logs") / "jimsai_events.sqlite3"
+        is_lambda = bool(os.getenv("AWS_LAMBDA_FUNCTION_NAME"))
+        default_dir = Path("/tmp/.logs") if is_lambda else Path(".logs")
+        default_path = default_dir / "jimsai_events.sqlite3"
         self.path = Path(path or os.getenv("JIMS_EVENT_STORE_PATH", str(default_path)))
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._lock = threading.Lock()
-        self._initialize()
+        self._lock = threading.Lock()  # add this
+        self._initialize()              # add this
 
     def key(self, namespace: str, payload: dict[str, Any]) -> str:
         canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)

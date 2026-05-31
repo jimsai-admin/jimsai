@@ -180,6 +180,15 @@ def _cosine(left: Counter[str], right: Counter[str]) -> float:
     return dot / (lnorm * rnorm)
 
 
+class _FallbackClassifier:
+    """Used when sentence-transformers is not available (e.g. Lambda)."""
+    def classify_intent(self, query: str):
+        return "GENERAL_FACT", 0.5
+    def is_profile_query(self, query: str, threshold: float = 0.70):
+        return False
+    def get_intent_scores(self, query: str):
+        return {}
+
 class SemanticCompilerRuntime:
     def __init__(self, confidence_threshold: float = 0.50) -> None:
         self.confidence_threshold = confidence_threshold
@@ -201,9 +210,12 @@ class SemanticCompilerRuntime:
 
     @property
     def classifier(self) -> Any:
-        """Lazy initialize classifier on first access."""
+        """Lazy initialize classifier, with fallback if sentence-transformers not installed."""
         if self._classifier is None:
-            self._classifier = get_classifier()
+            try:
+                self._classifier = get_classifier()
+            except (ImportError, Exception):
+                self._classifier = _FallbackClassifier()
         return self._classifier
 
     def score_intents(self, tokens: list[str]) -> list[Hypothesis]:
