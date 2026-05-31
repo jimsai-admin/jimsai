@@ -236,36 +236,6 @@ Or in the AWS Console:
 1. Go to Lambda → jimsai-api-gateway → Monitor tab
 2. Click **"View CloudWatch logs"**
 
----
-
-## Render Keep-Alive (Free Tier)
-
-Render free tier spins down after 15 minutes of inactivity. Add a cron job to ping it every 10 minutes.
-
-Add this to your `render.yaml` under the worker service:
-
-```yaml
-  - type: cron
-    name: jimsai-keepalive
-    env: python
-    schedule: "*/10 * * * *"
-    buildCommand: ""
-    startCommand: python -c "import urllib.request; urllib.request.urlopen('https://your-render-service.onrender.com/health')"
-```
-
-Or add a keep-alive endpoint call from the frontend using `setInterval` in a layout component:
-
-```typescript
-// frontend/app/layout.tsx — ping Render worker every 10 minutes
-useEffect(() => {
-  const ping = () => fetch(`${process.env.NEXT_PUBLIC_API_BASE_URL}/health`).catch(() => {});
-  ping();
-  const interval = setInterval(ping, 10 * 60 * 1000);
-  return () => clearInterval(interval);
-}, []);
-```
-
-This pings via Lambda → which in turn keeps the Render worker warm if it proxies training jobs.
 
 ---
 
