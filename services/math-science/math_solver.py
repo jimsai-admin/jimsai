@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from typing import Optional, Any
 from datetime import datetime
 import re
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -213,41 +214,148 @@ class FormalVerifier:
         proposed_solution: float
     ) -> tuple[bool, float]:
         """
-        Verify proposed solution satisfies equation using Z3.
+        Verify proposed solution satisfies equation using Z3 SMT solver.
+        
+        Uses real Z3 constraint verification with timeout.
+        Falls back to symbolic/numerical verification if Z3 unavailable.
+        
+        Args:
+            equation: Equation as string (e.g., "2*x + 3 = 7")
+            variable: Variable to solve for
+            proposed_solution: Proposed solution value
         
         Returns:
-            (is_correct, confidence)
+            (is_correct, confidence_score)
+        """
+        try:
+            from prototype.jimsai.config import get_config
+            config = get_config()
+            
+            # Try Z3 first if enabled
+            if config.z3.enabled:
+                return self._verify_with_z3(
+                    equation, variable, proposed_solution, 
+                    timeout_ms=config.z3.timeout_seconds * 1000
+                )
+        except Exception as e:
+            logger.warning(f"Z3 configuration error, using fallback: {e}")
+        
+        # Fallback: symbolic verification
+        return self._verify_symbolically(equation, variable, proposed_solution)
+    
+    def _verify_with_z3(
+        self,
+        equation: str,
+        variable: str,
+        proposed_solution: float,
+        timeout_ms: int = 10000
+    ) -> tuple[bool, float]:
+        """
+        Verify using Z3 SMT constraint solver (production implementation).
+        
+        Z3 provides formal verification of mathematical constraints.
         """
         try:
             z3 = self.z3
             if not z3:
-                # Fallback: symbolic verification
-                return self._verify_symbolically(
-                    equation, variable, proposed_solution
-                )
+                raise ImportError("Z3 not available, using fallback")
             
-            # Create Z3 variable
+            # Set timeout
+            z3.set_param("timeout", timeout_ms)
+            
+            # Create Z3 variable (Real = floating point)
             x = z3.Real(variable)
             
-            # Parse and create constraint
-            # "2*x + 3 = 7" with x=2 should be satisfied
-            constraint_str = equation.replace("=", "==")
-            constraint_str = constraint_str.replace(variable, str(proposed_solution))
+            # Parse equation into Z3 constraint
+            # "2*x + 3 = 7" → z3.Eq(2*x + 3, 7)
+            constraint = self._parse_equation_to_z3(equation, variable, x)
             
-            # Evaluate constraint
-            try:
-                is_satisfied = eval(constraint_str)
-                confidence = 1.0 if is_satisfied else 0.0
-                return is_satisfied, confidence
-            except:
-                # Fallback if eval fails
-                return self._verify_numerically(
-                    equation, variable, proposed_solution
-                )
+            if not constraint:
+                logger.warning(f"Failed to parse equation for Z3: {equation}")
+                return self._verify_symbolically(equation, variable, proposed_solution)
+            
+            # Create solver
+            solver = z3.Solver()
+            solver.add(constraint)
+            
+            # Check satisfiability with proposed solution
+            solver.push()
+            solver.add(x == proposed_solution)
+            
+            result = solver.check()
+            
+            if result == z3.sat:
+                # Solution satisfies constraint
+                model = solver.model()
+                actual_value = model[x]
+                confidence = 1.0
+                logger.info(f"Z3 verified solution: {variable}={actual_value}")
+                return True, confidence
+            elif result == z3.unsat:
+                # Solution does NOT satisfy constraint
+                confidence = 0.0
+                logger.warning(f"Z3 rejected solution: {variable}={proposed_solution}")
+                return False, confidence
+            else:  # unknown
+                logger.warning(f"Z3 returned unknown (timeout or error)")
+                # Fall back to numerical check
+                return self._verify_numerically(equation, variable, proposed_solution)
         
         except Exception as e:
-            logger.warning(f"Formal verification error: {e}")
-            return False, 0.0
+            logger.error(f"Z3 verification error: {e}")
+            # Fall back to symbolic verification
+            return self._verify_symbolically(equation, variable, proposed_solution)
+    
+    def _parse_equation_to_z3(self, equation: str, variable: str, z3_var: Any) -> Optional[Any]:
+        """
+        Parse mathematical equation string into Z3 constraint.
+        
+        Converts: "2*x + 3 = 7" → z3.Eq(2*z3_var + 3, 7)
+        
+        Args:
+            equation: Equation as string
+            variable: Variable symbol
+            z3_var: Z3 variable object
+        
+        Returns:
+            Z3 constraint object or None if parsing fails
+        """
+        try:
+            z3 = self.z3
+            if not z3:
+                return None
+            
+            # Split on equals sign
+            if "=" not in equation:
+                return None
+            
+            parts = equation.split("=")
+            if len(parts) != 2:
+                logger.warning(f"Equation has multiple equals signs: {equation}")
+                return None
+            
+            left_str = parts[0].strip()
+            right_str = parts[1].strip()
+            
+            # Replace variable with z3 variable in both sides
+            # Convert Python math notation to Z3
+            left_str = left_str.replace(variable, "z3_var")
+            right_str = right_str.replace(variable, "z3_var")
+            
+            # Evaluate in context with z3_var
+            context = {"z3_var": z3_var}
+            
+            left_expr = eval(left_str, {"__builtins__": {}}, context)
+            right_expr = eval(right_str, {"__builtins__": {}}, context)
+            
+            # Create equality constraint
+            constraint = z3.Eq(left_expr, right_expr)
+            
+            return constraint
+        
+        except Exception as e:
+            logger.error(f"Failed to parse equation for Z3: {equation} - {e}")
+            return None
     
     def _verify_symbolically(
         self,

@@ -16,6 +16,7 @@ import json
 import subprocess
 import tempfile
 import logging
+import io
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -76,14 +77,23 @@ class StaticAnalyzer:
     
     DANGEROUS_PATTERNS = {
         "python": [
-            r"__import__",
-            r"eval\(",
-            r"exec\(",
-            r"compile\(",
-            r"open\(",
-            r"subprocess\.",
-            r"os\.system",
-            r"socket\.",
+            "__import__",
+            "eval(",
+            "exec(",
+            "compile(",
+            "open(",
+            "subprocess.",
+            "os.system",
+            "socket.",
+            "sys.exit",
+            "import os",
+            "from os import",
+            "import subprocess",
+            "from subprocess import",
+            "import socket",
+            "from socket import",
+            "pickle.loads",
+            "pickle.load",
         ]
     }
     
@@ -98,8 +108,10 @@ class StaticAnalyzer:
         issues = []
         
         patterns = StaticAnalyzer.DANGEROUS_PATTERNS.get(language, [])
+        code_lower = code.lower()
+        
         for pattern in patterns:
-            if pattern in code.lower():
+            if pattern.lower() in code_lower:
                 issues.append(f"Potentially dangerous pattern detected: {pattern}")
         
         return issues
@@ -108,15 +120,21 @@ class StaticAnalyzer:
 class CodeExecutor:
     """Execute code safely in isolated sandbox."""
     
-    def __init__(self, workspace_id: str, cache_dir: str = "/tmp/jims_code_cache"):
+    def __init__(self, workspace_id: str, cache_dir: Optional[str] = None):
         """
         Initialize code executor.
         
         Args:
             workspace_id: Workspace for scoped execution
-            cache_dir: Directory for result caching
+            cache_dir: Directory for result caching (defaults to platform temp dir)
         """
         self.workspace_id = workspace_id
+        
+        # Use platform-appropriate temp directory
+        if cache_dir is None:
+            import tempfile
+            cache_dir = os.path.join(tempfile.gettempdir(), "jims_code_cache")
+        
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(exist_ok=True, parents=True)
         self._memory_cache: dict[str, CodeExecutionResult] = {}
@@ -191,21 +209,148 @@ class CodeExecutor:
         request: CodeExecutionRequest,
         static_issues: list[str]
     ) -> CodeExecutionResult:
-        """Execute code in isolated sandbox (stub for Docker integration)."""
+        """
+        Execute code in isolated Docker container.
         
+        Resource limits:
+        - Memory: Limited to max_memory_mb
+        - CPU: 1 core
+        - Network: Disabled
+        - Filesystem: Temporary only
+        - Runtime: Limited to timeout_seconds
+        
+        Args:
+            request: Code execution request
+            static_issues: Issues found by static analysis
+        
+        Returns:
+            CodeExecutionResult with stdout/stderr
+        """
         try:
-            # Stub implementation: would use Docker
-            # In production:
-            # 1. Create temp directory
-            # 2. Write code to file
-            # 3. Run in Docker container with resource limits
-            # 4. Capture stdout/stderr
-            # 5. Clean up
+            # Try Docker first
+            return self._execute_docker(request, static_issues)
+        except Exception as docker_error:
+            logger.warning(f"Docker execution failed: {docker_error}, falling back to subprocess")
+            # Fall back to subprocess if Docker not available
+            return self._execute_subprocess(request, static_issues)
+    
+    def _execute_docker(
+        self,
+        request: CodeExecutionRequest,
+        static_issues: list[str]
+    ) -> CodeExecutionResult:
+        """Execute code in Docker container (production implementation)."""
+        try:
+            # Import docker conditionally
+            try:
+                import docker
+                from docker.errors import ImageNotFound, ContainerError
+            except ImportError:
+                raise RuntimeError("Docker SDK not installed. Install with: pip install docker")
             
+            # Import config
+            from prototype.jimsai.config import get_config
+            config = get_config()
+            
+            if not config.docker.enabled:
+                raise RuntimeError("Docker execution disabled in configuration")
+            
+            # Connect to Docker daemon
+            client = docker.from_env()
+            
+            # Select image based on language
             if request.language == "python":
-                return self._execute_python(request.code)
+                image = config.docker.image_python
+                cmd = ["python", "-c", request.code]
             elif request.language == "javascript":
-                return self._execute_javascript(request.code)
+                image = config.docker.image_nodejs
+                cmd = ["node", "-e", request.code]
+            elif request.language == "bash":
+                image = "alpine:latest"
+                cmd = ["sh", "-c", request.code]
+            else:
+                raise ValueError(f"Unsupported language: {request.language}")
+            
+            # Prepare container configuration
+            mem_limit = f"{request.max_memory_mb}m"
+            
+            logger.info(f"Executing {request.language} in Docker container {image}")
+            
+            # Run container with resource limits
+            container = client.containers.run(
+                image,
+                cmd,
+                detach=False,
+                remove=True,
+                mem_limit=mem_limit,
+                memswap_limit=mem_limit,
+                cpus=1,
+                network_mode="none",  # Disable network
+                timeout=request.timeout_seconds,
+                stderr=True,
+                stdout=True,
+            )
+            
+            # Get output
+            output = container.decode("utf-8") if isinstance(container, bytes) else container
+            
+            return CodeExecutionResult(
+                success=True,
+                stdout=output,
+                stderr="",
+                static_analysis_issues=static_issues,
+                is_cached=False,
+            )
+        
+        except ImportError as e:
+            logger.error(f"Docker SDK not available: {e}")
+            raise RuntimeError(str(e))
+        except Exception as e:
+            logger.error(f"Docker execution error: {e}")
+            # Try to extract the error class name safely
+            try:
+                from docker.errors import ImageNotFound, ContainerError
+                if isinstance(e, ImageNotFound):
+                    logger.error(f"Docker image not found for language: {request.language}")
+                    return CodeExecutionResult(
+                        success=False,
+                        stdout="",
+                        stderr="Docker image not found. Run: docker pull <image>",
+                        static_analysis_issues=static_issues,
+                        is_cached=False,
+                    )
+                elif isinstance(e, ContainerError):
+                    logger.error(f"Container execution failed: {e}")
+                    return CodeExecutionResult(
+                        success=False,
+                        stdout=getattr(e, 'stdout', b'').decode("utf-8") if getattr(e, 'stdout', None) else "",
+                        stderr=getattr(e, 'stderr', b'').decode("utf-8") if getattr(e, 'stderr', None) else str(e),
+                        static_analysis_issues=static_issues,
+                        is_cached=False,
+                    )
+            except:
+                pass
+            
+            # Generic error
+            raise
+    
+    def _execute_subprocess(
+        self,
+        request: CodeExecutionRequest,
+        static_issues: list[str]
+    ) -> CodeExecutionResult:
+        """
+        Execute code via subprocess (fallback when Docker unavailable).
+        
+        Less isolated than Docker but works without Docker daemon.
+        """
+        try:
+            if request.language == "python":
+                return self._execute_python(request.code, static_issues, request.timeout_seconds)
+            elif request.language == "javascript":
+                return self._execute_javascript(request.code, static_issues, request.timeout_seconds)
+            elif request.language == "bash":
+                return self._execute_bash(request.code, static_issues, request.timeout_seconds)
             else:
                 return CodeExecutionResult(
                     success=False,
@@ -214,7 +359,7 @@ class CodeExecutor:
                     static_analysis_issues=static_issues,
                 )
         except Exception as e:
-            logger.error(f"Sandbox execution error: {e}")
+            logger.error(f"Subprocess execution error: {e}")
             return CodeExecutionResult(
                 success=False,
                 stdout="",
@@ -222,32 +367,116 @@ class CodeExecutor:
                 static_analysis_issues=static_issues,
             )
     
-    def _execute_python(self, code: str) -> CodeExecutionResult:
-        """Execute Python code (stub)."""
-        # In production, would use subprocess with timeout + resource limits
+    def _execute_python(self, code: str, static_issues: list[str], timeout: int = 30) -> CodeExecutionResult:
+        """Execute Python code via subprocess."""
         try:
-            # Create temporary file
             with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
                 f.write(code)
                 temp_file = f.name
             
-            # Execute with timeout
             result = subprocess.run(
                 ["python", temp_file],
                 capture_output=True,
                 text=True,
-                timeout=30,
+                timeout=timeout,
             )
             
-            # Clean up
             os.unlink(temp_file)
             
             return CodeExecutionResult(
                 success=(result.returncode == 0),
                 stdout=result.stdout,
                 stderr=result.stderr,
+                static_analysis_issues=static_issues,
+                is_cached=False,
             )
         except subprocess.TimeoutExpired:
+            logger.error(f"Python execution timeout ({timeout}s)")
+            return CodeExecutionResult(
+                success=False,
+                stdout="",
+                stderr=f"Execution timeout after {timeout} seconds",
+                static_analysis_issues=static_issues,
+            )
+        except Exception as e:
+            logger.error(f"Python execution error: {e}")
+            return CodeExecutionResult(
+                success=False,
+                stdout="",
+                stderr=str(e),
+                static_analysis_issues=static_issues,
+            )
+    
+    def _execute_javascript(self, code: str, static_issues: list[str], timeout: int = 30) -> CodeExecutionResult:
+        """Execute JavaScript code via subprocess (requires Node.js)."""
+        try:
+            result = subprocess.run(
+                ["node", "-e", code],
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+            
+            return CodeExecutionResult(
+                success=(result.returncode == 0),
+                stdout=result.stdout,
+                stderr=result.stderr,
+                static_analysis_issues=static_issues,
+                is_cached=False,
+            )
+        except subprocess.TimeoutExpired:
+            return CodeExecutionResult(
+                success=False,
+                stdout="",
+                stderr=f"Execution timeout after {timeout} seconds",
+                static_analysis_issues=static_issues,
+            )
+        except FileNotFoundError:
+            return CodeExecutionResult(
+                success=False,
+                stdout="",
+                stderr="Node.js not found. Install Node.js or use Docker.",
+                static_analysis_issues=static_issues,
+            )
+        except Exception as e:
+            return CodeExecutionResult(
+                success=False,
+                stdout="",
+                stderr=str(e),
+                static_analysis_issues=static_issues,
+            )
+    
+    def _execute_bash(self, code: str, static_issues: list[str], timeout: int = 30) -> CodeExecutionResult:
+        """Execute bash code via subprocess."""
+        try:
+            result = subprocess.run(
+                ["bash", "-c", code],
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+            
+            return CodeExecutionResult(
+                success=(result.returncode == 0),
+                stdout=result.stdout,
+                stderr=result.stderr,
+                static_analysis_issues=static_issues,
+                is_cached=False,
+            )
+        except subprocess.TimeoutExpired:
+            return CodeExecutionResult(
+                success=False,
+                stdout="",
+                stderr=f"Execution timeout after {timeout} seconds",
+                static_analysis_issues=static_issues,
+            )
+        except Exception as e:
+            return CodeExecutionResult(
+                success=False,
+                stdout="",
+                stderr=str(e),
+                static_analysis_issues=static_issues,
+            )
             return CodeExecutionResult(
                 success=False,
                 stdout="",

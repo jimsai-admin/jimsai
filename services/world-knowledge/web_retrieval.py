@@ -13,10 +13,14 @@ This implements the world knowledge capability for JimsAI v9.
 
 import asyncio
 import hashlib
+import json
+import logging
+import urllib.request
+import urllib.parse
+import urllib.error
 from datetime import datetime, timedelta
 from typing import Optional
 from dataclasses import dataclass, asdict
-import logging
 
 logger = logging.getLogger(__name__)
 
@@ -103,17 +107,114 @@ class WebAugmentedRetrieval:
     
     async def _perform_search(self, query: str) -> list[WebSource]:
         """
-        Perform actual web search (stub implementation).
+        Perform real DuckDuckGo web search using public API.
         
-        In production, this would:
-        - Call DuckDuckGo API or Brave Search
-        - Extract snippets and links
-        - Verify sources are reliable
-        - Return with freshness metadata
+        Uses DuckDuckGo's instant answer and search endpoints.
+        No API key required (public tier).
+        
+        Args:
+            query: Search query
+        
+        Returns:
+            List of WebSource objects with real URLs and snippets
         """
-        # Stub: return empty for now (would integrate real search API)
-        logger.warning(f"Web search stub called for: {query}")
-        return []
+        try:
+            # DuckDuckGo instant answer endpoint (free, no API key)
+            url = "https://api.duckduckgo.com/"
+            params = {
+                "q": query,
+                "format": "json",
+                "no_redirect": "1",
+                "t": "jimsai",  # User agent
+            }
+            
+            full_url = f"{url}?{urllib.parse.urlencode(params)}"
+            
+            # Make synchronous request in thread pool to avoid blocking
+            loop = asyncio.get_event_loop()
+            response = await loop.run_in_executor(
+                None, 
+                self._fetch_duckduckgo_sync, 
+                full_url
+            )
+            
+            if not response:
+                return []
+            
+            sources = []
+            fetched_at = datetime.now().isoformat()
+            
+            # Parse instant answer if available
+            if response.get("AbstractText") and response.get("AbstractURL"):
+                source = WebSource(
+                    url=response["AbstractURL"],
+                    title=response.get("AbstractSource", "DuckDuckGo"),
+                    snippet=response["AbstractText"],
+                    fetched_at=fetched_at,
+                    confidence=0.90,  # Higher confidence for official answers
+                )
+                sources.append(source)
+            
+            # Parse related topics (Wikipedia, etc)
+            for topic in response.get("RelatedTopics", []):
+                if "FirstURL" in topic and "Text" in topic:
+                    source = WebSource(
+                        url=topic["FirstURL"],
+                        title=topic.get("Name", "Related Topic"),
+                        snippet=topic["Text"],
+                        fetched_at=fetched_at,
+                        confidence=0.85,
+                    )
+                    sources.append(source)
+                    if len(sources) >= self.max_results:
+                        break
+            
+            # Parse results array if available
+            if len(sources) < self.max_results:
+                for result in response.get("Results", []):
+                    source = WebSource(
+                        url=result.get("FirstURL", ""),
+                        title=result.get("Title", ""),
+                        snippet=result.get("Text", ""),
+                        fetched_at=fetched_at,
+                        confidence=0.80,
+                    )
+                    if source.url:  # Only add if URL is available
+                        sources.append(source)
+                        if len(sources) >= self.max_results:
+                            break
+            
+            logger.info(f"DuckDuckGo search found {len(sources)} sources for: {query}")
+            return sources[:self.max_results]
+        
+        except Exception as e:
+            logger.error(f"DuckDuckGo search failed for '{query}': {e}")
+            return []
+    
+    @staticmethod
+    def _fetch_duckduckgo_sync(url: str) -> Optional[dict]:
+        """
+        Synchronous DuckDuckGo API fetch (runs in thread pool).
+        
+        Args:
+            url: Full URL with parameters
+        
+        Returns:
+            Parsed JSON response or None
+        """
+        try:
+            req = urllib.request.Request(
+                url,
+                headers={"User-Agent": "jimsai/1.0 (+https://github.com/jimsai/jimsai)"}
+            )
+            
+            with urllib.request.urlopen(req, timeout=5) as response:
+                data = response.read().decode("utf-8")
+                return json.loads(data)
+        
+        except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError, Exception) as e:
+            logger.error(f"DuckDuckGo API error: {e}")
+            return None
     
     def get_stale_sources(self) -> list[WebSource]:
         """Get sources that need refreshing."""
