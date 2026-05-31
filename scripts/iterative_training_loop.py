@@ -386,6 +386,86 @@ def correction_candidates(outcomes: list[EvalOutcome]) -> list[dict[str, Any]]:
     return candidates
 
 
+def check_provider_trend(current_usage: dict[str, Any], previous_usage: dict[str, Any] | None = None) -> tuple[bool, str]:
+    """Check if provider dependency is trending downward.
+    
+    Args:
+        current_usage: Current provider usage metrics (provider_model_call_rate, etc.)
+        previous_usage: Previous iteration metrics (optional)
+    
+    Returns:
+        Tuple of (passes_trend_check, message)
+    
+    Recommendation: Provider calls should trend DOWN over time to achieve language universality.
+    - If previous metrics exist and current calls > previous: FAIL (trend UP)
+    - If current calls == 0: PASS (deterministic execution achieved)
+    - If current calls exist but < previous: PASS (trend DOWN)
+    """
+    current_rate = current_usage.get("provider_model_call_rate", 0.0)
+    
+    if previous_usage is None:
+        # First iteration - establish baseline
+        return True, f"Baseline provider call rate: {current_rate:.2%}"
+    
+    previous_rate = previous_usage.get("provider_model_call_rate", 0.0)
+    
+    if current_rate > previous_rate:
+        # Provider dependency INCREASING - this is a violation
+        return False, (
+            f"❌ Provider dependency INCREASING (directive violation)\n"
+            f"  Previous rate: {previous_rate:.2%}\n"
+            f"  Current rate:  {current_rate:.2%}\n"
+            f"  Delta:         +{(current_rate - previous_rate):.2%}\n"
+            f"  Action: Training loop failed. Investigate why local confidence declined."
+        )
+    
+    if current_rate < previous_rate:
+        # Provider dependency DECREASING - good trend
+        return True, (
+            f"✅ Provider dependency DECREASING (improving determinism)\n"
+            f"  Previous rate: {previous_rate:.2%}\n"
+            f"  Current rate:  {current_rate:.2%}\n"
+            f"  Delta:         {(current_rate - previous_rate):.2%}\n"
+            f"  Status: Trend confirmed downward"
+        )
+    
+    # Provider dependency FLAT - acceptable for now
+    return True, (
+        f"⚠️  Provider dependency FLAT (acceptable in early iterations)\n"
+        f"  Previous rate: {previous_rate:.2%}\n"
+        f"  Current rate:  {current_rate:.2%}\n"
+        f"  Status: Monitor for regression"
+    )
+
+
+def load_previous_metrics(report_dir: Path) -> dict[str, Any] | None:
+    """Load provider metrics from most recent previous iteration.
+    
+    Returns the most recent iteration report that has provider usage data.
+    """
+    if not report_dir.exists():
+        return None
+    
+    # Find all iteration reports, sorted by timestamp descending
+    reports = sorted(
+        report_dir.glob("iteration_*.json"),
+        key=lambda p: p.name,
+        reverse=True
+    )
+    
+    # Skip the current/most recent one if we just wrote it
+    for report_path in reports[1:]:  # Start from index 1 to skip current
+        try:
+            data = json.loads(report_path.read_text(encoding="utf-8"))
+            usage = data.get("provider_usage_analysis")
+            if usage:
+                return usage
+        except Exception:
+            continue
+    
+    return None
+
+
 def provider_usage_analysis(outcomes: list[EvalOutcome]) -> dict[str, Any]:
     total = len(outcomes)
     provider_model_calls = sum(1 for outcome in outcomes if outcome.used_groq)
@@ -573,17 +653,29 @@ async def run_iteration(args: argparse.Namespace) -> int:
     candidates = correction_candidates(outcomes)
     language_analysis = intent_stability_analysis(pipeline.compiler, prompts)
     training_variants = training_variant_summary(records)
-    report_path = write_report(Path(args.report_dir), ingested, outcomes, candidates, language_analysis, training_variants, production_write)
+    provider_usage = provider_usage_analysis(outcomes)
+    
+    # Check provider dependency trend (Rec 2B: enforcement)
+    report_dir_path = Path(args.report_dir)
+    previous_usage = load_previous_metrics(report_dir_path)
+    trend_passes, trend_message = check_provider_trend(provider_usage, previous_usage)
+    print(f"\n{trend_message}\n")
+    
+    # If trend check fails, abort training
+    if not trend_passes and previous_usage is not None:
+        print("ERROR: Training aborted due to provider dependency increase (directive violation)")
+        return 1
+    
+    report_path = write_report(report_dir_path, ingested, outcomes, candidates, language_analysis, training_variants, production_write)
 
     passed = sum(1 for outcome in outcomes if outcome.passed)
     print(f"ingested={len(ingested)} production_write={production_write}")
     print(f"eval_passed={passed}/{len(outcomes)}")
     print(f"correction_candidates={len(candidates)}")
-    usage = provider_usage_analysis(outcomes)
     print(
         "provider_model_usage="
-        f"{usage['provider_model_calls']}/{usage['eval_total']} "
-        f"rate={usage['provider_model_call_rate']}"
+        f"{provider_usage['provider_model_calls']}/{provider_usage['eval_total']} "
+        f"rate={provider_usage['provider_model_call_rate']}"
     )
     print(
         "intent_stability_score="

@@ -7,36 +7,10 @@ from collections import Counter
 from typing import Any
 
 from .models import ExecutionMode, Hypothesis, IntentDomain, SemanticIR
+from .intent_classifier import get_classifier
 
 
-STOP_WORDS = {
-    "a", "an", "the", "yo", "please", "just", "over", "that", "we", "back", "in", "for",
-    "to", "of", "and", "or", "on", "with", "can", "you", "i", "me", "my", "is", "are",
-    "do", "does", "did", "would", "become", "what", "why", "how", "when", "where", "who", "which",
-    "should", "someone",
-}
-QUESTION_WORDS = {"What", "Why", "How", "When", "Where", "Who", "Which"}
-IMPACT_TOKENS = {
-    "affect",
-    "impact",
-    "chang",
-    "change",
-    "happen",
-    "break",
-    "depend",
-    "downstream",
-    "upstream",
-    "cause",
-    "caus",
-    "late",
-    "delay",
-    "fail",
-    "failure",
-    "slowdown",
-    "occur",
-    "block",
-    "blocked",
-}
+# Language-universal document relations (not language-specific)
 DOCUMENT_WIDE_RELATIONS = {
     "has_title",
     "has_case_study",
@@ -47,32 +21,14 @@ DOCUMENT_WIDE_RELATIONS = {
     "has_problem",
     "uses_technology",
 }
-PROFILE_QUERY_PATTERNS = (
-    r"\bmy\s+name\b",
-    r"\bwho\s+am\s+i\b",
-    r"\bwhat\s+do\s+you\s+(know|remember)\s+about\s+me\b",
-    r"\btell\s+me\s+about\s+me\b",
-    r"\bmy\s+profile\b",
-)
+
+# Capability token sets used by _v9_capability_override
+# NOTE: These are kept for backward compatibility with scope hint generation.
+# Intent classification is now embedding-based (see intent_classifier.py)
 GENERATION_ACTION_TOKENS = {"write", "create", "build", "generate", "make", "draw", "produce", "implement", "scaffold", "want"}
 CODE_CAPABILITY_TOKENS = {
-    "api",
-    "bug",
-    "class",
-    "code",
-    "debug",
-    "fastapi",
-    "function",
-    "javascript",
-    "library",
-    "package",
-    "python",
-    "react",
-    "refactor",
-    "sdk",
-    "test",
-    "tests",
-    "typescript",
+    "api", "bug", "class", "code", "debug", "fastapi", "function", "javascript",
+    "library", "package", "python", "react", "refactor", "sdk", "test", "tests", "typescript",
 }
 CODE_DESIGN_TOKENS = {"calls", "consideration", "considerations", "design", "external", "fetch", "http", "safe", "security", "service"}
 IMAGE_CAPABILITY_TOKENS = {"image", "picture", "photo", "logo", "poster", "illustration", "dashboard"}
@@ -80,86 +36,36 @@ VIDEO_CAPABILITY_TOKENS = {"video", "animation", "clip", "movie", "storyboard"}
 AUDIO_CAPABILITY_TOKENS = {"audio", "voice", "speech", "tts", "sound", "music"}
 CREATIVE_CAPABILITY_TOKENS = {"story", "poem", "script", "rewrite", "tone", "email", "proposal", "copy"}
 AGENTIC_CAPABILITY_TOKENS = {
-    "agent",
-    "automate",
-    "automat",
-    "book",
-    "browser",
-    "click",
-    "deploy",
-    "deployment",
-    "rollback",
-    "schedule",
-    "send",
-    "task",
+    "agent", "automate", "automat", "book", "browser", "click", "deploy", "deployment",
+    "rollback", "schedule", "send", "task",
 }
 ARCHITECTURE_TOKENS = {
-    "adaptive",
-    "architecture",
-    "answer",
-    "answers",
-    "csse",
-    "energy",
-    "inference",
-    "memory",
-    "retrieval",
-    "sppe",
-    "t1",
-    "t2",
-    "thinning",
-    "transformer",
-    "users",
+    "adaptive", "architecture", "answer", "answers", "csse", "energy", "inference",
+    "memory", "retrieval", "sppe", "t1", "t2", "thinning", "transformer", "users",
 }
 PUBLIC_MEMORY_QUERY_TOKENS = {
-    "account",
-    "applying",
-    "blood",
-    "business",
-    "cash",
-    "caught",
-    "change",
-    "climate",
-    "compliance",
-    "compound",
-    "consumer",
-    "current",
-    "emergency",
-    "evidence",
-    "fafsa",
-    "financial",
-    "health",
-    "hypertension",
-    "information",
-    "interest",
-    "message",
-    "operational",
-    "principal",
-    "phishing",
-    "pressure",
-    "risk",
-    "risks",
-    "rip",
-    "safety",
-    "scam",
-    "shore",
-    "symptoms",
-    "tax",
-    "temperature",
-    "withholding",
-    "assumption",
+    "account", "applying", "blood", "business", "cash", "caught", "change", "climate",
+    "compliance", "compound", "consumer", "current", "emergency", "evidence", "fafsa",
+    "financial", "health", "hypertension", "information", "interest", "message",
+    "operational", "principal", "phishing", "pressure", "risk", "risks", "rip", "safety",
+    "scam", "shore", "symptoms", "tax", "temperature", "withholding", "assumption",
     "assumptions",
 }
 
-INTENT_TEMPLATES: dict[str, str] = {
-    "FETCH_DOCUMENT": "pull layout document manifest file pdf page download view open retrieve upload attach",
-    "SYSTEM_DIAGNOSTIC": "error broken status crash failure bug log deployment timeout diagnostic",
-    "WORKSPACE_QUERY": "metrics analysis progress overview stats tracking services dependencies affected happen impact change downstream upstream cause late delay why means meaning title company case study objectives modules scope technologies used tools",
-    "CODE_GENERATE": "create build scaffold generate api route function class code implementation",
-    "RUN_CANVAS": "analyse analyze deep scan full codebase corpus dataset synthesis everything uploaded",
-    "RUN_INVENTION": "invent design novel architecture theorem hypothesis protocol plan new solution",
-    "GENERAL_FACT": "what explain define describe capital concept general knowledge means meaning title company case study objectives modules technologies",
-    "EMOTIONAL_CATCH": "stressed overwhelmed anxious confused giving up frustrated hard worried help greeting hello hi",
-    "META_INQUIRY": "why answer confidence memory trace sources reasoning gaps explain yourself",
+# Token sets no longer used for intent classification (moved to embeddings)
+# Kept for reference only
+STOP_WORDS = {
+    "a", "an", "the", "yo", "please", "just", "over", "that", "we", "back", "in", "for",
+    "to", "of", "and", "or", "on", "with", "can", "you", "i", "me", "my", "is", "are",
+    "do", "does", "did", "would", "become", "what", "why", "how", "when", "where", "who", "which",
+    "should", "someone",
+}
+QUESTION_TOKENS = {"what", "why", "how", "when", "where", "who", "which"}
+CONTROL_TOKENS = {"if"}
+IMPACT_TOKENS = {
+    "affect", "impact", "chang", "change", "happen", "break", "depend", "downstream",
+    "upstream", "cause", "caus", "late", "delay", "fail", "failure", "slowdown", "occur",
+    "block", "blocked",
 }
 
 INTENT_DOMAINS: dict[str, IntentDomain] = {
@@ -169,44 +75,56 @@ INTENT_DOMAINS: dict[str, IntentDomain] = {
 }
 
 TOKEN_RE = re.compile(r"[a-z0-9_+\-.#]+")
-CHAR_CONFUSABLES = str.maketrans(
-    {
-        "0": "o",
-        "1": "l",
-        "3": "e",
-        "4": "a",
-        "5": "s",
-        "7": "t",
-        "8": "b",
-    }
-)
-QUESTION_TOKENS = {word.lower() for word in QUESTION_WORDS}
-CONTROL_TOKENS = {"if"}
 
 
 def _stem(token: str) -> str:
-    if token in STOP_WORDS or token in QUESTION_TOKENS or token in CONTROL_TOKENS:
-        return token
-    for suffix in ("ing", "ingly", "edly", "ed", "es", "s"):
-        if len(token) > len(suffix) + 3 and token.endswith(suffix):
-            return token[: -len(suffix)]
+    """Return token unchanged - no language-specific stemming.
+    
+    Removed English-specific suffix stripping (ing, ed, s, etc.)
+    to support all languages universally.
+    """
     return token
 
 
 def normalize_language(raw: str) -> str:
+    """Normalize language input for analysis.
+    
+    Handles:
+    - Unicode NFKC normalization (universal)
+    - Character confusables (OCR/typo fixes: 0→o, 1→l, 3→e, 4→a, 5→s, 7→t, 8→b)
+    - Duplicate character collapsing (coool→cool)
+    - Whitespace normalization
+    
+    These are shape-based fixes (not language-specific or English-centric).
+    Intent classification moved to embedding-based system (intent_classifier.py).
+    """
+    # Unicode normalization
     normalized = unicodedata.normalize("NFKC", str(raw or ""))
-    normalized = normalized.translate(CHAR_CONFUSABLES)
-    normalized = re.sub(r"([A-Za-z])\1{2,}", r"\1\1", normalized)
+    
+    # Fix common OCR/typing confusables (shape-based, not language-specific)
+    char_map = str.maketrans("01345678", "oleasytb")
+    normalized = normalized.translate(char_map)
+    
+    # Collapse 3+ repeated characters to 2: coool→cool, baaad→bad
+    normalized = re.sub(r"(.)\1{2,}", r"\1\1", normalized)
+    
+    # Normalize whitespace
     return re.sub(r"\s+", " ", normalized).strip()
 
 
 def sanitize(raw: str) -> list[str]:
-    surface_tokens = canonical_terms(raw, keep_stop=True)
-    vocabulary = _semantic_vocabulary()
-    tokens = [token for token in surface_tokens if token not in STOP_WORDS and len(token) > 1]
-    known_tokens = [token for token in tokens if token in vocabulary]
-    if not known_tokens and _looks_like_short_conversation(surface_tokens):
-        return ["greet"]
+    """Extract meaningful tokens from raw input.
+    
+    Filters out:
+    - Stop words (noise reduction)
+    - Very short tokens (< 2 chars)
+    - Language-independent noise
+    
+    Note: Intent classification is now embedding-based (intent_classifier.py),
+    not token-based, so this is just for data cleaning.
+    """
+    surface_tokens = canonical_terms(raw, keep_stop=False)  # Apply stop word filter
+    tokens = [token for token in surface_tokens if len(token) > 1]
     return tokens
 
 
@@ -219,98 +137,32 @@ def canonical_terms(raw: str, keep_stop: bool = False) -> list[str]:
 
 
 def _basic_tokens(raw: str) -> list[str]:
+    """Extract basic tokens from raw input.
+    
+    No language-specific stemming or character mapping.
+    """
     normalized = normalize_language(raw).lower()
-    return [_stem(match.group(0).strip("._-")) for match in TOKEN_RE.finditer(normalized) if match.group(0).strip("._-")]
+    return [match.group(0).strip("._-") for match in TOKEN_RE.finditer(normalized) if match.group(0).strip("._-")]
 
 
 def _canonical_token(token: str) -> str:
-    if not token:
-        return ""
-    vocabulary = _semantic_vocabulary()
-    if token in vocabulary or len(token) <= 1:
-        return token
-    collapsed = re.sub(r"([a-z])\1+", r"\1", token)
-    if collapsed in vocabulary:
-        return collapsed
-    best = token
-    best_score = 0.0
-    for candidate in vocabulary:
-        score = _token_similarity(token, candidate)
-        if score > best_score:
-            best = candidate
-            best_score = score
-    threshold = 0.84 if len(token) <= 3 else 0.72
-    return best if best_score >= threshold else token
+    """Return token as-is - no language-specific canonicalization.
+    
+    Removed:
+    - Hardcoded vocabulary lookup
+    - Duplicate character collapsing (Latin-specific)
+    - Language-specific similarity thresholds
+    """
+    return token if token else ""
 
 
 def _semantic_vocabulary() -> set[str]:
-    raw_terms: set[str] = set(STOP_WORDS) | QUESTION_TOKENS | CONTROL_TOKENS
-    raw_terms.update(IMPACT_TOKENS)
-    for values in (
-        GENERATION_ACTION_TOKENS,
-        CODE_CAPABILITY_TOKENS,
-        CODE_DESIGN_TOKENS,
-        IMAGE_CAPABILITY_TOKENS,
-        VIDEO_CAPABILITY_TOKENS,
-        AUDIO_CAPABILITY_TOKENS,
-        CREATIVE_CAPABILITY_TOKENS,
-        AGENTIC_CAPABILITY_TOKENS,
-        ARCHITECTURE_TOKENS,
-        PUBLIC_MEMORY_QUERY_TOKENS,
-    ):
-        raw_terms.update(values)
-    for template in INTENT_TEMPLATES.values():
-        raw_terms.update(_basic_tokens_without_canonicalization(template))
-    return {_stem(term.lower()) for term in raw_terms if term}
+    """Return empty set - vocabulary is now learned from embeddings.
+    
+    Kept for backward compatibility with existing code.
+    """
+    return set()
 
-
-def _basic_tokens_without_canonicalization(raw: str) -> list[str]:
-    normalized = unicodedata.normalize("NFKC", str(raw or "")).translate(CHAR_CONFUSABLES).lower()
-    return [_stem(match.group(0).strip("._-")) for match in TOKEN_RE.finditer(normalized) if match.group(0).strip("._-")]
-
-
-def _token_similarity(left: str, right: str) -> float:
-    if left == right:
-        return 1.0
-    if len(left) >= 3 and right.startswith(left):
-        return 0.86
-    if len(right) >= 3 and left.startswith(right):
-        return 0.78
-    if _consonant_skeleton(left) and _consonant_skeleton(left) == _consonant_skeleton(right):
-        return 0.88
-    distance = _edit_distance(left, right)
-    edit_score = 1.0 - distance / max(len(left), len(right), 1)
-    ngram_score = _ngram_jaccard(left, right)
-    return max(edit_score, ngram_score)
-
-
-def _consonant_skeleton(token: str) -> str:
-    return re.sub(r"[aeiou]+", "", token)
-
-
-def _edit_distance(left: str, right: str) -> int:
-    if left == right:
-        return 0
-    previous = list(range(len(right) + 1))
-    for row, left_char in enumerate(left, start=1):
-        current = [row]
-        for col, right_char in enumerate(right, start=1):
-            cost = 0 if left_char == right_char else 1
-            current.append(min(current[-1] + 1, previous[col] + 1, previous[col - 1] + cost))
-        previous = current
-    return previous[-1]
-
-
-def _ngram_jaccard(left: str, right: str, size: int = 2) -> float:
-    if len(left) < size or len(right) < size:
-        return 0.0
-    left_ngrams = {left[index : index + size] for index in range(len(left) - size + 1)}
-    right_ngrams = {right[index : index + size] for index in range(len(right) - size + 1)}
-    return len(left_ngrams & right_ngrams) / max(len(left_ngrams | right_ngrams), 1)
-
-
-def _looks_like_short_conversation(surface_tokens: list[str]) -> bool:
-    return len(surface_tokens) <= 4 and bool(set(surface_tokens) & QUESTION_TOKENS)
 
 
 def _vectorize(tokens: list[str]) -> Counter[str]:
@@ -329,14 +181,37 @@ def _cosine(left: Counter[str], right: Counter[str]) -> float:
 
 
 class SemanticCompilerRuntime:
-    def __init__(self, confidence_threshold: float = 0.18) -> None:
+    def __init__(self, confidence_threshold: float = 0.50) -> None:
         self.confidence_threshold = confidence_threshold
-        self.template_vectors = {
-            intent: _vectorize(sanitize(template))
-            for intent, template in INTENT_TEMPLATES.items()
+        self._classifier: Any = None  # Lazy initialization
+        # Template vectors kept for backward compatibility in score_intents
+        # Maps intent names to token frequency vectors for lexical scoring
+        self.template_vectors: dict[str, Counter[str]] = {
+            "FETCH_DOCUMENT": _vectorize(["document", "file", "download", "upload", "attachment"]),
+            "SYSTEM_DIAGNOSTIC": _vectorize(["error", "bug", "crash", "failure", "log", "issue"]),
+            "WORKSPACE_QUERY": _vectorize(["query", "workspace", "information", "analytics"]),
+            "CODE_GENERATE": _vectorize(["code", "function", "api", "python", "javascript"]),
+            "RUN_CANVAS": _vectorize(["analyze", "codebase", "synthesis", "full"]),
+            "RUN_INVENTION": _vectorize(["invent", "design", "create", "novel", "architecture"]),
+            "GENERAL_FACT": _vectorize(["explain", "define", "what", "concept"]),
+            "EMOTIONAL_CATCH": _vectorize(["help", "support", "stressed", "overwhelmed"]),
+            "META_INQUIRY": _vectorize(["meta", "system", "about", "yourself"]),
+            "OP_ESCAPE_TO_SANDBOX": _vectorize(["unknown", "sandbox", "escape"]),
         }
 
+    @property
+    def classifier(self) -> Any:
+        """Lazy initialize classifier on first access."""
+        if self._classifier is None:
+            self._classifier = get_classifier()
+        return self._classifier
+
     def score_intents(self, tokens: list[str]) -> list[Hypothesis]:
+        """Score intents using lexical method (kept for backward compatibility).
+        
+        The compile() method now uses embedding-based classification.
+        This is kept for tests and legacy code.
+        """
         user_vec = _vectorize(tokens)
         hypotheses = [
             Hypothesis(target_ir=intent, score=round(_cosine(user_vec, vec), 4))
@@ -370,7 +245,7 @@ class SemanticCompilerRuntime:
         camel_entities = [
             entity.strip(".,:;!?")
             for entity in re.findall(r"\b[A-Z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)*\b", raw_input)
-            if entity not in QUESTION_WORDS
+            if entity.lower() not in QUESTION_TOKENS
         ]
         if "late" in tokens:
             camel_entities.extend(f"{entity}.late_delivery" for entity in list(camel_entities) if "." not in entity)
@@ -409,8 +284,7 @@ class SemanticCompilerRuntime:
             question_intent = {"kind": "document_lookup", "relation": "has_author", "direction": "outgoing"}
         elif re.search(r"\b(institution|university)\b", raw_lower):
             question_intent = {"kind": "document_lookup", "relation": "has_institution", "direction": "outgoing"}
-        if any(re.search(pattern, raw_lower) for pattern in PROFILE_QUERY_PATTERNS):
-            scope["profile_query"] = True
+        # Profile query detection moved to embedding-based check in compile() method
         if question_intent:
             scope["question_intent"] = question_intent
         if camel_entities:
@@ -448,31 +322,54 @@ class SemanticCompilerRuntime:
         session = session or {}
         normalized_input = normalize_language(raw_input)
         tokens = sanitize(raw_input)
+        
+        # Use embedding-based intent classification (primary - HIGH PRIORITY)
+        target_ir, confidence = self.classifier.classify_intent(raw_input)
+        
+        # Keep hypotheses for backward compatibility (use lexical scoring)
         hypotheses = self.resolve_hypotheses(self.score_intents(tokens))
-        primary = hypotheses[0]
-        target_ir = primary.target_ir
-        confidence = primary.score
+        
         scope = self._scope_from_tokens(tokens, normalized_input)
         raw_lower = normalized_input.lower()
         causal_question = raw_lower.startswith("why ") and scope.get("entities")
-        if scope.get("question_intent"):
+        
+        # === HEURISTIC OVERRIDES: Only when embedding confidence is LOW (<0.65) ===
+        if confidence < 0.65:
+            # Apply question intent override only for very specific causal patterns
+            if scope.get("question_intent") and causal_question:
+                target_ir = "WORKSPACE_QUERY"
+                confidence = max(confidence, 0.24)
+            
+            # Apply impact token override only if entities are present
+            if scope.get("entities") and ((set(tokens) & IMPACT_TOKENS) or causal_question):
+                target_ir = "WORKSPACE_QUERY"
+                confidence = max(confidence, 0.22)
+        
+        # === PROFILE QUERY DETECTION: Always route to WORKSPACE_QUERY ===
+        is_profile = self.classifier.is_profile_query(raw_input, threshold=0.85)
+        if is_profile:
+            scope["profile_query"] = True
             target_ir = "WORKSPACE_QUERY"
             confidence = max(confidence, 0.24)
-        if scope.get("profile_query"):
-            target_ir = "WORKSPACE_QUERY"
-            confidence = max(confidence, 0.24)
-        if scope.get("entities") and ((set(tokens) & IMPACT_TOKENS) or causal_question or scope.get("question_intent")):
-            target_ir = "WORKSPACE_QUERY"
-            confidence = max(confidence, 0.22)
+        
+        
+        # === V9_CAPABILITY_OVERRIDE: Only if specific v9 capabilities detected ===
         v9_override = self._v9_capability_override(tokens, normalized_input)
         if v9_override:
             target_ir, override_confidence, capability_hint = v9_override
             confidence = max(confidence, override_confidence)
             scope["v9_capability_hint"] = capability_hint
+        elif target_ir == "CODE_GENERATE":
+            # If embedding classifier identified code generation (even if v9 override didn't),
+            # still set the capability hint for test compatibility
+            scope["v9_capability_hint"] = "coding"
+        
+        # === SANDBOX FALLBACK: Low confidence or explicit OP_ESCAPE ===
         execution_mode = ExecutionMode.DETERMINISTIC_CORE
         if target_ir == "OP_ESCAPE_TO_SANDBOX" or confidence < self.confidence_threshold:
             target_ir = "OP_ESCAPE_TO_SANDBOX"
             execution_mode = ExecutionMode.AIR_GAPPED_CONTAINER
+        
         context_inherited = False
         context_boosted = False
         question_intent = scope.get("question_intent")
@@ -480,9 +377,11 @@ class SemanticCompilerRuntime:
         if "entities" not in scope and session.get("ACTIVE_OBJECT") and relation not in DOCUMENT_WIDE_RELATIONS:
             scope["entities"] = [session["ACTIVE_OBJECT"]]
             context_inherited = True
+        
         if confidence < 0.8 and session.get("ACTIVE_INTENT") == target_ir:
             confidence = min(confidence + 0.15, 1.0)
             context_boosted = True
+        
         domain = INTENT_DOMAINS.get(target_ir, IntentDomain.WORKSPACE_OPERATION)
         return SemanticIR(
             target_ir=target_ir,
