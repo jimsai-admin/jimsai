@@ -1,0 +1,534 @@
+{
+  "trace_id": "a490375fb7ef4670b50736b0b0e20b02",
+  "layer_results": [
+    {
+      "layer": "input",
+      "activated": true,
+      "deterministic": true,
+      "summary": "Accepted request into the JIMS-AI strict prototype pipeline.",
+      "data": {
+        "user_id": "supabase:99137a45-f0b6-4af6-8c6e-cd1845e04a98",
+        "modality": "text",
+        "return_trace": true
+      }
+    },
+    {
+      "layer": "T1_transformer_intent_interface",
+      "activated": true,
+      "deterministic": true,
+      "summary": "Compiled input into bounded Semantic IR.",
+      "data": {
+        "target_ir": "GENERAL_FACT",
+        "confidence": 0.65,
+        "used_groq": false,
+        "groq_skip_reason": "",
+        "deterministic_target_ir": "GENERAL_FACT"
+      }
+    },
+    {
+      "layer": "L1_full_encoder",
+      "activated": true,
+      "deterministic": true,
+      "summary": "Built dual-representation signature with symbolic fields and latent embedding.",
+      "data": {
+        "signature_id": "sig_c2c17083daba9e90",
+        "modality": "text",
+        "entities": [
+          "JimsAI"
+        ],
+        "relations": 0,
+        "causal_links": 0,
+        "abstraction_tags": [
+          "concept",
+          "dual_representation",
+          "jimsai",
+          "text"
+        ],
+        "latent_source": "hash_projection"
+      }
+    },
+    {
+      "layer": "L2_real_time_learning",
+      "activated": true,
+      "deterministic": true,
+      "summary": "Validated source trust, linked related signatures, checked conflicts, and updated all memory indexes.",
+      "data": {
+        "signature_id": "sig_c2c17083daba9e90",
+        "memory": {
+          "sensory": 1,
+          "working": 0,
+          "episodic": 0,
+          "semantic": 0,
+          "entity_terms": 1,
+          "causal_terms": 0
+        },
+        "linked_signatures": [],
+        "conflicts": [],
+        "source_trust": 0.64
+      }
+    },
+    {
+      "layer": "V9_persistent_retrieval_hydration",
+      "activated": true,
+      "deterministic": true,
+      "summary": "Hydrated local runtime memory with Vectorize/Supabase matches before retrieval.",
+      "data": {
+        "hydrated": 1,
+        "vectorize_available": true,
+        "supabase_available": true
+      }
+    },
+    {
+      "layer": "L3_active_canvas",
+      "activated": false,
+      "deterministic": true,
+      "summary": "Canvas skipped by sparse routing preconditions.",
+      "data": {
+        "activated": false,
+        "session_id": null,
+        "signatures_created": [],
+        "patterns": [],
+        "used_groq": false
+      }
+    },
+    {
+      "layer": "L4_sparse_activation_meta_controller",
+      "activated": true,
+      "deterministic": true,
+      "summary": "Selected bounded runtime route.",
+      "data": {
+        "route": "retrieval",
+        "run_canvas": false,
+        "run_invention": false,
+        "run_retrieval": true,
+        "run_abstraction": true,
+        "run_world_model": true,
+        "reason": "Default deterministic retrieval route.",
+        "confidence": 0.65
+      }
+    },
+    {
+      "layer": "V9_capability_router",
+      "activated": true,
+      "deterministic": true,
+      "summary": "Selected v9 capability route: memory_chat.",
+      "data": {
+        "kind": "memory_chat",
+        "route": "memory_first",
+        "confidence": 0.58,
+        "reason": "Default memory-first chat path.",
+        "requires_external_adapter": false,
+        "allowed_adapters": [],
+        "verification_requirements": [
+          "source_trace",
+          "confidence_score",
+          "gap_reporting",
+          "csse_no_extra_claims",
+          "workspace_scope"
+        ],
+        "energy_profile": "low",
+        "context_strategy": "persistent_memory",
+        "human_approval_required": false
+      }
+    },
+    {
+      "layer": "V9_capability_adapters",
+      "activated": true,
+      "deterministic": true,
+      "summary": "Prepared structured capability adapters without executing unverified tools.",
+      "data": {
+        "results": [
+          {
+            "kind": "memory_chat",
+            "adapter": "structured_memory_runtime",
+            "status": "not_required",
+            "confidence": 0.58,
+            "summary": "Memory-first route uses existing retrieval, graph, simulation, and CSSE layers.",
+            "provenance": [],
+            "data": {}
+          }
+        ]
+      }
+    },
+    {
+      "layer": "L5_invention_engine",
+      "activated": false,
+      "deterministic": true,
+      "summary": "Invention engine skipped by sparse activation.",
+      "data": {
+        "activated": false,
+        "goal": "GENERAL_FACT",
+        "candidate_steps": [],
+        "simulation_notes": [],
+        "used_groq": false
+      }
+    },
+    {
+      "layer": "L6_multi_index_retrieval",
+      "activated": true,
+      "deterministic": true,
+      "summary": "Retrieved ranked signatures from local multi-index memory.",
+      "data": {
+        "count": 1,
+        "ids": [
+          "sig_58f621076542e0df"
+        ],
+        "reasons": {
+          "sig_58f621076542e0df": [
+            "abstraction_tag_index"
+          ]
+        }
+      }
+    },
+    {
+      "layer": "L7_abstraction_engine",
+      "activated": true,
+      "deterministic": true,
+      "summary": "Built deterministic abstractions from retrieved signatures.",
+      "data": {
+        "concepts": [
+          "AI",
+          "JIMS",
+          "JIMS-AI",
+          "abbreviation",
+          "ai",
+          "auditable",
+          "dual_representation",
+          "jims",
+          "memory",
+          "memory writes",
+          "must",
+          "permission",
+          "probe",
+          "scoped",
+          "scoped and auditable",
+          "term"
+        ],
+        "analogies": [
+          "memory --writes--> must",
+          "scoped and auditable --must be--> memory writes"
+        ],
+        "confidence": 0.23
+      }
+    },
+    {
+      "layer": "L8_latent_world_model",
+      "activated": true,
+      "deterministic": true,
+      "summary": "Activated causal world-model rules from local graph.",
+      "data": {
+        "rules": [],
+        "graph_entities": [
+          "JimsAI"
+        ]
+      }
+    },
+    {
+      "layer": "L9_reasoning_bridge",
+      "activated": true,
+      "deterministic": true,
+      "summary": "Built Verified Cognitive Object from plan, simulation, constraints, graph, and sources.",
+      "data": {
+        "confidence": 0.5727,
+        "sources": [
+          "sig_58f621076542e0df"
+        ],
+        "gaps": [],
+        "simulation_count": 1
+      }
+    },
+    {
+      "layer": "T2_transformer_render_interface",
+      "activated": true,
+      "deterministic": true,
+      "summary": "Rendered Verified Cognitive Object through CSSE with optional bounded Groq phrasing.",
+      "data": {
+        "used_groq": false,
+        "mode": "csse",
+        "groq_skip_reason": ""
+      }
+    },
+    {
+      "layer": "output",
+      "activated": true,
+      "deterministic": true,
+      "summary": "Returned bounded response and persisted trace for feedback.",
+      "data": {
+        "trace_id": "a490375fb7ef4670b50736b0b0e20b02",
+        "sources": [
+          "sig_58f621076542e0df"
+        ],
+        "confidence": 0.5727
+      }
+    },
+    {
+      "layer": "feedback",
+      "activated": false,
+      "deterministic": true,
+      "summary": "Feedback endpoint is ready for user correction, acceptance, or rejection.",
+      "data": {
+        "trace_id": "a490375fb7ef4670b50736b0b0e20b02",
+        "endpoint": "/v1/feedback"
+      }
+    }
+  ],
+  "trace": [
+    {
+      "stage": "input",
+      "message": "Accepted request into the JIMS-AI strict prototype pipeline.",
+      "data": {
+        "user_id": "supabase:99137a45-f0b6-4af6-8c6e-cd1845e04a98",
+        "modality": "text",
+        "return_trace": true
+      },
+      "timestamp": "2026-06-01T01:29:26.097360Z"
+    },
+    {
+      "stage": "T1_transformer_intent_interface",
+      "message": "Compiled input into bounded Semantic IR.",
+      "data": {
+        "target_ir": "GENERAL_FACT",
+        "confidence": 0.65,
+        "used_groq": false,
+        "groq_skip_reason": "",
+        "deterministic_target_ir": "GENERAL_FACT"
+      },
+      "timestamp": "2026-06-01T01:29:26.720185Z"
+    },
+    {
+      "stage": "L1_full_encoder",
+      "message": "Built dual-representation signature with symbolic fields and latent embedding.",
+      "data": {
+        "signature_id": "sig_c2c17083daba9e90",
+        "modality": "text",
+        "entities": [
+          "JimsAI"
+        ],
+        "relations": 0,
+        "causal_links": 0,
+        "abstraction_tags": [
+          "concept",
+          "dual_representation",
+          "jimsai",
+          "text"
+        ],
+        "latent_source": "hash_projection"
+      },
+      "timestamp": "2026-06-01T01:29:26.950465Z"
+    },
+    {
+      "stage": "L2_real_time_learning",
+      "message": "Validated source trust, linked related signatures, checked conflicts, and updated all memory indexes.",
+      "data": {
+        "signature_id": "sig_c2c17083daba9e90",
+        "memory": {
+          "sensory": 1,
+          "working": 0,
+          "episodic": 0,
+          "semantic": 0,
+          "entity_terms": 1,
+          "causal_terms": 0
+        },
+        "linked_signatures": [],
+        "conflicts": [],
+        "source_trust": 0.64
+      },
+      "timestamp": "2026-06-01T01:29:26.950591Z"
+    },
+    {
+      "stage": "V9_persistent_retrieval_hydration",
+      "message": "Hydrated local runtime memory with Vectorize/Supabase matches before retrieval.",
+      "data": {
+        "hydrated": 1,
+        "vectorize_available": true,
+        "supabase_available": true
+      },
+      "timestamp": "2026-06-01T01:29:28.175102Z"
+    },
+    {
+      "stage": "L3_active_canvas",
+      "message": "Canvas skipped by sparse routing preconditions.",
+      "data": {
+        "activated": false,
+        "session_id": null,
+        "signatures_created": [],
+        "patterns": [],
+        "used_groq": false
+      },
+      "timestamp": "2026-06-01T01:29:28.175157Z"
+    },
+    {
+      "stage": "L4_sparse_activation_meta_controller",
+      "message": "Selected bounded runtime route.",
+      "data": {
+        "route": "retrieval",
+        "run_canvas": false,
+        "run_invention": false,
+        "run_retrieval": true,
+        "run_abstraction": true,
+        "run_world_model": true,
+        "reason": "Default deterministic retrieval route.",
+        "confidence": 0.65
+      },
+      "timestamp": "2026-06-01T01:29:28.175197Z"
+    },
+    {
+      "stage": "V9_capability_router",
+      "message": "Selected v9 capability route: memory_chat.",
+      "data": {
+        "kind": "memory_chat",
+        "route": "memory_first",
+        "confidence": 0.58,
+        "reason": "Default memory-first chat path.",
+        "requires_external_adapter": false,
+        "allowed_adapters": [],
+        "verification_requirements": [
+          "source_trace",
+          "confidence_score",
+          "gap_reporting",
+          "csse_no_extra_claims",
+          "workspace_scope"
+        ],
+        "energy_profile": "low",
+        "context_strategy": "persistent_memory",
+        "human_approval_required": false
+      },
+      "timestamp": "2026-06-01T01:29:28.175340Z"
+    },
+    {
+      "stage": "V9_capability_adapters",
+      "message": "Prepared structured capability adapters without executing unverified tools.",
+      "data": {
+        "results": [
+          {
+            "kind": "memory_chat",
+            "adapter": "structured_memory_runtime",
+            "status": "not_required",
+            "confidence": 0.58,
+            "summary": "Memory-first route uses existing retrieval, graph, simulation, and CSSE layers.",
+            "provenance": [],
+            "data": {}
+          }
+        ]
+      },
+      "timestamp": "2026-06-01T01:29:28.175371Z"
+    },
+    {
+      "stage": "L5_invention_engine",
+      "message": "Invention engine skipped by sparse activation.",
+      "data": {
+        "activated": false,
+        "goal": "GENERAL_FACT",
+        "candidate_steps": [],
+        "simulation_notes": [],
+        "used_groq": false
+      },
+      "timestamp": "2026-06-01T01:29:28.175396Z"
+    },
+    {
+      "stage": "L6_multi_index_retrieval",
+      "message": "Retrieved ranked signatures from local multi-index memory.",
+      "data": {
+        "count": 1,
+        "ids": [
+          "sig_58f621076542e0df"
+        ],
+        "reasons": {
+          "sig_58f621076542e0df": [
+            "abstraction_tag_index"
+          ]
+        }
+      },
+      "timestamp": "2026-06-01T01:29:28.175808Z"
+    },
+    {
+      "stage": "L7_abstraction_engine",
+      "message": "Built deterministic abstractions from retrieved signatures.",
+      "data": {
+        "concepts": [
+          "AI",
+          "JIMS",
+          "JIMS-AI",
+          "abbreviation",
+          "ai",
+          "auditable",
+          "dual_representation",
+          "jims",
+          "memory",
+          "memory writes",
+          "must",
+          "permission",
+          "probe",
+          "scoped",
+          "scoped and auditable",
+          "term"
+        ],
+        "analogies": [
+          "memory --writes--> must",
+          "scoped and auditable --must be--> memory writes"
+        ],
+        "confidence": 0.23
+      },
+      "timestamp": "2026-06-01T01:29:28.175853Z"
+    },
+    {
+      "stage": "L8_latent_world_model",
+      "message": "Activated causal world-model rules from local graph.",
+      "data": {
+        "rules": [],
+        "graph_entities": [
+          "JimsAI"
+        ]
+      },
+      "timestamp": "2026-06-01T01:29:28.175886Z"
+    },
+    {
+      "stage": "L9_reasoning_bridge",
+      "message": "Built Verified Cognitive Object from plan, simulation, constraints, graph, and sources.",
+      "data": {
+        "confidence": 0.5727,
+        "sources": [
+          "sig_58f621076542e0df"
+        ],
+        "gaps": [],
+        "simulation_count": 1
+      },
+      "timestamp": "2026-06-01T01:29:28.176099Z"
+    },
+    {
+      "stage": "T2_transformer_render_interface",
+      "message": "Rendered Verified Cognitive Object through CSSE with optional bounded Groq phrasing.",
+      "data": {
+        "used_groq": false,
+        "mode": "csse",
+        "groq_skip_reason": ""
+      },
+      "timestamp": "2026-06-01T01:29:28.308321Z"
+    },
+    {
+      "stage": "output",
+      "message": "Returned bounded response and persisted trace for feedback.",
+      "data": {
+        "trace_id": "a490375fb7ef4670b50736b0b0e20b02",
+        "sources": [
+          "sig_58f621076542e0df"
+        ],
+        "confidence": 0.5727
+      },
+      "timestamp": "2026-06-01T01:29:28.308340Z"
+    },
+    {
+      "stage": "feedback",
+      "message": "Feedback endpoint is ready for user correction, acceptance, or rejection.",
+      "data": {
+        "trace_id": "a490375fb7ef4670b50736b0b0e20b02",
+        "endpoint": "/v1/feedback"
+      },
+      "timestamp": "2026-06-01T01:29:28.308348Z"
+    }
+  ],
+  "sources": [
+    "sig_58f621076542e0df"
+  ],
+  "gaps": []
+}
