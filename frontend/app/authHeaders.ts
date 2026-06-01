@@ -1,6 +1,7 @@
 "use client";
 
 const CUSTOM_SESSION_KEY = "jimsai.supabase.session";
+export const AUTH_STATE_EVENT = "jimsai:auth-state";
 
 export function supabaseAuthHeaders(): Record<string, string> {
   const token = supabaseAccessToken();
@@ -14,11 +15,13 @@ export function supabaseAuthConfigured(): boolean {
 export function storeSupabaseSession(payload: Record<string, unknown>) {
   if (typeof window === "undefined") return;
   window.localStorage.setItem(CUSTOM_SESSION_KEY, JSON.stringify(payload));
+  window.dispatchEvent(new Event(AUTH_STATE_EVENT));
 }
 
 export function clearSupabaseSession() {
   if (typeof window === "undefined") return;
   window.localStorage.removeItem(CUSTOM_SESSION_KEY);
+  window.dispatchEvent(new Event(AUTH_STATE_EVENT));
 }
 
 export async function refreshSupabaseSession(apiBase: string): Promise<boolean> {

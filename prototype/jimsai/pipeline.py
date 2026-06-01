@@ -1100,7 +1100,7 @@ class JimsAIPipeline:
             return TrainingPanelPage(panel=panel, items=[], total=0)
         external_page = self.production.list_panel_items(panel, cursor, limit)
         if external_page is not None:
-            return self._filter_external_panel_page(external_page)
+            return external_page
         items = self._panel_items(panel)
         offset = max(int(cursor or "0"), 0)
         page_size = min(max(limit, 1), 100)

@@ -130,10 +130,8 @@ class AuditEventStore:
             return
         connection.execute(
             """
-            INSERT INTO cqrs_read_models (model_name, aggregate_id, user_id, payload_json, updated_at)
+            INSERT OR REPLACE INTO cqrs_read_models (model_name, aggregate_id, user_id, payload_json, updated_at)
             VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT(model_name, aggregate_id)
-            DO UPDATE SET user_id = excluded.user_id, payload_json = excluded.payload_json, updated_at = excluded.updated_at
             """,
             (model_name, aggregate_id, user_id, payload_json, created_at),
         )
@@ -189,10 +187,8 @@ class VerifiedResultCache:
         with self._lock, self._connect() as connection:
             connection.execute(
                 """
-                INSERT INTO verified_result_cache (cache_key, value_json, stored_at)
+                INSERT OR REPLACE INTO verified_result_cache (cache_key, value_json, stored_at)
                 VALUES (?, ?, ?)
-                ON CONFLICT(cache_key)
-                DO UPDATE SET value_json = excluded.value_json, stored_at = excluded.stored_at
                 """,
                 (key, value_json, utc_now().isoformat()),
             )

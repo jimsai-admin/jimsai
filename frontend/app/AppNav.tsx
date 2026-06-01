@@ -5,14 +5,31 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { PanelRightClose, PanelRightOpen } from "lucide-react";
 
+import { AUTH_STATE_EVENT, supabaseUserContext } from "./authHeaders";
+
 export default function AppNav() {
   const pathname = usePathname();
   const isChat = pathname === "/" || pathname.startsWith("/user") || pathname.startsWith("/chat");
-  const [insightsOpen, setInsightsOpen] = useState(true);
+  const [insightsOpen, setInsightsOpen] = useState(false);
+  const [authenticated, setAuthenticated] = useState(false);
   const items = [
     { href: "/user", label: "Chat", active: isChat },
     { href: "/training", label: "Training", active: pathname.startsWith("/training") }
   ] as const;
+
+  useEffect(() => {
+    function updateAuthState() {
+      setAuthenticated(supabaseUserContext().authenticated);
+    }
+
+    updateAuthState();
+    window.addEventListener(AUTH_STATE_EVENT, updateAuthState);
+    window.addEventListener("storage", updateAuthState);
+    return () => {
+      window.removeEventListener(AUTH_STATE_EVENT, updateAuthState);
+      window.removeEventListener("storage", updateAuthState);
+    };
+  }, []);
 
   useEffect(() => {
     function updateInsightState(event: Event) {
@@ -23,6 +40,8 @@ export default function AppNav() {
     window.addEventListener("jimsai:insights-state", updateInsightState);
     return () => window.removeEventListener("jimsai:insights-state", updateInsightState);
   }, []);
+
+  if (!authenticated) return null;
 
   return (
     <div className="headerControls">

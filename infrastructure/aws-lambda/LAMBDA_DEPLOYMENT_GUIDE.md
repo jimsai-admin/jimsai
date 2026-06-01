@@ -59,6 +59,7 @@ Detection: `os.getenv("AWS_LAMBDA_FUNCTION_NAME")` — automatically set by AWS,
 ## Build
 
 Run from the repo root `C:\Users\ajibe\Jims-AI`:
+Recommeded to use `10+` timeout
 
 ```powershell
 # 1. Clean previous build

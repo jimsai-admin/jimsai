@@ -5,6 +5,8 @@ import {
   AlertTriangle,
   BrainCircuit,
   BookOpenCheck,
+  Check,
+  Clipboard,
   Download,
   GitBranch,
   Layers3,
@@ -18,6 +20,7 @@ import {
 
 import {
   clearSupabaseSession,
+  refreshSupabaseSession,
   storeSupabaseSession,
   supabaseAuthHeaders,
   supabaseUserContext
@@ -65,7 +68,7 @@ export default function UserConsole() {
   const [simulationTrace, setSimulationTrace] = useState(false);
   const [canvasHint, setCanvasHint] = useState(false);
   const [inventionHint, setInventionHint] = useState(false);
-  const [insightsOpen, setInsightsOpen] = useState(true);
+  const [insightsOpen, setInsightsOpen] = useState(false);
   const [last, setLast] = useState<ApiResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [feedbackStatus, setFeedbackStatus] = useState("No feedback submitted.");
@@ -82,6 +85,20 @@ export default function UserConsole() {
 
   const authHeaders = useCallback((): Record<string, string> => {
     return supabaseAuthHeaders();
+  }, []);
+
+  const fetchWithNetworkRetry = useCallback(async (url: string, init: RequestInit) => {
+    try {
+      return await fetch(url, init);
+    } catch (error) {
+      await wait(750);
+      try {
+        return await fetch(url, init);
+      } catch {
+        await wait(1500);
+        return await fetch(url, init);
+      }
+    }
   }, []);
 
   const resizeComposer = useCallback((node?: HTMLTextAreaElement | null) => {
@@ -169,7 +186,7 @@ export default function UserConsole() {
     setMessages((current) => [...current, { role: "user", content: query }]);
     setLoading(true);
     try {
-      const response = await fetch(`${apiBase}/v1/query`, {
+      let response = await fetchWithNetworkRetry(`${apiBase}/v1/query`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...authHeaders() },
         body: JSON.stringify({
@@ -181,6 +198,25 @@ export default function UserConsole() {
           return_trace: true
         })
       });
+      if (response.status === 401 && await refreshSupabaseSession(apiBase)) {
+        response = await fetchWithNetworkRetry(`${apiBase}/v1/query`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...authHeaders() },
+          body: JSON.stringify({
+            user_id: context.userId,
+            workspace_id: context.workspaceId,
+            query,
+            canvas_hint: canvasHint,
+            invention_hint: inventionHint,
+            return_trace: true
+          })
+        });
+      }
+      if (response.status === 401) {
+        clearSupabaseSession();
+        setAuthContext(supabaseUserContext());
+        throw new Error("session expired; sign in again");
+      }
       if (!response.ok) throw new Error(`query failed with HTTP ${response.status}`);
       const data = (await response.json()) as ApiResponse;
       setLast(data);
@@ -329,7 +365,7 @@ export default function UserConsole() {
           {messages.map((message, index) => (
             <article className={`message ${message.role === "user" ? "user" : ""}`} key={`${message.role}-${index}`}>
               <span className="messageRole">{message.role === "user" ? "You" : "JIMS-AI"}</span>
-              {message.content}
+              <MarkdownMessage content={message.content} />
             </article>
           ))}
         </div>
@@ -499,4 +535,92 @@ export default function UserConsole() {
 
     </main>
   );
+}
+
+function wait(ms: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function MarkdownMessage({ content }: { content: string }) {
+  const blocks = useMemo(() => parseMarkdownBlocks(content), [content]);
+  return (
+    <div className="markdownMessage">
+      {blocks.map((block, index) => {
+        if (block.type === "code") {
+          return <CodeBlock code={block.content} language={block.language} key={`code-${index}`} />;
+        }
+        return <MarkdownText text={block.content} key={`text-${index}`} />;
+      })}
+    </div>
+  );
+}
+
+function CodeBlock({ code, language }: { code: string; language: string }) {
+  const [copied, setCopied] = useState(false);
+
+  async function copyCode() {
+    await navigator.clipboard.writeText(code);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1400);
+  }
+
+  return (
+    <div className="codeBlock">
+      <div className="codeBlockHeader">
+        <span>{language || "code"}</span>
+        <button className="codeCopyButton" type="button" onClick={copyCode}>
+          {copied ? <Check size={14} /> : <Clipboard size={14} />}
+          {copied ? "Copied" : "Copy"}
+        </button>
+      </div>
+      <pre><code>{code}</code></pre>
+    </div>
+  );
+}
+
+function MarkdownText({ text }: { text: string }) {
+  const lines = text.split(/\n+/).filter((line) => line.trim().length > 0);
+  return (
+    <>
+      {lines.map((line, index) => {
+        const trimmed = line.trim();
+        if (/^#{1,3}\s+/.test(trimmed)) {
+          const level = trimmed.match(/^#+/)?.[0].length ?? 2;
+          const Tag = level === 1 ? "h1" : level === 2 ? "h2" : "h3";
+          return <Tag key={`${trimmed}-${index}`}>{renderInlineMarkdown(trimmed.replace(/^#{1,3}\s+/, ""))}</Tag>;
+        }
+        if (/^[-*]\s+/.test(trimmed)) {
+          return <p className="markdownListItem" key={`${trimmed}-${index}`}>{renderInlineMarkdown(trimmed.replace(/^[-*]\s+/, ""))}</p>;
+        }
+        return <p key={`${trimmed}-${index}`}>{renderInlineMarkdown(trimmed)}</p>;
+      })}
+    </>
+  );
+}
+
+function renderInlineMarkdown(text: string) {
+  const parts = text.split(/(`[^`]+`|\*\*[^*]+\*\*)/g).filter(Boolean);
+  return parts.map((part, index) => {
+    if (part.startsWith("`") && part.endsWith("`")) return <code key={`${part}-${index}`}>{part.slice(1, -1)}</code>;
+    if (part.startsWith("**") && part.endsWith("**")) return <strong key={`${part}-${index}`}>{part.slice(2, -2)}</strong>;
+    return <span key={`${part}-${index}`}>{part}</span>;
+  });
+}
+
+function parseMarkdownBlocks(content: string): Array<{ type: "text" | "code"; content: string; language: string }> {
+  const blocks: Array<{ type: "text" | "code"; content: string; language: string }> = [];
+  const fencePattern = /```(\w+)?\n([\s\S]*?)```/g;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = fencePattern.exec(content)) !== null) {
+    if (match.index > lastIndex) {
+      blocks.push({ type: "text", content: content.slice(lastIndex, match.index), language: "" });
+    }
+    blocks.push({ type: "code", language: match[1] ?? "", content: match[2].replace(/\n$/, "") });
+    lastIndex = fencePattern.lastIndex;
+  }
+  if (lastIndex < content.length) {
+    blocks.push({ type: "text", content: content.slice(lastIndex), language: "" });
+  }
+  return blocks.length ? blocks : [{ type: "text", content, language: "" }];
 }
