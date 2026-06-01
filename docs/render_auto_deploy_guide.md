@@ -1,9 +1,12 @@
 # Render Auto-Deploy Guide
 
-This repo now defines two Render web services in `render.yaml`:
+This repo now defines one Render web service in `render.yaml`:
 
-- `jimsai-embedding-service`
 - `jimsai-training-service`
+
+The embedding service runs separately on Hugging Face Spaces:
+
+- `https://jimstechai-jimsai-embedding-service.hf.space`
 
 Both are stateless web services. `/health` is public. All work endpoints require:
 
@@ -13,7 +16,7 @@ Authorization: Bearer <JIMS_RENDER_AGENT_TOKEN>
 
 ## Important Uptime Note
 
-Render Free services can sleep. With external pings they can be usually reachable, but not 99.9% guaranteed. If sentence-transformer embedding must be available 99.9% of the time, use a paid Render instance or another host with minimum instances enabled.
+Render Free services and free Hugging Face Spaces can sleep. With external pings they can be usually reachable, but not 99.9% guaranteed. If sentence-transformer embedding must be available at a 99.9% target, use a paid host with an always-on/minimum-instance setting for the embedding service.
 
 Recommended production stance:
 
@@ -41,33 +44,50 @@ main
 ```
 
 6. Render should detect `render.yaml`.
-7. Approve creation of both web services.
+7. Approve creation of `jimsai-training-service`.
 
-## 2. Embedding Service Environment
+## 2. Hugging Face Embedding Service
 
-Set these on `jimsai-embedding-service` for Render Free:
+Create or update the Docker Space:
+
+```text
+https://huggingface.co/spaces/jimstechai/jimsai-embedding-service
+```
+
+The repo contains copy/paste-ready Space files in:
+
+```text
+infrastructure/huggingface-space/jimsai-embedding-service/
+```
+
+To upload from this machine instead of the browser, keep this token in local `.env` only:
+
+```text
+HUGGING_ACESS_TOKEN=<hugging-face-write-token>
+```
+
+Do not add this token to GitHub, Vercel public variables, Render, or Lambda unless a deployment script specifically needs it.
+
+Set these Hugging Face Space secrets:
 
 ```text
 JIMS_RENDER_AGENT_TOKEN=<same-long-random-token-used-by-training-service>
-JIMS_EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
+JIMS_EMBEDDING_SERVICE_TOKEN=<same-token>
+JIMS_EMBEDDING_MODEL=intfloat/multilingual-e5-small
 JIMS_EMBEDDING_DIMENSIONS=768
-JIMS_EMBEDDING_DEVICE=cpu
-JIMS_EMBEDDING_PRELOAD_ON_STARTUP=true
-JIMS_EMBEDDING_TORCH_DTYPE=auto
 JIMS_EMBEDDING_HASH_FALLBACK_ENABLED=true
-JIMS_ACTIVE_ARTIFACT_ID=base_encoder
+JIMS_ACTIVE_ARTIFACT_ID=hf_space_encoder
 ```
 
-`sentence-transformers/all-MiniLM-L6-v2` is the Free-tier-safe default. It is still a SentenceTransformer model, but much smaller than `intfloat/multilingual-e5-small`.
+`intfloat/multilingual-e5-small` is natively 384-dimensional. The Space pads/truncates vectors to `JIMS_EMBEDDING_DIMENSIONS` so it remains compatible with the current 768-dimensional Cloudflare Vectorize index and hash recovery path.
 
-For a paid always-on Render instance with more memory, use the stronger multilingual model:
+If the Space OOMs on the free CPU tier, temporarily use:
 
 ```text
-JIMS_EMBEDDING_MODEL=intfloat/multilingual-e5-small
-JIMS_EMBEDDING_TORCH_DTYPE=float16
+JIMS_EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
 ```
 
-Use `false` for `JIMS_EMBEDDING_HASH_FALLBACK_ENABLED` only if you want embedding calls to fail instead of degrading. For live chat, keep it `true` and rely on re-embedding recovery.
+That keeps the service on a real SentenceTransformer instead of hash-only behavior. Use `false` for `JIMS_EMBEDDING_HASH_FALLBACK_ENABLED` only if you want embedding calls to fail instead of degrading. For live chat, keep it `true` and rely on re-embedding recovery.
 
 ## 3. Training Service Environment
 
@@ -75,7 +95,7 @@ Set these on `jimsai-training-service`:
 
 ```text
 JIMS_RENDER_AGENT_TOKEN=<same-token>
-JIMS_EMBEDDING_SERVICE_URL=https://jimsai-embedding-service.onrender.com
+JIMS_EMBEDDING_SERVICE_URL=https://jimstechai-jimsai-embedding-service.hf.space
 JIMS_EMBEDDING_SERVICE_TOKEN=<same-token>
 JIMS_STORAGE_BACKEND=production
 JIMS_STRICT_PROVIDER_STARTUP=true
@@ -99,6 +119,14 @@ KAGGLE_DATASET_OWNER=<kaggle-username>
 GROQ_API_KEY=<groq-key>
 ```
 
+If a protected autonomous endpoint returns:
+
+```json
+{"detail":"agent token not configured"}
+```
+
+then `JIMS_RENDER_AGENT_TOKEN` is missing from the Render service environment. Add it in the Render dashboard, save, and redeploy `jimsai-training-service`.
+
 Optional Redis/Celery:
 
 ```text
@@ -107,13 +135,15 @@ REDIS_URL=<redis-url>
 
 ## 4. Lambda Environment After Render Is Live
 
-After `jimsai-embedding-service` responds successfully, add these to Lambda:
+After the Hugging Face Space responds successfully, add these to Lambda:
 
 ```text
-JIMS_EMBEDDING_SERVICE_URL=https://jimsai-embedding-service.onrender.com
+JIMS_EMBEDDING_SERVICE_URL=https://jimstechai-jimsai-embedding-service.hf.space
 JIMS_EMBEDDING_SERVICE_TOKEN=<same-token>
 JIMS_ENABLE_MULTIMODAL_ENCODERS=true
 JIMS_MULTIMODAL_ENCODER_MODE=external
+JIMS_MULTIMODAL_ENCODER_URL=https://jimstechai-jimsai-embedding-service.hf.space
+JIMS_MULTIMODAL_ENCODER_API_KEY=<same-token>
 ```
 
 Then redeploy/update Lambda env using:
@@ -129,7 +159,7 @@ Use cron-job.org, Better Stack, UptimeRobot, or a similar external scheduler.
 Every 5 minutes:
 
 ```text
-GET https://jimsai-embedding-service.onrender.com/health
+GET https://jimstechai-jimsai-embedding-service.hf.space/health
 GET https://jimsai-training-service.onrender.com/health
 ```
 
@@ -184,7 +214,7 @@ Embedding:
 $token = "<JIMS_RENDER_AGENT_TOKEN>"
 Invoke-RestMethod `
   -Method Post `
-  -Uri "https://jimsai-embedding-service.onrender.com/v1/embed" `
+  -Uri "https://jimstechai-jimsai-embedding-service.hf.space/v1/embed" `
   -Headers @{ Authorization = "Bearer $token" } `
   -ContentType "application/json" `
   -Body '{"texts":["Why did the dashboard show records but no UI?"],"purpose":"query"}'

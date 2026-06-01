@@ -941,6 +941,7 @@ class ExternalMultimodalEncoderAdapter:
         if isinstance(payload, dict):
             vector = (
                 payload.get("embedding")
+                or (payload.get("embeddings")[0] if isinstance(payload.get("embeddings"), list) and payload.get("embeddings") else None)
                 or payload.get("vector")
                 or payload.get("values")
                 or payload.get("latent_embedding")
