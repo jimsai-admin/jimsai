@@ -36,6 +36,10 @@ class AuthRefreshRequest(BaseModel):
     refresh_token: str
 
 
+class ChatThreadDeleteRequest(BaseModel):
+    user_id: str
+
+
 @router.get("/v1/auth/config")
 async def auth_config():
     settings = AuthSettings.from_env()
@@ -85,6 +89,21 @@ async def training_panel_items(panel: str, cursor: str | None = None, limit: int
 @router.get("/v1/providers/readiness", dependencies=[Depends(require_scope("training:read"))])
 async def provider_readiness():
     return pipeline.production.readiness()
+
+@router.get("/v1/chat/threads", dependencies=[Depends(require_scope("runtime:query"))])
+async def chat_threads(user_id: str, workspace_id: str | None = None, limit: int = 50):
+    threads = pipeline.production.list_chat_threads(user_id=user_id, workspace_id=workspace_id, limit=limit)
+    return {"threads": threads}
+
+@router.get("/v1/chat/threads/{thread_id}/messages", dependencies=[Depends(require_scope("runtime:query"))])
+async def chat_thread_messages(thread_id: str, user_id: str, limit: int = 200):
+    messages = pipeline.production.list_chat_messages(thread_id=thread_id, user_id=user_id, limit=limit)
+    return {"thread_id": thread_id, "messages": messages}
+
+@router.delete("/v1/chat/threads/{thread_id}", dependencies=[Depends(require_scope("runtime:query"))])
+async def chat_thread_delete(thread_id: str, request: ChatThreadDeleteRequest):
+    deleted_messages = pipeline.production.delete_chat_thread(thread_id=thread_id, user_id=request.user_id)
+    return {"accepted": True, "thread_id": thread_id, "deleted_messages": deleted_messages}
 
 @router.post("/v1/review/action", dependencies=[Depends(require_scope("training:write"))])
 async def review_action(request: ReviewActionRequest):

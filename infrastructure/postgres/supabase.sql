@@ -225,6 +225,8 @@ CREATE TABLE IF NOT EXISTS user_feedback (
   id TEXT PRIMARY KEY,
   workspace_id TEXT NOT NULL,
   user_id TEXT,
+  thread_id TEXT,
+  trace_id TEXT,
   query TEXT,
   answer TEXT,
   rating TEXT,
@@ -234,8 +236,40 @@ CREATE TABLE IF NOT EXISTS user_feedback (
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
+ALTER TABLE user_feedback ADD COLUMN IF NOT EXISTS thread_id TEXT;
+ALTER TABLE user_feedback ADD COLUMN IF NOT EXISTS trace_id TEXT;
 CREATE INDEX IF NOT EXISTS user_feedback_workspace_created_idx ON user_feedback(workspace_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS user_feedback_learn_this_idx ON user_feedback(learn_this);
+CREATE INDEX IF NOT EXISTS user_feedback_thread_idx ON user_feedback(thread_id);
+
+CREATE TABLE IF NOT EXISTS chat_threads (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT,
+  user_id TEXT NOT NULL,
+  title TEXT NOT NULL DEFAULT '',
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS chat_threads_user_updated_idx ON chat_threads(user_id, updated_at DESC);
+CREATE INDEX IF NOT EXISTS chat_threads_workspace_updated_idx ON chat_threads(workspace_id, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS chat_messages (
+  id TEXT PRIMARY KEY,
+  thread_id TEXT NOT NULL REFERENCES chat_threads(id) ON DELETE CASCADE,
+  workspace_id TEXT,
+  user_id TEXT NOT NULL,
+  role TEXT NOT NULL,
+  content TEXT NOT NULL,
+  trace_id TEXT,
+  confidence DOUBLE PRECISION,
+  sources JSONB DEFAULT '[]'::jsonb,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS chat_messages_thread_created_idx ON chat_messages(thread_id, created_at ASC);
+CREATE INDEX IF NOT EXISTS chat_messages_user_created_idx ON chat_messages(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS chat_messages_trace_idx ON chat_messages(trace_id);
 
 -- ============================================================================
 -- Autonomous training service state

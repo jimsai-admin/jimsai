@@ -210,16 +210,22 @@ class JimsAIPipeline:
         if self.cloud_authoritative:
             return
 
-    def _load_session(self, user_id: str) -> dict[str, str]:
-        if self.cloud_authoritative:
-            return self.production.load_session(user_id)
-        return self.sessions.setdefault(user_id, {})
+    def _thread_session_key(self, user_id: str, thread_id: str | None) -> str:
+        safe_thread_id = (thread_id or "default").strip() or "default"
+        return f"{user_id}:thread:{safe_thread_id}"
 
-    def _save_session(self, user_id: str, session: dict[str, str]) -> None:
+    def _load_session(self, user_id: str, thread_id: str | None = None) -> dict[str, str]:
+        session_key = self._thread_session_key(user_id, thread_id)
         if self.cloud_authoritative:
-            self.production.save_session(user_id, session)
+            return self.production.load_session(session_key)
+        return self.sessions.setdefault(session_key, {})
+
+    def _save_session(self, user_id: str, session: dict[str, str], thread_id: str | None = None) -> None:
+        session_key = self._thread_session_key(user_id, thread_id)
+        if self.cloud_authoritative:
+            self.production.save_session(session_key, session)
         else:
-            self.sessions[user_id] = session
+            self.sessions[session_key] = session
 
     async def run(self, request: PipelineRequest) -> PipelineResponse:
         self._reset_request_cache()
@@ -228,6 +234,7 @@ class JimsAIPipeline:
             {
                 "user_id": request.user_id,
                 "workspace_id": request.workspace_id,
+                "thread_id": request.thread_id or "default",
                 "query": request.query.strip(),
                 "modality": request.modality.value,
                 "canvas_hint": request.canvas_hint,
@@ -263,17 +270,23 @@ class JimsAIPipeline:
                 activated=True,
                 deterministic=True,
                 summary="Accepted request into the JIMS-AI strict prototype pipeline.",
-                data={"user_id": request.user_id, "modality": request.modality.value, "return_trace": request.return_trace},
+                data={
+                    "user_id": request.user_id,
+                    "workspace_id": request.workspace_id,
+                    "thread_id": request.thread_id or "default",
+                    "modality": request.modality.value,
+                    "return_trace": request.return_trace,
+                },
             )
         )
 
-        session = self._load_session(request.user_id)
+        session = self._load_session(request.user_id, request.thread_id)
         ir, intent_layer_result = await self.intent_layer.infer(request, session)
         record(intent_layer_result)
         session["ACTIVE_INTENT"] = ir.target_ir
         if ir.scope_constraints.get("entities"):
             session["ACTIVE_OBJECT"] = str(ir.scope_constraints["entities"][0])
-        self._save_session(request.user_id, session)
+        self._save_session(request.user_id, session, request.thread_id)
 
         input_signature, encoder_layer_result = self.encoder_layer.encode(request, ir)
         record(encoder_layer_result)
@@ -406,6 +419,16 @@ class JimsAIPipeline:
             used_groq=used_groq,
         )
         self.result_cache.set(cache_key, pipeline_response.model_dump(mode="json"))
+        self.production.save_chat_exchange(
+            user_id=request.user_id,
+            workspace_id=request.workspace_id,
+            thread_id=request.thread_id or "default",
+            query=request.query,
+            answer=response,
+            trace_id=ir.trace_id,
+            confidence=obj.confidence,
+            sources=obj.sources,
+        )
         self.event_store.append(
             "query_completed",
             ir.trace_id,
@@ -415,6 +438,7 @@ class JimsAIPipeline:
                 "sources": obj.sources,
                 "gaps": obj.knowledge_gaps,
                 "used_groq": used_groq,
+                "thread_id": request.thread_id or "default",
             },
             user_id=request.user_id,
         )
@@ -442,10 +466,22 @@ class JimsAIPipeline:
         self.feedback_events.append(request)
         created_at = utc_now()
         record = {
+            "id": f"feedback_{request.trace_id}_{len(self.feedback_events) + 1}",
+            "workspace_id": request.workspace_id or "default",
+            "user_id": request.user_id,
+            "thread_id": request.thread_id,
+            "trace_id": request.trace_id,
+            "query": None,
+            "answer": None,
+            "rating": request.rating,
+            "feedback": request.notes,
+            "learn_this": request.notes == "learn_this",
+            "payload": request.model_dump(mode="json"),
             "request": request.model_dump(mode="json"),
             "created_at": created_at.isoformat(),
         }
         self.feedback_history.append(record)
+        self.production.save_user_feedback(record)
         self.production.save_panel_items([self._feedback_item(record, len(self.feedback_history))])
         self.event_store.append(
             "feedback_recorded",

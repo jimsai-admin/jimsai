@@ -9,10 +9,12 @@ import {
   Clipboard,
   Download,
   GitBranch,
+  History,
   Layers3,
   Lightbulb,
   ListTree,
   Paperclip,
+  Plus,
   Send,
   ShieldCheck,
   Sparkles
@@ -57,11 +59,45 @@ type ApiResponse = {
   layer_results: LayerResult[];
 };
 type Message = { role: "user" | "assistant"; content: string };
+type StoredThread = { id: string; title: string; updatedAt: string };
+type ThreadResponse = {
+  threads: Array<{ id: string; title: string; updated_at?: string; created_at?: string }>;
+};
+type MessageResponse = {
+  messages: Array<{ role: "user" | "assistant"; content: string }>;
+};
+
+const initialAssistantMessage: Message = {
+  role: "assistant",
+  content: "JIMS-AI chat runtime ready. Ask with text, files, canvas, or invention routing."
+};
+
+function createThreadId() {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) return crypto.randomUUID();
+  return `thread_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+}
+
+function loadStoredThreads(): StoredThread[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem("jimsai:chat:threads") ?? "[]") as StoredThread[];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
 
 export default function UserConsole() {
-  const [messages, setMessages] = useState<Message[]>([
-    { role: "assistant", content: "JIMS-AI chat runtime ready. Ask with text, files, canvas, or invention routing." }
-  ]);
+  const [threadId, setThreadId] = useState(() => {
+    if (typeof window === "undefined") return "default";
+    return window.localStorage.getItem("jimsai:chat:active-thread") || createThreadId();
+  });
+  const [threads, setThreads] = useState<StoredThread[]>(() => {
+    const stored = loadStoredThreads();
+    if (stored.length) return stored;
+    return [{ id: threadId, title: "New thread", updatedAt: new Date().toISOString() }];
+  });
+  const [messages, setMessages] = useState<Message[]>([initialAssistantMessage]);
   const [input, setInput] = useState("");
   const [memoryTrace, setMemoryTrace] = useState(true);
   const [reasoningTrace, setReasoningTrace] = useState(false);
@@ -72,6 +108,7 @@ export default function UserConsole() {
   const [last, setLast] = useState<ApiResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [feedbackStatus, setFeedbackStatus] = useState("No feedback submitted.");
+  const [learnedSignatureId, setLearnedSignatureId] = useState<string | null>(null);
   const [authContext, setAuthContext] = useState(() => supabaseUserContext());
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -120,6 +157,89 @@ export default function UserConsole() {
       textareaRef.current.style.height = "auto";
     }
   }
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem("jimsai:chat:active-thread", threadId);
+    const stored = window.localStorage.getItem(`jimsai:chat:thread:${threadId}:messages`);
+    if (!stored) {
+      setMessages([initialAssistantMessage]);
+      return;
+    }
+    try {
+      const parsed = JSON.parse(stored) as Message[];
+      setMessages(Array.isArray(parsed) && parsed.length ? parsed : [initialAssistantMessage]);
+    } catch {
+      setMessages([initialAssistantMessage]);
+    }
+  }, [threadId]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem("jimsai:chat:threads", JSON.stringify(threads));
+  }, [threads]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(`jimsai:chat:thread:${threadId}:messages`, JSON.stringify(messages));
+  }, [messages, threadId]);
+
+  const loadRemoteThreads = useCallback(async () => {
+    const context = supabaseUserContext();
+    if (!context.authenticated) return;
+    const params = new URLSearchParams({ user_id: context.userId, limit: "50" });
+    if (context.workspaceId) params.set("workspace_id", context.workspaceId);
+    let response = await fetchWithNetworkRetry(`${apiBase}/v1/chat/threads?${params.toString()}`, {
+      headers: authHeaders()
+    });
+    if (response.status === 401 && await refreshSupabaseSession(apiBase)) {
+      response = await fetchWithNetworkRetry(`${apiBase}/v1/chat/threads?${params.toString()}`, {
+        headers: authHeaders()
+      });
+    }
+    if (!response.ok) return;
+    const data = (await response.json()) as ThreadResponse;
+    if (!data.threads.length) return;
+    const remoteThreads = data.threads.map((thread) => ({
+      id: thread.id,
+      title: thread.title || "Untitled thread",
+      updatedAt: thread.updated_at ?? thread.created_at ?? new Date().toISOString()
+    }));
+    setThreads((current) => {
+      const currentById = new Map(current.map((thread) => [thread.id, thread]));
+      for (const thread of remoteThreads) currentById.set(thread.id, thread);
+      return Array.from(currentById.values())
+        .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+        .slice(0, 50);
+    });
+  }, [apiBase, authHeaders, fetchWithNetworkRetry]);
+
+  const loadRemoteMessages = useCallback(async (nextThreadId: string) => {
+    const context = supabaseUserContext();
+    if (!context.authenticated || !nextThreadId) return;
+    const params = new URLSearchParams({ user_id: context.userId, limit: "200" });
+    let response = await fetchWithNetworkRetry(`${apiBase}/v1/chat/threads/${encodeURIComponent(nextThreadId)}/messages?${params.toString()}`, {
+      headers: authHeaders()
+    });
+    if (response.status === 401 && await refreshSupabaseSession(apiBase)) {
+      response = await fetchWithNetworkRetry(`${apiBase}/v1/chat/threads/${encodeURIComponent(nextThreadId)}/messages?${params.toString()}`, {
+        headers: authHeaders()
+      });
+    }
+    if (!response.ok) return;
+    const data = (await response.json()) as MessageResponse;
+    if (data.messages.length) {
+      setMessages(data.messages.map((message) => ({ role: message.role, content: message.content })));
+    }
+  }, [apiBase, authHeaders, fetchWithNetworkRetry]);
+
+  useEffect(() => {
+    if (authContext.authenticated) void loadRemoteThreads();
+  }, [authContext.authenticated, loadRemoteThreads]);
+
+  useEffect(() => {
+    if (authContext.authenticated) void loadRemoteMessages(threadId);
+  }, [authContext.authenticated, loadRemoteMessages, threadId]);
 
   useEffect(() => {
     function toggleInsights() {
@@ -192,6 +312,7 @@ export default function UserConsole() {
         body: JSON.stringify({
           user_id: context.userId,
           workspace_id: context.workspaceId,
+          thread_id: threadId,
           query,
           canvas_hint: canvasHint,
           invention_hint: inventionHint,
@@ -205,6 +326,7 @@ export default function UserConsole() {
           body: JSON.stringify({
             user_id: context.userId,
             workspace_id: context.workspaceId,
+            thread_id: threadId,
             query,
             canvas_hint: canvasHint,
             invention_hint: inventionHint,
@@ -220,7 +342,14 @@ export default function UserConsole() {
       if (!response.ok) throw new Error(`query failed with HTTP ${response.status}`);
       const data = (await response.json()) as ApiResponse;
       setLast(data);
+      setLearnedSignatureId(null);
       setMessages((current) => [...current, { role: "assistant", content: data.response }]);
+      setThreads((current) => {
+        const title = query.length > 48 ? `${query.slice(0, 45)}...` : query;
+        const updatedAt = new Date().toISOString();
+        const existing = current.filter((thread) => thread.id !== threadId);
+        return [{ id: threadId, title, updatedAt }, ...existing].slice(0, 20);
+      });
     } catch (error) {
       setMessages((current) => [...current, { role: "assistant", content: error instanceof Error ? `API request failed: ${error.message}` : "API request failed." }]);
     } finally {
@@ -249,7 +378,14 @@ export default function UserConsole() {
     const response = await fetch(`${apiBase}/v1/feedback`, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...authHeaders() },
-      body: JSON.stringify({ user_id: context.userId, trace_id: last.ir.trace_id, rating, notes })
+      body: JSON.stringify({
+        user_id: context.userId,
+        workspace_id: context.workspaceId,
+        trace_id: last.ir.trace_id,
+        rating,
+        notes,
+        thread_id: threadId
+      })
     });
     if (!response.ok) {
       setFeedbackStatus("feedback rejected");
@@ -277,6 +413,8 @@ export default function UserConsole() {
         })
       });
       if (!response.ok) throw new Error("learn failed");
+      const data = (await response.json()) as { signature?: { id?: string } };
+      setLearnedSignatureId(data.signature?.id ?? null);
       await submitFeedback("positive", "learn_this");
       setFeedbackStatus("learned into memory");
     } catch {
@@ -312,6 +450,60 @@ export default function UserConsole() {
     const context = supabaseUserContext();
     setAuthContext(context);
     setAuthStatus("Signed out.");
+  }
+
+  function startNewThread() {
+    const nextThreadId = createThreadId();
+    setThreads((current) => [{ id: nextThreadId, title: "New thread", updatedAt: new Date().toISOString() }, ...current].slice(0, 20));
+    setThreadId(nextThreadId);
+    setLast(null);
+    setLearnedSignatureId(null);
+    setFeedbackStatus("No feedback submitted.");
+  }
+
+  async function deleteCurrentThread() {
+    const context = supabaseUserContext();
+    if (!context.authenticated || !threadId) return;
+    if (!window.confirm("Delete this chat thread from your local UI and production history?")) return;
+    await fetch(`${apiBase}/v1/chat/threads/${encodeURIComponent(threadId)}`, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json", ...authHeaders() },
+      body: JSON.stringify({ user_id: context.userId })
+    }).catch(() => null);
+    if (typeof window !== "undefined") {
+      window.localStorage.removeItem(`jimsai:chat:thread:${threadId}:messages`);
+    }
+    const remaining = threads.filter((thread) => thread.id !== threadId);
+    const next = remaining[0]?.id ?? createThreadId();
+    setThreads(remaining.length ? remaining : [{ id: next, title: "New thread", updatedAt: new Date().toISOString() }]);
+    setThreadId(next);
+    setLast(null);
+    setLearnedSignatureId(null);
+  }
+
+  async function unlearnCurrentAnswer() {
+    const context = supabaseUserContext();
+    if (!learnedSignatureId) {
+      setFeedbackStatus("No learned memory selected to unlearn.");
+      return;
+    }
+    const response = await fetch(`${apiBase}/v1/memory/delete`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeaders() },
+      body: JSON.stringify({
+        user_id: context.userId,
+        workspace_id: context.workspaceId,
+        signature_id: learnedSignatureId,
+        reason: "user_unlearn_current_answer"
+      })
+    });
+    if (!response.ok) {
+      setFeedbackStatus("unlearn failed");
+      return;
+    }
+    await submitFeedback("correction", `unlearn:${learnedSignatureId}`);
+    setLearnedSignatureId(null);
+    setFeedbackStatus("unlearned memory");
   }
 
   function exportReasoning() {
@@ -406,6 +598,23 @@ export default function UserConsole() {
           </div>
           <button className="iconTextButton" type="button" onClick={signOut}>Sign out</button>
         </div>
+
+        <section className="panel threadPanel">
+          <h2><History size={15} /> Threads</h2>
+          <div className="threadControls">
+            <select value={threadId} onChange={(event) => setThreadId(event.target.value)} aria-label="Chat thread">
+              {threads.map((thread) => (
+                <option value={thread.id} key={thread.id}>{thread.title}</option>
+              ))}
+            </select>
+            <button className="iconButton" type="button" title="New thread" onClick={startNewThread}>
+              <Plus size={16} />
+            </button>
+            <button className="iconTextButton compact danger" type="button" onClick={deleteCurrentThread}>
+              Delete
+            </button>
+          </div>
+        </section>
 
         <section className="panel evidenceSummary">
           <h2><ShieldCheck size={15} /> Answer State</h2>
@@ -515,6 +724,7 @@ export default function UserConsole() {
           <h2>Memory Controls</h2>
           <div className="buttonRow">
             <button className="sendButton" type="button" disabled={!last} onClick={learnCurrentAnswer}><BookOpenCheck size={16} /> Learn This</button>
+            <button className="iconTextButton" type="button" disabled={!learnedSignatureId} onClick={unlearnCurrentAnswer}>Unlearn</button>
             <button className="iconTextButton" type="button" disabled={!last} onClick={exportReasoning}><Download size={16} /> Export Trace</button>
           </div>
           <div className="muted">{feedbackStatus}</div>

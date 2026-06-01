@@ -223,6 +223,8 @@ class FeedbackRequest(BaseModel):
     trace_id: str
     rating: Literal["positive", "negative", "correction"]
     notes: str = ""
+    workspace_id: str | None = None
+    thread_id: str | None = None
 
 
 class FeedbackResponse(BaseModel):
@@ -396,6 +398,7 @@ class PipelineRequest(BaseModel):
     query: str
     modality: Modality = Modality.TEXT
     workspace_id: str | None = None
+    thread_id: str | None = None
     canvas_hint: bool = False
     invention_hint: bool = False
     return_trace: bool = True

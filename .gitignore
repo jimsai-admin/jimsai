@@ -5,6 +5,10 @@ __pycache__/
 .mypy_cache/
 node_modules/
 .next/
+frontend/.next/
+frontend/test-results/
+frontend/tsconfig.tsbuildinfo
+frontend/playwright-report/
 
 # Environment files
 .env

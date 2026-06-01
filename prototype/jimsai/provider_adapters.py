@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import os
+from datetime import datetime, timezone
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote
@@ -431,6 +432,30 @@ class SupabasePostgresStore:
               created_at TIMESTAMPTZ DEFAULT now()
             )
             """,
+            """
+            CREATE TABLE IF NOT EXISTS chat_threads (
+              id TEXT PRIMARY KEY,
+              workspace_id TEXT,
+              user_id TEXT NOT NULL,
+              title TEXT NOT NULL DEFAULT '',
+              created_at TIMESTAMPTZ DEFAULT now(),
+              updated_at TIMESTAMPTZ DEFAULT now()
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS chat_messages (
+              id TEXT PRIMARY KEY,
+              thread_id TEXT NOT NULL,
+              workspace_id TEXT,
+              user_id TEXT NOT NULL,
+              role TEXT NOT NULL,
+              content TEXT NOT NULL,
+              trace_id TEXT,
+              confidence DOUBLE PRECISION,
+              sources JSONB DEFAULT '[]'::jsonb,
+              created_at TIMESTAMPTZ DEFAULT now()
+            )
+            """,
         ]
         with self._connect() as connection:
             for statement in statements:
@@ -497,6 +522,94 @@ class SupabasePostgresStore:
                         item.created_at,
                     ),
             )
+
+    def save_chat_exchange(
+        self,
+        user_id: str,
+        workspace_id: str | None,
+        thread_id: str,
+        query: str,
+        answer: str,
+        trace_id: str,
+        confidence: float,
+        sources: list[str],
+    ) -> None:
+        title = query.strip().splitlines()[0][:120] if query.strip() else "Untitled thread"
+        now = datetime.now(timezone.utc)
+        thread = {
+            "id": thread_id,
+            "workspace_id": workspace_id,
+            "user_id": user_id,
+            "title": title,
+            "updated_at": now.isoformat(),
+        }
+        messages = [
+            {
+                "id": f"{trace_id}:user",
+                "thread_id": thread_id,
+                "workspace_id": workspace_id,
+                "user_id": user_id,
+                "role": "user",
+                "content": query,
+                "trace_id": trace_id,
+                "confidence": None,
+                "sources": [],
+                "created_at": now.isoformat(),
+            },
+            {
+                "id": f"{trace_id}:assistant",
+                "thread_id": thread_id,
+                "workspace_id": workspace_id,
+                "user_id": user_id,
+                "role": "assistant",
+                "content": answer,
+                "trace_id": trace_id,
+                "confidence": confidence,
+                "sources": sources,
+                "created_at": now.isoformat(),
+            },
+        ]
+        if not self.settings.postgres_url:
+            self._save_chat_exchange_rest(thread, messages)
+            return
+        from psycopg.types.json import Jsonb
+
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO chat_threads (id, workspace_id, user_id, title, updated_at)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (id) DO UPDATE SET
+                  workspace_id = EXCLUDED.workspace_id,
+                  user_id = EXCLUDED.user_id,
+                  title = COALESCE(NULLIF(chat_threads.title, ''), EXCLUDED.title),
+                  updated_at = EXCLUDED.updated_at
+                """,
+                (thread_id, workspace_id, user_id, title, now),
+            )
+            for message in messages:
+                connection.execute(
+                    """
+                    INSERT INTO chat_messages (id, thread_id, workspace_id, user_id, role, content, trace_id, confidence, sources, created_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (id) DO UPDATE SET
+                      content = EXCLUDED.content,
+                      confidence = EXCLUDED.confidence,
+                      sources = EXCLUDED.sources
+                    """,
+                    (
+                        message["id"],
+                        message["thread_id"],
+                        message["workspace_id"],
+                        message["user_id"],
+                        message["role"],
+                        message["content"],
+                        message["trace_id"],
+                        message["confidence"],
+                        Jsonb(message["sources"]),
+                        message["created_at"],
+                    ),
+                )
 
     def delete_signature(self, signature_id: str) -> None:
         if not self.settings.postgres_url:
@@ -567,6 +680,60 @@ class SupabasePostgresStore:
             has_more=has_more,
             total=int(total_row["total"] if total_row else len(items)),
         )
+
+    def list_chat_threads(self, user_id: str, workspace_id: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+        page_size = min(max(limit, 1), 100)
+        if not self.settings.postgres_url:
+            return self._list_chat_threads_rest(user_id, workspace_id, page_size)
+        where = "WHERE user_id = %s"
+        params: list[Any] = [user_id]
+        if workspace_id:
+            where += " AND workspace_id = %s"
+            params.append(workspace_id)
+        params.append(page_size)
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT id, workspace_id, user_id, title, created_at, updated_at
+                FROM chat_threads
+                {where}
+                ORDER BY updated_at DESC, created_at DESC
+                LIMIT %s
+                """,
+                tuple(params),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_chat_messages(self, thread_id: str, user_id: str, limit: int = 200) -> list[dict[str, Any]]:
+        page_size = min(max(limit, 1), 500)
+        if not self.settings.postgres_url:
+            return self._list_chat_messages_rest(thread_id, user_id, page_size)
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT id, thread_id, workspace_id, user_id, role, content, trace_id, confidence, sources, created_at
+                FROM chat_messages
+                WHERE thread_id = %s AND user_id = %s
+                ORDER BY created_at ASC, id ASC
+                LIMIT %s
+                """,
+                (thread_id, user_id, page_size),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def delete_chat_thread(self, thread_id: str, user_id: str) -> int:
+        if not self.settings.postgres_url:
+            return self._delete_chat_thread_rest(thread_id, user_id)
+        with self._connect() as connection:
+            message_cursor = connection.execute(
+                "DELETE FROM chat_messages WHERE thread_id = %s AND user_id = %s",
+                (thread_id, user_id),
+            )
+            connection.execute(
+                "DELETE FROM chat_threads WHERE id = %s AND user_id = %s",
+                (thread_id, user_id),
+            )
+            return int(message_cursor.rowcount or 0)
 
     def list_recent_signatures(self, limit: int = 500) -> list[MemorySignature]:
         page_size = min(max(limit, 1), 2000)
@@ -670,6 +837,125 @@ class SupabasePostgresStore:
             timeout=30,
         )
         response.raise_for_status()
+
+    def _save_chat_exchange_rest(self, thread: dict[str, Any], messages: list[dict[str, Any]]) -> None:
+        thread_response = httpx.post(
+            self._rest_url("chat_threads"),
+            headers=self._rest_headers("resolution=merge-duplicates,return=minimal"),
+            json=thread,
+            timeout=30,
+        )
+        thread_response.raise_for_status()
+        message_response = httpx.post(
+            self._rest_url("chat_messages"),
+            headers=self._rest_headers("resolution=merge-duplicates,return=minimal"),
+            json=messages,
+            timeout=30,
+        )
+        message_response.raise_for_status()
+
+    def save_user_feedback(self, feedback: dict[str, Any]) -> None:
+        row = {
+            "id": feedback["id"],
+            "workspace_id": feedback["workspace_id"],
+            "user_id": feedback.get("user_id"),
+            "thread_id": feedback.get("thread_id"),
+            "trace_id": feedback.get("trace_id"),
+            "query": feedback.get("query"),
+            "answer": feedback.get("answer"),
+            "rating": feedback.get("rating"),
+            "feedback": feedback.get("feedback"),
+            "learn_this": feedback.get("learn_this", False),
+            "payload": feedback.get("payload") or {},
+            "created_at": feedback.get("created_at"),
+        }
+        if not self.settings.postgres_url:
+            response = httpx.post(
+                self._rest_url("user_feedback"),
+                headers=self._rest_headers("resolution=merge-duplicates,return=minimal"),
+                json=row,
+                timeout=30,
+            )
+            response.raise_for_status()
+            return
+        from psycopg.types.json import Jsonb
+
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO user_feedback (id, workspace_id, user_id, thread_id, trace_id, query, answer, rating, feedback, learn_this, payload, created_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (id) DO UPDATE SET
+                  rating = EXCLUDED.rating,
+                  feedback = EXCLUDED.feedback,
+                  payload = EXCLUDED.payload
+                """,
+                (
+                    row["id"],
+                    row["workspace_id"],
+                    row["user_id"],
+                    row["thread_id"],
+                    row["trace_id"],
+                    row["query"],
+                    row["answer"],
+                    row["rating"],
+                    row["feedback"],
+                    row["learn_this"],
+                    Jsonb(row["payload"]),
+                    row["created_at"],
+                ),
+            )
+
+    def _list_chat_threads_rest(self, user_id: str, workspace_id: str | None, limit: int) -> list[dict[str, Any]]:
+        params = {
+            "select": "id,workspace_id,user_id,title,created_at,updated_at",
+            "user_id": f"eq.{user_id}",
+            "order": "updated_at.desc,created_at.desc",
+            "limit": str(limit),
+        }
+        if workspace_id:
+            params["workspace_id"] = f"eq.{workspace_id}"
+        response = httpx.get(
+            self._rest_url("chat_threads"),
+            headers=self._rest_headers(),
+            params=params,
+            timeout=30,
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def _list_chat_messages_rest(self, thread_id: str, user_id: str, limit: int) -> list[dict[str, Any]]:
+        response = httpx.get(
+            self._rest_url("chat_messages"),
+            headers=self._rest_headers(),
+            params={
+                "select": "id,thread_id,workspace_id,user_id,role,content,trace_id,confidence,sources,created_at",
+                "thread_id": f"eq.{thread_id}",
+                "user_id": f"eq.{user_id}",
+                "order": "created_at.asc,id.asc",
+                "limit": str(limit),
+            },
+            timeout=30,
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def _delete_chat_thread_rest(self, thread_id: str, user_id: str) -> int:
+        message_response = httpx.delete(
+            self._rest_url("chat_messages"),
+            headers=self._rest_headers("count=exact"),
+            params={"thread_id": f"eq.{thread_id}", "user_id": f"eq.{user_id}"},
+            timeout=30,
+        )
+        message_response.raise_for_status()
+        thread_response = httpx.delete(
+            self._rest_url("chat_threads"),
+            headers=self._rest_headers(),
+            params={"id": f"eq.{thread_id}", "user_id": f"eq.{user_id}"},
+            timeout=30,
+        )
+        thread_response.raise_for_status()
+        return _total_from_content_range(message_response.headers.get("content-range", ""), 0)
 
     def _list_panel_items_rest(self, panel: str, cursor: str | None, limit: int) -> TrainingPanelPage:
         offset = max(int(cursor or "0"), 0)
@@ -1072,6 +1358,51 @@ class ProductionRuntime:
     def save_panel_items(self, panel_items: list[TrainingPanelItem]) -> None:
         if self.postgres and self.statuses["supabase_postgres"].available:
             self._attempt("supabase_postgres", lambda: self.postgres.save_panel_items(panel_items))
+
+    def save_user_feedback(self, feedback: dict[str, Any]) -> None:
+        if self.postgres and self.statuses["supabase_postgres"].available:
+            self._attempt("supabase_postgres", lambda: self.postgres.save_user_feedback(feedback))
+
+    def save_chat_exchange(
+        self,
+        user_id: str,
+        workspace_id: str | None,
+        thread_id: str,
+        query: str,
+        answer: str,
+        trace_id: str,
+        confidence: float,
+        sources: list[str],
+    ) -> None:
+        if self.postgres and self.statuses["supabase_postgres"].available:
+            self._attempt(
+                "supabase_postgres",
+                lambda: self.postgres.save_chat_exchange(
+                    user_id=user_id,
+                    workspace_id=workspace_id,
+                    thread_id=thread_id,
+                    query=query,
+                    answer=answer,
+                    trace_id=trace_id,
+                    confidence=confidence,
+                    sources=sources,
+                ),
+            )
+
+    def list_chat_threads(self, user_id: str, workspace_id: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+        if self.postgres and self.statuses["supabase_postgres"].available:
+            return self._attempt("supabase_postgres", lambda: self.postgres.list_chat_threads(user_id, workspace_id, limit)) or []
+        return []
+
+    def list_chat_messages(self, thread_id: str, user_id: str, limit: int = 200) -> list[dict[str, Any]]:
+        if self.postgres and self.statuses["supabase_postgres"].available:
+            return self._attempt("supabase_postgres", lambda: self.postgres.list_chat_messages(thread_id, user_id, limit)) or []
+        return []
+
+    def delete_chat_thread(self, thread_id: str, user_id: str) -> int:
+        if self.postgres and self.statuses["supabase_postgres"].available:
+            return self._attempt("supabase_postgres", lambda: self.postgres.delete_chat_thread(thread_id, user_id)) or 0
+        return 0
 
     def delete_signature(self, signature_id: str) -> None:
         if self.postgres and self.statuses["supabase_postgres"].available:
