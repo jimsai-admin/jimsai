@@ -45,15 +45,26 @@ main
 
 ## 2. Embedding Service Environment
 
-Set these on `jimsai-embedding-service`:
+Set these on `jimsai-embedding-service` for Render Free:
 
 ```text
 JIMS_RENDER_AGENT_TOKEN=<same-long-random-token-used-by-training-service>
-JIMS_EMBEDDING_MODEL=intfloat/multilingual-e5-small
+JIMS_EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
 JIMS_EMBEDDING_DIMENSIONS=768
 JIMS_EMBEDDING_DEVICE=cpu
+JIMS_EMBEDDING_PRELOAD_ON_STARTUP=true
+JIMS_EMBEDDING_TORCH_DTYPE=auto
 JIMS_EMBEDDING_HASH_FALLBACK_ENABLED=true
 JIMS_ACTIVE_ARTIFACT_ID=base_encoder
+```
+
+`sentence-transformers/all-MiniLM-L6-v2` is the Free-tier-safe default. It is still a SentenceTransformer model, but much smaller than `intfloat/multilingual-e5-small`.
+
+For a paid always-on Render instance with more memory, use the stronger multilingual model:
+
+```text
+JIMS_EMBEDDING_MODEL=intfloat/multilingual-e5-small
+JIMS_EMBEDDING_TORCH_DTYPE=float16
 ```
 
 Use `false` for `JIMS_EMBEDDING_HASH_FALLBACK_ENABLED` only if you want embedding calls to fail instead of degrading. For live chat, keep it `true` and rely on re-embedding recovery.

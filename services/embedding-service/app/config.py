@@ -10,6 +10,8 @@ class Settings(BaseSettings):
     jims_embedding_model: str = "intfloat/multilingual-e5-small"
     jims_embedding_dimensions: int = 768
     jims_embedding_device: str = "cpu"
+    jims_embedding_preload_on_startup: bool = True
+    jims_embedding_torch_dtype: str = "auto"
     jims_embedding_hash_fallback_enabled: bool = True
     jims_active_artifact_id: str = "base_encoder"
     jims_active_artifact_path: str = ""

@@ -9,9 +9,15 @@ services:
     autoDeployTrigger: commit
     envVars:
       - key: JIMS_EMBEDDING_MODEL
-        value: intfloat/multilingual-e5-small
+        value: sentence-transformers/all-MiniLM-L6-v2
       - key: JIMS_EMBEDDING_DIMENSIONS
         value: "768"
+      - key: JIMS_EMBEDDING_DEVICE
+        value: cpu
+      - key: JIMS_EMBEDDING_PRELOAD_ON_STARTUP
+        value: "true"
+      - key: JIMS_EMBEDDING_TORCH_DTYPE
+        value: auto
       - key: JIMS_EMBEDDING_HASH_FALLBACK_ENABLED
         value: "true"
       - key: JIMS_ACTIVE_ARTIFACT_ID

@@ -78,8 +78,20 @@ def _load_model() -> Any | None:
     model_name = settings.jims_active_artifact_path.strip() or settings.jims_embedding_model
     try:
         from sentence_transformers import SentenceTransformer
+        import torch
 
-        _model = SentenceTransformer(model_name, device=settings.jims_embedding_device)
+        model_kwargs: dict[str, Any] = {}
+        if settings.jims_embedding_torch_dtype == "float16":
+            model_kwargs["torch_dtype"] = torch.float16
+        elif settings.jims_embedding_torch_dtype == "bfloat16":
+            model_kwargs["torch_dtype"] = torch.bfloat16
+        if model_kwargs:
+            try:
+                _model = SentenceTransformer(model_name, device=settings.jims_embedding_device, model_kwargs=model_kwargs)
+            except TypeError:
+                _model = SentenceTransformer(model_name, device=settings.jims_embedding_device)
+        else:
+            _model = SentenceTransformer(model_name, device=settings.jims_embedding_device)
         _loaded_model_name = model_name
         _model_error = ""
         return _model

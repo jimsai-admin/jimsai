@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import FastAPI
 
 from .config import settings
@@ -11,7 +13,8 @@ app.include_router(router)
 
 @app.on_event("startup")
 async def startup() -> None:
-    preload_model()
+    if settings.jims_embedding_preload_on_startup:
+        asyncio.create_task(asyncio.to_thread(preload_model))
 
 
 @app.get("/health")

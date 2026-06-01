@@ -6,6 +6,7 @@ ENV PYTHONPATH=/app
 
 WORKDIR /app
 COPY services/embedding-service/requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu "torch==2.3.1+cpu"
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
 COPY services/embedding-service /app/services/embedding-service
