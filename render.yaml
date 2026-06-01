@@ -1,5 +1,25 @@
 services:
   - type: web
+    name: jimsai-embedding-service
+    runtime: docker
+    plan: free
+    dockerContext: .
+    dockerfilePath: ./services/embedding-service/Dockerfile
+    healthCheckPath: /health
+    autoDeployTrigger: commit
+    envVars:
+      - key: JIMS_EMBEDDING_MODEL
+        value: intfloat/multilingual-e5-small
+      - key: JIMS_EMBEDDING_DIMENSIONS
+        value: "768"
+      - key: JIMS_EMBEDDING_HASH_FALLBACK_ENABLED
+        value: "true"
+      - key: JIMS_ACTIVE_ARTIFACT_ID
+        value: base_encoder
+      - key: JIMS_RENDER_AGENT_TOKEN
+        sync: false
+
+  - type: web
     name: jimsai-training-service
     runtime: docker
     plan: free
@@ -22,6 +42,10 @@ services:
         value: "true"
       - key: JIMS_KAGGLE_MAX_PANEL_ITEMS
         value: "500"
+      - key: JIMS_EMBEDDING_SERVICE_URL
+        value: https://jimsai-embedding-service.onrender.com
+      - key: JIMS_EMBEDDING_SERVICE_TOKEN
+        sync: false
       - key: JIMS_RENDER_AGENT_TOKEN
         sync: false
       - key: REDIS_URL

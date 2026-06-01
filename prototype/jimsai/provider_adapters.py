@@ -61,6 +61,8 @@ class ProductionSettings:
     vectorize_api_token: str
     vectorize_index: str
     vectorize_dimensions: int
+    embedding_service_url: str
+    embedding_service_token: str
     multimodal_encoder_mode: str
     multimodal_encoder_url: str
     multimodal_encoder_api_key: str
@@ -88,6 +90,8 @@ class ProductionSettings:
             vectorize_api_token=os.getenv("CF_VECTORIZE_API_TOKEN") or os.getenv("CF_TOKEN") or os.getenv("CLOUDFLARE_API_TOKEN", ""),
             vectorize_index=os.getenv("CF_VECTORIZE_INDEX", ""),
             vectorize_dimensions=int(os.getenv("CF_VECTORIZE_DIMENSIONS", "768") or "768"),
+            embedding_service_url=os.getenv("JIMS_EMBEDDING_SERVICE_URL", "").strip().rstrip("/"),
+            embedding_service_token=os.getenv("JIMS_EMBEDDING_SERVICE_TOKEN", "").strip() or os.getenv("JIMS_RENDER_AGENT_TOKEN", "").strip(),
             multimodal_encoder_mode=os.getenv("JIMS_MULTIMODAL_ENCODER_MODE", "").strip().lower(),
             multimodal_encoder_url=os.getenv("JIMS_MULTIMODAL_ENCODER_URL", "").strip().rstrip("/"),
             multimodal_encoder_api_key=os.getenv("JIMS_MULTIMODAL_ENCODER_API_KEY", ""),
@@ -127,6 +131,8 @@ class ProductionSettings:
     def effective_multimodal_encoder_mode(self) -> str:
         if self.multimodal_encoder_mode in {"external", "kaggle_batch", "disabled"}:
             return self.multimodal_encoder_mode
+        if self.embedding_service_url:
+            return "external"
         if self.multimodal_encoder_url:
             return "external"
         return "disabled"
@@ -879,30 +885,46 @@ class ExternalMultimodalEncoderAdapter:
 
     @property
     def configured(self) -> bool:
-        return bool(self.settings.multimodal_encoder_url)
+        return bool(self._base_url())
+
+    def _base_url(self) -> str:
+        return (self.settings.embedding_service_url or self.settings.multimodal_encoder_url).strip().rstrip("/")
 
     def _headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
-        if self.settings.multimodal_encoder_api_key:
-            headers["Authorization"] = f"Bearer {self.settings.multimodal_encoder_api_key}"
+        token = self.settings.embedding_service_token or self.settings.multimodal_encoder_api_key
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
         return headers
 
     def check(self) -> str:
         if not self.configured:
-            return "missing JIMS_MULTIMODAL_ENCODER_URL"
+            return "missing JIMS_EMBEDDING_SERVICE_URL or JIMS_MULTIMODAL_ENCODER_URL"
         response = httpx.get(
-            f"{self.settings.multimodal_encoder_url}/health",
+            f"{self._base_url()}/health",
             headers=self._headers(),
             timeout=20,
         )
         response.raise_for_status()
-        return "external multimodal encoder service reachable"
+        return "external embedding service reachable"
 
     def encode(self, content: str, modality: Modality) -> list[float]:
         if not self.configured:
             return []
+        if self.settings.embedding_service_url:
+            response = httpx.post(
+                f"{self._base_url()}/v1/embed",
+                headers=self._headers(),
+                json={
+                    "texts": [content],
+                    "purpose": "query" if modality == Modality.TEXT else "document",
+                },
+                timeout=45,
+            )
+            response.raise_for_status()
+            return self._extract_vector(response.json())
         response = httpx.post(
-            f"{self.settings.multimodal_encoder_url}/v1/encode",
+            f"{self._base_url()}/v1/encode",
             headers=self._headers(),
             json={
                 "content": content,
@@ -927,6 +949,8 @@ class ExternalMultimodalEncoderAdapter:
                 first = payload["data"][0]
                 if isinstance(first, dict):
                     vector = first.get("embedding") or first.get("vector") or first.get("values")
+            if vector is None and isinstance(payload.get("vectors"), list) and payload["vectors"]:
+                vector = payload["vectors"][0]
         if not isinstance(vector, list):
             return []
         try:

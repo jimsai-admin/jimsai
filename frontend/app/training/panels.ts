@@ -6,7 +6,10 @@ export const panelDefinitions = [
   { id: "world-model", number: "Panel 5", title: "World Model Dashboard" },
   { id: "pipeline", number: "Panel 6", title: "Training Pipeline Monitor" },
   { id: "sessions", number: "Panel 7", title: "Canvas and Invention Management" },
-  { id: "feedback", number: "Panel 8", title: "Model Inspection and Feedback" }
+  { id: "feedback", number: "Panel 8", title: "Model Inspection and Feedback" },
+  { id: "autonomous", number: "Panel 9", title: "Autonomous Runs and Jobs" },
+  { id: "artifacts", number: "Panel 10", title: "Artifact Approval Queue" },
+  { id: "evaluation", number: "Panel 11", title: "Evaluation Reports" }
 ] as const;
 
 export type TrainingPanelId = (typeof panelDefinitions)[number]["id"];

@@ -82,6 +82,9 @@ TRAINING_PANEL_IDS = {
     "pipeline",
     "sessions",
     "feedback",
+    "autonomous",
+    "artifacts",
+    "evaluation",
 }
 
 

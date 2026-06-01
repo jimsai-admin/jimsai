@@ -167,12 +167,21 @@ class DualRepresentationEncoder:
             signature.latent_embedding = vector
             signature.confidence.source = "dual_encoder_external_latent"
             signature.metadata["latent_encoder"] = self._latent_model_name(modality)
+            signature.metadata["latent_embedding_source"] = "external_service"
+            signature.metadata["reembedding_required"] = False
+        elif self.multimodal_adapter and modality in {Modality.TEXT, Modality.CODE, Modality.DATA}:
+            signature.metadata["latent_embedding_source"] = "hash_projection"
+            signature.metadata["reembedding_required"] = True
+            signature.metadata["reembedding_reason"] = "external_embedding_service_unavailable_or_returned_no_vector"
+            signature.metadata["reembedding_target"] = self._latent_model_name(modality)
         elif modality not in {Modality.TEXT, Modality.CODE, Modality.DATA}:
             signature.latent_embedding = []
             signature.confidence.score = min(signature.confidence.score, 0.35)
             signature.confidence.source = "external_multimodal_encoding_required"
             signature.metadata["latent_encoder"] = "kaggle_batch_or_external_service_required"
             signature.metadata["queued_for_multimodal_training"] = True
+            signature.metadata["reembedding_required"] = True
+            signature.metadata["reembedding_reason"] = "multimodal_embedding_required"
         return signature
 
     def encode_text(
@@ -273,7 +282,7 @@ class DualRepresentationEncoder:
                 "entity_count": len(entities),
                 "relation_count": len(relations),
                 "causal_count": len(causal),
-                "latent_embedding_source": "external_service" if self.multimodal_adapter else "hash_projection",
+                "latent_embedding_source": "hash_projection",
             }
         )
         typed_tags = {entity.type for entity in entities}
@@ -308,9 +317,12 @@ class DualRepresentationEncoder:
     def _external_embedding(self, content: str, modality: Modality) -> list[float]:
         adapter = self.multimodal_adapter
         if adapter and hasattr(adapter, "encode"):
-            vector = adapter.encode(content, modality)
-            if vector:
-                return vector
+            try:
+                vector = adapter.encode(content, modality)
+                if vector:
+                    return vector
+            except Exception:
+                return []
         return []
 
     def _latent_model_name(self, modality: Modality) -> str:
