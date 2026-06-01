@@ -11,7 +11,7 @@ reasoning engine or unbounded generation path.
 ## Configuration
 
 Use the Supabase pooler or direct Postgres connection string as `POSTGRES_URL`, then run
-`infrastructure/postgres/init.sql`. The runtime writes signatures plus `training_panel_items`, which power the
+`infrastructure/postgres/supabase.sql`. The runtime writes signatures plus `training_panel_items`, which power the
 infinite-paginated operator panel pages.
 
 ## Verification

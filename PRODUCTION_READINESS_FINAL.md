@@ -60,7 +60,7 @@ JimsAI is **production-ready today** to:
 | Personalization Engine | ✅ Complete | prototype/jimsai/personalization.py | 100% |
 | Provider Adapters | ✅ Complete | prototype/jimsai/providers.py | 100% |
 | **Production Systems** |
-| Database Schema | ✅ Complete | infrastructure/postgres/migration_phase5.sql | 100% |
+| Database Schema | ✅ Complete | infrastructure/postgres/supabase.sql | 100% |
 | API Endpoints | ✅ Complete | prototype/app.py | 100% |
 | Authentication | ✅ Complete | prototype/jimsai/auth.py | 100% |
 | Monitoring | ✅ Complete | prototype/jimsai/observability.py | 100% |
@@ -315,7 +315,7 @@ GET    /api/training/status      - Kaggle training status
 **Status:** Phase 5 schema complete with 14 tables
 
 **Files:**
-- `infrastructure/postgres/migration_phase5.sql` (400+ lines)
+- `infrastructure/postgres/supabase.sql` (consolidated schema)
 
 **Tables:**
 1. workspaces - Multi-tenant workspace config

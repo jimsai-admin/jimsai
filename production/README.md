@@ -22,7 +22,7 @@ docker compose up --build
 
 1. Copy `.env.production.example` into the target secret manager.
 2. Replace all credential placeholders and set `CORS_ORIGINS` to the deployed frontend origin.
-3. Run the SQL in `infrastructure/postgres/init.sql` against Supabase/Postgres.
+3. Run the SQL in `infrastructure/postgres/supabase.sql` against Supabase/Postgres.
 4. Start the API image with `JIMS_AUTH_PROVIDER=supabase`, `JIMS_AUTH_REQUIRED=true`, and `JIMS_STRICT_PROVIDER_STARTUP=true`.
 5. Start at least one Celery worker with `celery -A prototype.jimsai.celery_runtime:celery_app worker --loglevel=INFO`.
 6. For media-heavy training, set `JIMS_ENABLE_MULTIMODAL_ENCODERS=true`, `JIMS_MULTIMODAL_ENCODER_MODE=external`, and point `JIMS_MULTIMODAL_ENCODER_URL` at a separate encoder worker that exposes `GET /health` and `POST /v1/encode`.

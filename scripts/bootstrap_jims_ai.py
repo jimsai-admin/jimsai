@@ -350,7 +350,7 @@ def root_files() -> None:
               - "5432:5432"
             volumes:
               - postgres-data:/var/lib/postgresql/data
-              - ./infrastructure/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+              - ./infrastructure/postgres/supabase.sql:/docker-entrypoint-initdb.d/init.sql:ro
 
           api-gateway:
             build:
@@ -2739,7 +2739,7 @@ def infra() -> None:
         """,
     )
     write(
-        "infrastructure/postgres/init.sql",
+        "infrastructure/postgres/supabase.sql",
         """
         CREATE TABLE IF NOT EXISTS signatures (
           id TEXT PRIMARY KEY,

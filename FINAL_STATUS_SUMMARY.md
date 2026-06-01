@@ -172,7 +172,7 @@ Query → Intent (T1 or deterministic)
 - ✅ [prototype/jimsai/kaggle_orchestrator.py](prototype/jimsai/kaggle_orchestrator.py) - 350+ lines
 - ✅ [prototype/jimsai/capability_router.py](prototype/jimsai/capability_router.py) - 300+ lines
 - ✅ [services/production_pipeline.py](services/production_pipeline.py) - 400+ lines
-- ✅ [infrastructure/postgres/migration_phase5.sql](infrastructure/postgres/migration_phase5.sql) - 400+ lines
+- ✅ [infrastructure/postgres/supabase.sql](infrastructure/postgres/supabase.sql) - consolidated schema
 
 ---
 

@@ -1,11 +1,11 @@
 services:
-  - type: worker
-    name: jimsai-training-worker
+  - type: web
+    name: jimsai-training-service
     runtime: docker
-    plan: starter
+    plan: free
     dockerContext: .
     dockerfilePath: ./services/training-pipeline/Dockerfile
-    dockerCommand: celery -A prototype.jimsai.celery_runtime:celery_app worker --loglevel=INFO
+    healthCheckPath: /health
     autoDeployTrigger: commit
     envVars:
       - key: JIMS_STORAGE_BACKEND
@@ -18,6 +18,12 @@ services:
         value: "true"
       - key: JIMS_CELERY_KEY_PREFIX
         value: jimsai_
+      - key: JIMS_CLOUD_AUTHORITATIVE
+        value: "true"
+      - key: JIMS_KAGGLE_MAX_PANEL_ITEMS
+        value: "500"
+      - key: JIMS_RENDER_AGENT_TOKEN
+        sync: false
       - key: REDIS_URL
         sync: false
       - key: SUPABASE_URL

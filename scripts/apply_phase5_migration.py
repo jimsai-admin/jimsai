@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Apply Phase 5 PostgreSQL migration to Supabase
+Apply the consolidated JIMS-AI PostgreSQL schema to Supabase
 Usage: python scripts/apply_phase5_migration.py
 """
 
@@ -49,7 +49,7 @@ def apply_migration_with_supabase_py():
         return False
     
     # Read migration file
-    migration_file = Path(__file__).parent.parent / "infrastructure" / "postgres" / "migration_phase5.sql"
+    migration_file = Path(__file__).parent.parent / "infrastructure" / "postgres" / "supabase.sql"
     
     if not migration_file.exists():
         print(f"❌ Migration file not found: {migration_file}")
@@ -135,7 +135,7 @@ def apply_migration_with_psycopg2():
         return False
     
     # Read migration file
-    migration_file = Path(__file__).parent.parent / "infrastructure" / "postgres" / "migration_phase5.sql"
+    migration_file = Path(__file__).parent.parent / "infrastructure" / "postgres" / "supabase.sql"
     
     if not migration_file.exists():
         print(f"❌ Migration file not found: {migration_file}")
@@ -190,7 +190,7 @@ def apply_migration_with_psycopg2():
 def main():
     """Main entry point"""
     print("=" * 70)
-    print("PHASE 5 POSTGRESQL MIGRATION")
+    print("JIMS-AI POSTGRESQL SCHEMA")
     print("=" * 70)
     print()
     

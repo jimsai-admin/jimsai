@@ -12,5 +12,5 @@ COPY services/training-pipeline /app/services/training-pipeline
 RUN pip install --no-cache-dir -e ".[providers]" uvicorn python-multipart prometheus-client
 
 WORKDIR /app/services/training-pipeline
-EXPOSE 8000
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+EXPOSE 10000
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-10000}"]

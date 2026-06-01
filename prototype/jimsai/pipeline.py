@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 from typing import Any
 
@@ -1231,10 +1232,12 @@ class JimsAIPipeline:
     async def schedule_kaggle_training(self, request: KaggleTrainingRequest) -> KaggleTrainingResponse:
         saga_id = stable_id("saga", f"training:{request.user_id}:{request.task_type}:{len(self.kaggle_runs)}")
         self.event_store.append("saga_started", saga_id, {"kind": "training", "request": request.model_dump(mode="json")}, user_id=request.user_id)
+        training_history = self._training_history_for_kaggle(request.workspace_id)
+        world_model_candidates = self._world_model_candidates_for_kaggle(request.workspace_id)
         response = self.kaggle.submit_training_run(
             request,
-            training_history=self.training_history,
-            world_model_candidates=self.world_model_candidates,
+            training_history=training_history,
+            world_model_candidates=world_model_candidates,
         )
         self.kaggle_runs.append(response)
         self._write_result_signature(
@@ -1250,6 +1253,62 @@ class JimsAIPipeline:
         self.event_store.append("saga_step_completed", saga_id, {"step": "training_submitted", "run": response.model_dump(mode="json")}, user_id=request.user_id)
         self.production.save_panel_items([self._kaggle_run_item(response)])
         return response
+
+    def _training_history_for_kaggle(self, workspace_id: str | None) -> list[TrainingIngestResponse]:
+        history = [
+            item
+            for item in self.training_history
+            if workspace_id is None or item.signature.workspace_id in {None, workspace_id}
+        ]
+        by_signature_id = {item.signature.id: item for item in history}
+        max_items = int(os.getenv("JIMS_KAGGLE_MAX_PANEL_ITEMS", "500") or "500")
+        for panel_item in self._persistent_panel_items("ingestion", max_items):
+            if panel_item.kind != "training_ingest":
+                continue
+            try:
+                item = TrainingIngestResponse.model_validate(panel_item.data)
+            except Exception:
+                continue
+            if workspace_id is not None and item.signature.workspace_id not in {None, workspace_id}:
+                continue
+            by_signature_id.setdefault(item.signature.id, item)
+        return sorted(by_signature_id.values(), key=lambda item: item.signature.created_at, reverse=True)
+
+    def _world_model_candidates_for_kaggle(self, workspace_id: str | None) -> list[WorldModelCandidate]:
+        candidates = list(self.world_model_candidates)
+        by_key = {(item.provenance, item.rule): item for item in candidates}
+        max_items = int(os.getenv("JIMS_KAGGLE_MAX_PANEL_ITEMS", "500") or "500")
+        for panel_name in ("world-model", "review"):
+            for panel_item in self._persistent_panel_items(panel_name, max_items):
+                if panel_item.kind != "world_model_candidate":
+                    continue
+                if workspace_id is not None:
+                    signature_id = str(panel_item.data.get("provenance") or "")
+                    signature = self.memory.get(signature_id)
+                    if signature and signature.workspace_id not in {None, workspace_id}:
+                        continue
+                try:
+                    item = WorldModelCandidate.model_validate(panel_item.data)
+                except Exception:
+                    continue
+                by_key.setdefault((item.provenance, item.rule), item)
+        return list(by_key.values())
+
+    def _persistent_panel_items(self, panel: str, max_items: int) -> list[TrainingPanelItem]:
+        if max_items <= 0:
+            return []
+        items: list[TrainingPanelItem] = []
+        cursor: str | None = None
+        page_size = min(max_items, 100)
+        while len(items) < max_items:
+            page = self.production.list_panel_items(panel, cursor=cursor, limit=min(page_size, max_items - len(items)))
+            if page is None:
+                break
+            items.extend(page.items)
+            if not page.has_more or not page.next_cursor:
+                break
+            cursor = page.next_cursor
+        return items[:max_items]
 
     async def sync_kaggle_training(self, run_id: str) -> KaggleTrainingResponse | None:
         for index, run in enumerate(self.kaggle_runs):

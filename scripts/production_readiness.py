@@ -98,7 +98,7 @@ class ProductionReadinessValidator:
             
             # Extract connection info
             # For Supabase, use SQLite for MVP testing
-            schema_file = Path("infrastructure/postgres/migration_phase5.sql")
+            schema_file = Path("infrastructure/postgres/supabase.sql")
             exists = schema_file.exists()
             self.log_check(
                 "Migration Schema File",
