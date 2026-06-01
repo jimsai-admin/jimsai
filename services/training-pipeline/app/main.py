@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 from fastapi import FastAPI
 from fastapi.responses import PlainTextResponse
 
@@ -20,6 +22,9 @@ async def health() -> dict[str, str | bool]:
         "service": settings.service_name,
         "deterministic": True,
         "layer": "Unified Training Pipeline",
+        "agent_token_configured": bool(os.getenv("JIMS_RENDER_AGENT_TOKEN", "").strip()),
+        "embedding_service_configured": bool(os.getenv("JIMS_EMBEDDING_SERVICE_URL", "").strip()),
+        "supabase_configured": bool(os.getenv("SUPABASE_URL", "").strip() and os.getenv("SUPABASE_SERVICE_KEY", "").strip()),
     }
 
 

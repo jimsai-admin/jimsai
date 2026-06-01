@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import math
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote
@@ -536,6 +536,7 @@ class SupabasePostgresStore:
     ) -> None:
         title = query.strip().splitlines()[0][:120] if query.strip() else "Untitled thread"
         now = datetime.now(timezone.utc)
+        assistant_at = now + timedelta(milliseconds=1)
         thread = {
             "id": thread_id,
             "workspace_id": workspace_id,
@@ -566,7 +567,7 @@ class SupabasePostgresStore:
                 "trace_id": trace_id,
                 "confidence": confidence,
                 "sources": sources,
-                "created_at": now.isoformat(),
+                "created_at": assistant_at.isoformat(),
             },
         ]
         if not self.settings.postgres_url:

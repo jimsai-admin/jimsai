@@ -1102,6 +1102,29 @@ class JimsAIPipeline:
     async def delete_memory(self, request: MemoryDeleteRequest) -> MemoryMutationResponse:
         existing = self.memory.get(request.signature_id)
         if not existing or not self.memory._visible_to_scope(existing, workspace_id=request.workspace_id, user_id=request.user_id):
+            if self.cloud_authoritative:
+                removed_panel_items = self.production.delete_panel_items_for_signature(request.signature_id)
+                self.production.delete_signature(request.signature_id)
+                invalidated = self.result_cache.clear()
+                self.event_store.append(
+                    "memory_signature_deleted",
+                    request.signature_id,
+                    {
+                        "reason": request.reason,
+                        "removed_graph_edges": 0,
+                        "removed_panel_items": removed_panel_items,
+                        "cache_invalidated": invalidated,
+                        "cloud_authoritative": True,
+                    },
+                    user_id=request.user_id,
+                )
+                return MemoryMutationResponse(
+                    accepted=True,
+                    action="delete",
+                    signature_id=request.signature_id,
+                    memory_stats=self.memory.stats(),
+                    detail="signature delete requested against persistent production stores",
+                )
             return MemoryMutationResponse(
                 accepted=False,
                 action="delete",

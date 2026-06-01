@@ -149,6 +149,15 @@ Deploy Lambda zip code with:
 .\infrastructure\aws-lambda\deploy-lambda-zip.ps1
 ```
 
+The production Lambda should use at least:
+
+```text
+timeout=120 seconds
+memory=1024 MB
+```
+
+Training ingest and Learn/Unlearn can call Supabase, Hugging Face, Vectorize, Neo4j, Redis, and R2 in one request; 30 seconds is too low for reliable production behavior.
+
 For environment-only changes, use the no-BOM JSON approach documented in:
 
 ```text
@@ -193,6 +202,13 @@ model=intfloat/multilingual-e5-small
 
 `render.yaml` defines `jimsai-training-service` only. The embedding service is no longer deployed on Render.
 
+Render auto-deploys code from GitHub, but it does not receive local `.env` values. Any `sync: false` value in
+`render.yaml` must be added in the Render dashboard under:
+
+```text
+jimsai-training-service -> Environment
+```
+
 Required Render secrets:
 
 ```text
@@ -221,6 +237,16 @@ If a protected endpoint returns:
 ```
 
 then `JIMS_RENDER_AGENT_TOKEN` is missing in Render. Add it and redeploy.
+
+After the next deploy, `/health` should show:
+
+```json
+{
+  "agent_token_configured": true,
+  "embedding_service_configured": true,
+  "supabase_configured": true
+}
+```
 
 ## External Cron
 

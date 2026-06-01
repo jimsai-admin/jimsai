@@ -15,10 +15,12 @@ from prototype.jimsai.models import (
     FeedbackRequest,
     InventionRunRequest,
     KaggleTrainingRequest,
+    MathSolveRequest,
     MemoryDeleteRequest,
     MemoryUpdateRequest,
     PipelineRequest,
     ReviewActionRequest,
+    SandboxRunRequest,
     TrainingIngestRequest,
 )
 from prototype.jimsai.pipeline import JimsAIPipeline
@@ -109,6 +111,14 @@ async def chat_thread_delete(thread_id: str, request: ChatThreadDeleteRequest):
 async def review_action(request: ReviewActionRequest):
     return await pipeline.review_action(request)
 
+@router.post("/v1/sandbox/run", dependencies=[Depends(require_scope("runtime:query"))])
+async def sandbox_run(request: SandboxRunRequest):
+    return await pipeline.run_sandbox(request)
+
+@router.post("/v1/math/solve", dependencies=[Depends(require_scope("runtime:query"))])
+async def math_solve(request: MathSolveRequest):
+    return await pipeline.solve_math(request)
+
 @router.post("/v1/memory/update", dependencies=[Depends(require_scope("training:write"))])
 async def memory_update(request: MemoryUpdateRequest):
     return await pipeline.update_memory(request)
@@ -153,6 +163,14 @@ async def invention_status(session_id: str):
 @router.post("/v1/memory/insert", dependencies=[Depends(require_scope("training:write"))])
 async def memory_insert(request: TrainingIngestRequest):
     return await pipeline.ingest_training(request)
+
+@router.get("/v1/memory/stats", dependencies=[Depends(require_scope("training:read"))])
+async def memory_stats():
+    return pipeline.memory.stats()
+
+@router.get("/v1/audit/events", dependencies=[Depends(require_scope("training:read"))])
+async def audit_events(limit: int = 100):
+    return await pipeline.audit_events(limit=limit)
 
 @router.post("/v1/query/stream", dependencies=[Depends(require_scope("runtime:query"))])
 async def query_stream(request: PipelineRequest):

@@ -7,8 +7,8 @@ param(
     [string]$FunctionName = "jimsai-api-gateway",
     [string]$CorsAllowOrigin = "https://jimsai.vercel.app",
     [string]$Runtime = "python3.11",
-    [string]$MemorySize = "512",
-    [string]$Timeout = "30"
+    [string]$MemorySize = "1024",
+    [string]$Timeout = "120"
 )
 
 $ErrorActionPreference = "Stop"
@@ -47,6 +47,7 @@ if ($LASTEXITCODE -ne 0) { throw "pip install failed" }
 # ── Step 3: Copy app code ─────────────────────────────────────────────────────
 Write-Host "[3/6] Copying app code..." -ForegroundColor Yellow
 Copy-Item -Recurse -Force "$ServiceDir\app" "$BuildDir\app"
+Copy-Item -Recurse -Force "$RootDir\prototype" "$BuildDir\prototype"
 
 # ── Step 4: Zip everything ────────────────────────────────────────────────────
 Write-Host "[4/6] Creating zip package..." -ForegroundColor Yellow
@@ -77,18 +78,84 @@ if (-not $roleExists) {
 Write-Host "[6/6] Deploying Lambda function..." -ForegroundColor Yellow
 
 # Load env vars from .env file for Lambda environment
-$envVars = @{}
+$rawEnv = @{}
 Get-Content "$RootDir\.env" | ForEach-Object {
     if ($_ -match "^\s*([^#][^=]+)=(.*)$") {
-        $envVars[$matches[1].Trim()] = $matches[2].Trim()
+        $rawEnv[$matches[1].Trim()] = $matches[2].Trim()
     }
 }
+
+$allowedKeys = @(
+    "JIMS_STORAGE_BACKEND",
+    "JIMS_STRICT_PROVIDER_STARTUP",
+    "JIMS_AUTH_PROVIDER",
+    "JIMS_AUTH_REQUIRED",
+    "JIMS_SUPABASE_DEFAULT_SCOPES",
+    "JIMS_GRAPH_PROVIDER",
+    "JIMS_ENABLE_NEO4J",
+    "JIMS_CLOUD_AUTHORITATIVE",
+    "JIMS_EMBEDDING_SERVICE_URL",
+    "JIMS_EMBEDDING_SERVICE_TOKEN",
+    "JIMS_ENABLE_MULTIMODAL_ENCODERS",
+    "JIMS_MULTIMODAL_ENCODER_MODE",
+    "JIMS_MULTIMODAL_ENCODER_URL",
+    "JIMS_MULTIMODAL_ENCODER_API_KEY",
+    "JIMS_ENABLE_GROQ_T1",
+    "JIMS_ENABLE_GROQ_T2",
+    "JIMS_ENABLE_GROQ_CANVAS",
+    "JIMS_ENABLE_GROQ_INVENTION",
+    "JIMS_ADAPTIVE_TRANSFORMER_THINNING",
+    "JIMS_T1_SKIP_CONFIDENCE",
+    "JIMS_T2_SKIP_CONFIDENCE",
+    "SUPABASE_URL",
+    "SUPABASE_SERVICE_KEY",
+    "SUPABASE_ANON_KEY",
+    "NEO4J_URI",
+    "NEO4J_USER",
+    "NEO4J_USERNAME",
+    "NEO4J_PASSWORD",
+    "NEO4J_DATABASE",
+    "REDIS_URL",
+    "REDIS_PUBLIC_ENDPOINT",
+    "REDIS_API",
+    "JIMS_CELERY_KEY_PREFIX",
+    "CF_ACCOUNT_ID",
+    "CF_R2_BUCKET",
+    "CF_R2_ACCESS_KEY",
+    "CF_R2_SECRET_KEY",
+    "CF_VECTORIZE_INDEX",
+    "CF_VECTORIZE_API_TOKEN",
+    "CF_VECTORIZE_DIMENSIONS",
+    "KAGGLE_USERNAME",
+    "KAGGLE_API_TOKEN",
+    "KAGGLE_DATASET_OWNER",
+    "GROQ_API_KEY",
+    "GROQ_GENERATOR_MODEL",
+    "GROQ_REASONING_MODEL",
+    "GROQ_INTENT_MODEL",
+    "GROQ_RENDER_MODEL",
+    "GROQ_CANVAS_MODEL",
+    "GROQ_INVENTION_MODEL",
+    "LOG_LEVEL"
+)
+
+$envVars = @{}
+foreach ($key in $allowedKeys) {
+    if ($rawEnv.ContainsKey($key) -and $rawEnv[$key]) {
+        $envVars[$key] = $rawEnv[$key]
+    }
+}
+
+$envVars["JIMS_STORAGE_BACKEND"] = "production"
+$envVars["JIMS_STRICT_PROVIDER_STARTUP"] = "true"
+$envVars["JIMS_AUTH_PROVIDER"] = "supabase"
+$envVars["JIMS_AUTH_REQUIRED"] = "true"
 # Add CORS origin
 $envVars["CORS_ORIGINS"] = $CorsAllowOrigin
 
-# Build environment variables string for AWS CLI
-$envJson = ($envVars.GetEnumerator() | ForEach-Object { "`"$($_.Key)`":`"$($_.Value)`"" }) -join ","
-$envJson = "{Variables:{$envJson}}"
+$environmentPath = Join-Path $env:TEMP "jimsai-lambda-env.json"
+$envJson = @{ Variables = $envVars } | ConvertTo-Json -Depth 5
+[System.IO.File]::WriteAllText($environmentPath, $envJson, (New-Object System.Text.UTF8Encoding($false)))
 
 $functionExists = aws lambda get-function --function-name $FunctionName --region $Region 2>$null
 
@@ -103,7 +170,7 @@ if (-not $functionExists) {
         --region $Region `
         --memory-size $MemorySize `
         --timeout $Timeout `
-        --environment $envJson | Out-Null
+        --environment "file://$environmentPath" | Out-Null
 
     Write-Host "    Waiting for function to be active..."
     aws lambda wait function-active --function-name $FunctionName --region $Region
@@ -136,7 +203,7 @@ if (-not $functionExists) {
 
     aws lambda update-function-configuration `
         --function-name $FunctionName `
-        --environment $envJson `
+        --environment "file://$environmentPath" `
         --region $Region | Out-Null
 
     $urlConfig = aws lambda get-function-url-config `
