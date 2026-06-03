@@ -293,6 +293,34 @@ export default function TrainingPanelClient({ panelId }: { panelId: string }) {
           })
         });
         if (!response.ok) throw new Error(`review failed with HTTP ${response.status}`);
+        const finalRule = action.action === "correct" && correctedRule?.trim() ? correctedRule.trim() : action.rule;
+        setItems((current) => {
+          if (action.action === "reject") {
+            return current.filter((item) => {
+              const provenance = typeof item.data.provenance === "string" ? item.data.provenance : "";
+              const rule = typeof item.data.rule === "string" ? item.data.rule : item.title;
+              return !(item.kind === "world_model_candidate" && provenance === action.provenance && rule === action.rule);
+            });
+          }
+          return current.map((item) => {
+            const provenance = typeof item.data.provenance === "string" ? item.data.provenance : "";
+            const rule = typeof item.data.rule === "string" ? item.data.rule : item.title;
+            if (item.kind !== "world_model_candidate" || provenance !== action.provenance || rule !== action.rule) return item;
+            const reviewRequired = action.action === "rollback";
+            const confidence = action.action === "correct" ? Math.max(Number(item.data.confidence ?? 0), 0.9) : Number(item.data.confidence ?? 0);
+            return {
+              ...item,
+              title: finalRule,
+              subtitle: `${reviewRequired ? "review required" : "accepted"} / confidence ${confidence.toFixed(2)} / ${action.provenance}`,
+              data: {
+                ...item.data,
+                rule: finalRule,
+                confidence,
+                review_required: reviewRequired
+              }
+            };
+          });
+        });
         setStatus(`Review ${action.action} stored.`);
       } else if (action.type === "sync-kaggle") {
         setStatus("Syncing Kaggle run outputs.");

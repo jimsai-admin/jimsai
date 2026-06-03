@@ -1,25 +1,10 @@
 # JIMS-AI Production Deployment Guide
 
-This is the current production topology for JIMS-AI.
+Status date: June 3, 2026
 
-```text
-Vercel frontend
-  -> AWS Lambda FastAPI backend
-    -> Hugging Face Space embedding service
-    -> Cloudflare Vectorize
-    -> Supabase
-    -> Neo4j Aura
-    -> Redis
-    -> Groq when deterministic runtime needs bounded model help
+This is the deployment source of truth for the current codebase. It reflects the production stack that is actually implemented now: Vercel frontend, AWS Lambda FastAPI backend, Hugging Face Space embedding/local-model service, Render autonomous training service, Supabase, Cloudflare Vectorize, Neo4j, Redis, and Kaggle artifact packaging.
 
-External cron
-  -> Render training service
-    -> Supabase state
-    -> Hugging Face embedding service
-    -> Kaggle GPU artifact packaging
-```
-
-## Live Services
+## 1. Live Services
 
 ```text
 Frontend:
@@ -28,59 +13,88 @@ https://jimsai.vercel.app
 AWS Lambda API:
 https://7x27vovhmfnhcymm5ox3qiw4fy0agvcy.lambda-url.us-east-1.on.aws
 
-Render training service:
-https://jimsai-training-service.onrender.com
-
-Hugging Face embedding service:
+Hugging Face local model service:
 https://jimstechai-jimsai-embedding-service.hf.space
+
+Render autonomous training service:
+https://jimsai-training-service.onrender.com
 ```
 
-## What Runs Where
-
-Vercel hosts only the Next.js UI. Public variables only:
+## 2. Production Topology
 
 ```text
-NEXT_PUBLIC_API_BASE_URL
-NEXT_PUBLIC_SUPABASE_URL
-NEXT_PUBLIC_SUPABASE_ANON_KEY
+Vercel Next.js UI
+  -> AWS Lambda FastAPI API
+    -> Supabase Auth/Postgres
+    -> Hugging Face Space
+       -> intfloat/multilingual-e5-small embeddings
+       -> MoritzLaurer/mDeBERTa-v3-base-mnli-xnli capability classifier
+       -> Qwen3-1.7B GGUF for bounded T1/routing JSON
+       -> Qwen3-4B GGUF for bounded T2/render/ingestion JSON
+    -> Cloudflare Vectorize
+    -> Neo4j Aura graph memory
+    -> Redis cache/session state
+
+External cron
+  -> Render autonomous training service
+    -> Supabase autonomous state and review queues
+    -> Hugging Face embeddings
+    -> Cloudflare Vectorize re-embedding/upserts
+    -> Kaggle offline artifact packages
 ```
 
-AWS Lambda hosts the production API from `services/api-gateway`. It handles auth, chat, feedback, memory writes/deletes, training panels, provider readiness, deterministic reasoning, Vectorize retrieval, Supabase hydration, Neo4j graph context, Redis session state, and bounded Groq calls. Lambda does not install `sentence-transformers`.
+External Groq is no longer required for runtime. The code still has legacy flag names such as `JIMS_ENABLE_GROQ_T1`, but the model bridge routes those bounded interfaces to the Hugging Face Space when local mode is enabled and `JIMS_ALLOW_EXTERNAL_GROQ=false`.
 
-Hugging Face Spaces hosts the sentence-transformer embedding service from:
+## 3. Repository Components
 
 ```text
+frontend/                                      Next.js Vercel UI
+services/api-gateway/                          FastAPI Lambda app
+services/training-pipeline/                    Render autonomous training service
 infrastructure/huggingface-space/jimsai-embedding-service/
+                                                Hugging Face embedding/router/Qwen service
+infrastructure/postgres/supabase.sql            Supabase schema source of truth
+infrastructure/aws-lambda/deploy-lambda-zip.ps1 Lambda build/deploy script
+prototype/jimsai/                               Core runtime, routing, memory, training logic
 ```
 
-Render hosts only the bounded training service from:
+## 4. Secret Rules
+
+Do not commit real `.env` files. Only examples are tracked:
 
 ```text
-services/training-pipeline/
+.env.example
+.env.production.example
 ```
 
-Kaggle is used only for offline GPU training/evaluation artifacts.
+Rotate any secret that has been pasted into chat, screenshots, logs, or commits. Frontend variables must only be public variables; provider secrets stay in Lambda, Render, Hugging Face Space secrets, or local `.env`.
 
-## Required Production Schema
+## 5. Supabase Schema
 
-Run this file manually in Supabase SQL Editor after every schema change:
+Run this file manually in Supabase SQL Editor after schema changes:
 
 ```text
 infrastructure/postgres/supabase.sql
 ```
 
-This schema includes:
+The production schema includes:
 
 ```text
 signatures
+execution_traces
 training_panel_items
-chat_threads
-chat_messages
-user_feedback
+workspaces
+workspace_members
+jimsai_events
+request_audit
+sppe_pairs
 memory_signatures
 memory_chunks
 retrieval_events
 retrieval_misses
+user_feedback
+chat_threads
+chat_messages
 autonomous_runs
 autonomous_jobs
 ingestion_cursors
@@ -88,32 +102,78 @@ training_batches
 training_artifacts
 evaluation_reports
 approval_queue
-workspace tables and metrics tables
+workspace_metrics
+workspace_quotas
+query_patterns
+user_preferences
+workspace_adapters
+provider_state
+system_metrics
 ```
 
-`chat_threads` and `chat_messages` are required for production multi-thread chat history. The frontend keeps a local cache for responsiveness, but Lambda persists thread history through Supabase.
+`chat_threads` and `chat_messages` are required for ChatGPT/Claude-style persistent multi-thread chat. `user_feedback`, `memory_signatures`, `memory_chunks`, `retrieval_events`, and `retrieval_misses` are required for learn, unlearn, recovery, and training quality loops.
 
-## Environment Rules
+## 6. Vercel Frontend
 
-Do not commit real `.env` files. The only tracked env files should be:
+Vercel deploys the Next.js UI from GitHub.
+
+Required Vercel variables:
 
 ```text
-.env.example
-.env.production.example
+NEXT_PUBLIC_API_BASE_URL=https://7x27vovhmfnhcymm5ox3qiw4fy0agvcy.lambda-url.us-east-1.on.aws
+NEXT_PUBLIC_SUPABASE_URL=<supabase-url>
+NEXT_PUBLIC_SUPABASE_ANON_KEY=<supabase-anon-key>
 ```
 
-Rotate any secret that has been pasted into chat, logs, screenshots, or commits.
+Do not set service keys, Hugging Face tokens, Cloudflare tokens, Neo4j passwords, Redis URLs, Kaggle tokens, or Render agent tokens in public Vercel variables.
 
-## Lambda Environment
+Frontend expectations:
 
-Set these in AWS Lambda from local `.env`:
+```text
+login works through Lambda/Supabase
+chat thread list loads from Lambda
+messages persist in Supabase
+thread creation/deletion works
+Markdown answers render cleanly
+feedback/learn submits to /v1/feedback
+unlearn/delete memory calls the Lambda memory endpoint
+training panels show Supabase-backed records
+```
+
+## 7. AWS Lambda API
+
+Lambda hosts `services/api-gateway` with handler:
+
+```text
+app.lambda_handler.handler
+```
+
+Recommended configuration:
+
+```text
+runtime=Python 3.11
+memory=1024 MB
+timeout=120 seconds
+```
+
+Deploy code:
+
+```powershell
+cd C:\Users\ajibe\Jims-AI
+.\infrastructure\aws-lambda\deploy-lambda-zip.ps1
+```
+
+The deploy script builds `.lambda-build`, installs `services/api-gateway/requirements.lambda.txt`, copies `services/api-gateway/app` and `prototype`, zips the package, uploads to S3, and updates the Lambda function.
+
+Required Lambda variables:
 
 ```text
 JIMS_STORAGE_BACKEND=production
-JIMS_STRICT_PROVIDER_STARTUP=true
+JIMS_STRICT_PROVIDER_STARTUP=false
 JIMS_AUTH_PROVIDER=supabase
 JIMS_AUTH_REQUIRED=true
 JIMS_SUPABASE_DEFAULT_SCOPES=runtime:query training:read training:write feedback:write
+CORS_ORIGINS=https://jimsai.vercel.app
 
 SUPABASE_URL
 SUPABASE_SERVICE_KEY
@@ -125,6 +185,37 @@ JIMS_ENABLE_MULTIMODAL_ENCODERS=true
 JIMS_MULTIMODAL_ENCODER_MODE=external
 JIMS_MULTIMODAL_ENCODER_URL=https://jimstechai-jimsai-embedding-service.hf.space
 JIMS_MULTIMODAL_ENCODER_API_KEY
+
+JIMS_LLM_PROVIDER=local
+JIMS_ENABLE_LOCAL_QWEN=true
+JIMS_QWEN_SERVICE_URL=https://jimstechai-jimsai-embedding-service.hf.space
+JIMS_QWEN_SERVICE_TOKEN
+JIMS_QWEN_MODEL=qwen3-1.7b-instruct
+JIMS_LOCAL_INFERENCE_URL=https://jimstechai-jimsai-embedding-service.hf.space
+JIMS_LOCAL_INFERENCE_API_KEY
+JIMS_LOCAL_INFERENCE_MODEL=qwen3-1.7b-instruct
+JIMS_LOCAL_INFERENCE_CHAT_PATH=/v1/chat/completions
+JIMS_LOCAL_RENDER_MODEL=qwen3-4b-instruct
+JIMS_LOCAL_RENDER_CHAT_PATH=/v1/chat/render
+JIMS_LOCAL_INFERENCE_TIMEOUT=120
+JIMS_LOCAL_RENDER_TIMEOUT=180
+JIMS_ALLOW_EXTERNAL_GROQ=false
+GROQ_API_KEY=
+
+JIMS_ENABLE_GROQ_T1=false
+JIMS_ENABLE_GROQ_T2=true
+JIMS_ENABLE_GROQ_INGEST=true
+JIMS_ENABLE_GROQ_CANVAS=true
+JIMS_ENABLE_GROQ_INVENTION=true
+JIMS_ADAPTIVE_TRANSFORMER_THINNING=true
+
+JIMS_ENABLE_SEMANTIC_CAPABILITY_ROUTER=true
+JIMS_ENABLE_ZERO_SHOT_CAPABILITY_ROUTER=true
+JIMS_ENABLE_LLM_CAPABILITY_ROUTER=true
+JIMS_CAPABILITY_EMBEDDING_SERVICE_URL=https://jimstechai-jimsai-embedding-service.hf.space
+JIMS_CAPABILITY_EMBEDDING_SERVICE_TOKEN
+JIMS_CAPABILITY_CLASSIFIER_URL=https://jimstechai-jimsai-embedding-service.hf.space
+JIMS_CAPABILITY_CLASSIFIER_TOKEN
 
 CF_ACCOUNT_ID
 CF_VECTORIZE_INDEX
@@ -140,76 +231,119 @@ NEO4J_PASSWORD
 NEO4J_DATABASE
 
 REDIS_URL
-GROQ_API_KEY
 ```
 
-Deploy Lambda zip code with:
+Direct Lambda health test:
 
 ```powershell
-.\infrastructure\aws-lambda\deploy-lambda-zip.ps1
+$payload = '{"version":"2.0","routeKey":"GET /health","rawPath":"/health","rawQueryString":"","headers":{"host":"localhost"},"requestContext":{"http":{"method":"GET","path":"/health","sourceIp":"127.0.0.1","userAgent":"test"},"accountId":"095931689519","stage":"$default"},"isBase64Encoded":false}'
+$payload | Set-Content "$env:TEMP\jimsai-health.json" -Encoding ascii
+aws lambda invoke --function-name jimsai-api-gateway --region us-east-1 --cli-binary-format raw-in-base64-out --payload "file://$env:TEMP\jimsai-health.json" "$env:TEMP\jimsai-health-response.json"
+Get-Content "$env:TEMP\jimsai-health-response.json"
 ```
 
-The production Lambda should use at least:
+## 8. Hugging Face Space
+
+The Hugging Face Space is deployed from:
 
 ```text
-timeout=120 seconds
-memory=1024 MB
+infrastructure/huggingface-space/jimsai-embedding-service/
 ```
 
-Training ingest and Learn/Unlearn can call Supabase, Hugging Face, Vectorize, Neo4j, Redis, and R2 in one request; 30 seconds is too low for reliable production behavior.
-
-For environment-only changes, use the no-BOM JSON approach documented in:
+Runtime endpoints:
 
 ```text
-infrastructure/aws-lambda/LAMBDA_DEPLOYMENT_GUIDE.md
+GET  /health
+GET  /ready
+POST /v1/embed
+POST /v1/embed-batch
+POST /v1/encode
+POST /v1/classify/capability
+POST /v1/chat/completions
+POST /v1/chat/render
+GET  /v1/artifact/current
+POST /v1/reload-artifact
+GET  /v1/warm
+POST /v1/warm
 ```
 
-## Hugging Face Embedding Service
+Protected endpoints require:
 
-The Space is public so Lambda and Render can reach it. Work endpoints are protected by bearer token.
+```text
+Authorization: Bearer <JIMS_RENDER_AGENT_TOKEN>
+```
 
 Required Space secrets:
 
 ```text
 JIMS_RENDER_AGENT_TOKEN
+HF_TOKEN
 JIMS_EMBEDDING_MODEL=intfloat/multilingual-e5-small
 JIMS_EMBEDDING_DIMENSIONS=768
+JIMS_EMBEDDING_DEVICE=cpu
 JIMS_EMBEDDING_HASH_FALLBACK_ENABLED=true
 JIMS_ACTIVE_ARTIFACT_ID=base_encoder
+
+JIMS_QWEN_ENABLED=true
+JIMS_QWEN_MODEL_REPO=ggml-org/Qwen3-1.7B-GGUF
+JIMS_QWEN_MODEL_FILE=Qwen3-1.7B-Q4_K_M.gguf
+JIMS_QWEN_MODEL=qwen3-1.7b-instruct
+JIMS_QWEN_CONTEXT=4096
+JIMS_QWEN_MAX_TOKENS=256
+JIMS_QWEN_BATCH=64
+JIMS_QWEN_THREADS=2
+
+JIMS_RENDER_MODEL_REPO=Qwen/Qwen3-4B-GGUF
+JIMS_RENDER_MODEL_FILE=Qwen3-4B-Q4_K_M.gguf
+JIMS_RENDER_MODEL_NAME=qwen3-4b-instruct
+JIMS_RENDER_CONTEXT=8192
+JIMS_RENDER_MAX_TOKENS=1200
+JIMS_RENDER_BATCH=128
+JIMS_RENDER_THREADS=2
 ```
 
-Smoke test:
+Do not duplicate the same key in both public Variables and private Secrets. Hugging Face Spaces reports a configuration collision if a key exists in both places.
+
+Smoke tests:
 
 ```powershell
 $token = "<JIMS_RENDER_AGENT_TOKEN>"
-Invoke-RestMethod `
-  -Method Post `
+$headers = @{ Authorization = "Bearer $token" }
+
+Invoke-RestMethod "https://jimstechai-jimsai-embedding-service.hf.space/health"
+Invoke-RestMethod "https://jimstechai-jimsai-embedding-service.hf.space/ready"
+
+Invoke-RestMethod -Method Post `
   -Uri "https://jimstechai-jimsai-embedding-service.hf.space/v1/embed" `
-  -Headers @{ Authorization = "Bearer $token" } `
+  -Headers $headers `
   -ContentType "application/json" `
   -Body '{"texts":["Why did the dashboard show records but no UI?"],"purpose":"query"}'
+
+Invoke-RestMethod -Method Post `
+  -Uri "https://jimstechai-jimsai-embedding-service.hf.space/v1/chat/completions" `
+  -Headers $headers `
+  -ContentType "application/json" `
+  -Body '{"messages":[{"role":"system","content":"Return JSON only."},{"role":"user","content":"Classify: calculate 18/3"}],"response_format":{"type":"json_object"},"max_tokens":80}'
 ```
 
-Expected:
+## 9. Render Training Service
+
+Render deploys from GitHub using `render.yaml`.
+
+Service:
 
 ```text
-fallback=false
-dimension=768
-model=intfloat/multilingual-e5-small
+jimsai-training-service
 ```
 
-## Render Training Service
-
-`render.yaml` defines `jimsai-training-service` only. The embedding service is no longer deployed on Render.
-
-Render auto-deploys code from GitHub, but it does not receive local `.env` values. Any `sync: false` value in
-`render.yaml` must be added in the Render dashboard under:
+Root/runtime:
 
 ```text
-jimsai-training-service -> Environment
+services/training-pipeline
+uvicorn app.main:app --host 0.0.0.0 --port $PORT
 ```
 
-Required Render secrets:
+Required Render variables:
 
 ```text
 JIMS_RENDER_AGENT_TOKEN
@@ -227,35 +361,46 @@ NEO4J_PASSWORD
 KAGGLE_USERNAME
 KAGGLE_API_TOKEN
 KAGGLE_DATASET_OWNER
-GROQ_API_KEY
 ```
 
-If a protected endpoint returns:
+Render endpoints:
 
-```json
-{"detail":"agent token not configured"}
+```text
+GET  /health
+GET  /metrics
+GET  /trace
+GET  /v1/contract
+POST /v1/execute
+POST /v1/autonomous/cycle
+POST /v1/autonomous/discover
+POST /v1/autonomous/ingest-batch
+POST /v1/autonomous/evaluate
+POST /v1/autonomous/plan
+POST /v1/autonomous/report
+POST /v1/autonomous/kaggle/package
+POST /v1/autonomous/reembed-hash
 ```
 
-then `JIMS_RENDER_AGENT_TOKEN` is missing in Render. Add it and redeploy.
+Protected autonomous calls:
 
-After the next deploy, `/health` should show:
-
-```json
-{
-  "agent_token_configured": true,
-  "embedding_service_configured": true,
-  "supabase_configured": true
-}
+```powershell
+$token = "<JIMS_RENDER_AGENT_TOKEN>"
+Invoke-RestMethod -Method Post `
+  -Uri "https://jimsai-training-service.onrender.com/v1/autonomous/report" `
+  -Headers @{ Authorization = "Bearer $token" } `
+  -ContentType "application/json" `
+  -Body '{"workspace_id":"default","limit":25}'
 ```
 
-## External Cron
+## 10. External Cron
 
-Use cron-job.org, Better Stack, UptimeRobot, or equivalent.
+Use cron-job.org, Better Stack, UptimeRobot, or similar.
 
 Every 5 minutes:
 
 ```text
 GET https://jimstechai-jimsai-embedding-service.hf.space/health
+GET https://jimstechai-jimsai-embedding-service.hf.space/ready
 GET https://jimsai-training-service.onrender.com/health
 GET https://7x27vovhmfnhcymm5ox3qiw4fy0agvcy.lambda-url.us-east-1.on.aws/health
 ```
@@ -264,81 +409,62 @@ Every 30 minutes:
 
 ```text
 POST https://jimsai-training-service.onrender.com/v1/autonomous/ingest-batch
-Authorization: Bearer <JIMS_RENDER_AGENT_TOKEN>
-Content-Type: application/json
-
-{"documents":[]}
-```
-
-Every 30 minutes:
-
-```text
 POST https://jimsai-training-service.onrender.com/v1/autonomous/reembed-hash
-Authorization: Bearer <JIMS_RENDER_AGENT_TOKEN>
-Content-Type: application/json
-
-{"limit":50}
 ```
 
 Every 6 hours:
 
 ```text
 POST https://jimsai-training-service.onrender.com/v1/autonomous/evaluate
-Authorization: Bearer <JIMS_RENDER_AGENT_TOKEN>
-Content-Type: application/json
-
-{}
 ```
 
 Daily:
 
 ```text
-POST /v1/autonomous/plan
-POST /v1/autonomous/report
+POST https://jimsai-training-service.onrender.com/v1/autonomous/plan
+POST https://jimsai-training-service.onrender.com/v1/autonomous/report
 ```
 
 Weekly or threshold-based:
 
 ```text
-POST /v1/autonomous/kaggle/package
+POST https://jimsai-training-service.onrender.com/v1/autonomous/kaggle/package
 ```
 
-## Verification
-
-Run after deploy:
-
-```powershell
-Invoke-RestMethod "https://7x27vovhmfnhcymm5ox3qiw4fy0agvcy.lambda-url.us-east-1.on.aws/health"
-Invoke-RestMethod "https://jimstechai-jimsai-embedding-service.hf.space/health"
-Invoke-RestMethod "https://jimsai-training-service.onrender.com/health"
-```
-
-Authenticated checks from the frontend:
+Protected cron POSTs must include:
 
 ```text
-Sign in
-Send chat message
-Switch/new/delete chat thread
-Click Learn This
-Click Unlearn
-Open Training -> Feedback
-Open Training -> Memory
-Open Training -> Autonomous
+Authorization: Bearer <JIMS_RENDER_AGENT_TOKEN>
 ```
 
-Backend endpoints involved:
+## 11. Validation Checklist
+
+Run these before handoff:
 
 ```text
-POST   /v1/query
-POST   /v1/feedback
-POST   /v1/training/ingest
-POST   /v1/memory/delete
-GET    /v1/chat/threads
-GET    /v1/chat/threads/{thread_id}/messages
-DELETE /v1/chat/threads/{thread_id}
-GET    /v1/training/panels/{panel}/items
+Supabase schema has been applied
+Vercel login works
+Lambda /health works by direct invoke
+Frontend can call Lambda /v1/auth/config
+Chat prompt creates/updates a Supabase thread
+Markdown answer renders correctly in chat
+Feedback submits to /v1/feedback
+Learn-this feedback appears in training/feedback panel
+Unlearn/delete memory endpoint removes the target memory
+HF /v1/embed returns fallback=false and dimension=768
+HF /v1/classify/capability returns ranked capability scores
+HF /v1/chat/completions returns JSON through Qwen3-1.7B
+HF /v1/chat/render returns JSON through Qwen3-4B when warmed
+Render /health reports agent token configured
+Render autonomous report/plan endpoints write Supabase run records
+Vectorize top-k retrieval hydrates Supabase records
+Hash fallback records are marked reembedding_required and recover through /v1/autonomous/reembed-hash
 ```
 
-## Availability Note
+## 12. Known Operational Notes
 
-Hugging Face CPU Basic gives enough RAM for `intfloat/multilingual-e5-small` and sleeps after 48 hours of inactivity on the free tier. For a hard 99.9% sentence-transformer availability target, move the embedding service to paid always-on hardware or a host with minimum instances. Keep hash fallback enabled only for rare degradation and use `/v1/autonomous/reembed-hash` to replace fallback vectors later.
+Qwen3-1.7B and Qwen3-4B on Hugging Face CPU Basic are useful as bounded local interfaces, not high-throughput frontier replacements. Keep Qwen lazy where possible and use deterministic routing, symbolic math, structured retrieval, and CSSE rendering when confidence is high.
+
+Complex math and physics route to `math_science`. Bounded arithmetic/equation tasks execute through the internal symbolic solver. Broader scientific tasks should use retrieval, validation, and future solver adapters rather than unsupported guessing.
+
+Coding prompts route to `coding` across programming languages, logs, SQL, APIs, tests, deployment, and repository work. Execution still requires approved adapters or sandbox paths; routing alone does not mean unsafe code is executed.

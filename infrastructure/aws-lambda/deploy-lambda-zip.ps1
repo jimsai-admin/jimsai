@@ -15,7 +15,9 @@ $ErrorActionPreference = "Stop"
 $RootDir = "C:\Users\ajibe\Jims-AI"
 $ServiceDir = "$RootDir\services\api-gateway"
 $BuildDir = "$RootDir\.lambda-build"
-$ZipPath = "$RootDir\lambda-package.zip"
+$ZipPath = "$RootDir\infrastructure\aws-lambda\lambda-package.zip"
+$DeployBucket = "jimsai-lambda-deploy-095931689519"
+$DeployKey = "lambda-package.zip"
 $AccountId = (aws sts get-caller-identity --query Account --output text)
 $RoleName = "$FunctionName-role"
 $RoleArn = "arn:aws:iam::${AccountId}:role/$RoleName"
@@ -46,6 +48,8 @@ if ($LASTEXITCODE -ne 0) { throw "pip install failed" }
 
 # ── Step 3: Copy app code ─────────────────────────────────────────────────────
 Write-Host "[3/6] Copying app code..." -ForegroundColor Yellow
+Remove-Item -Recurse -Force "$BuildDir\app" -ErrorAction SilentlyContinue
+Remove-Item -Recurse -Force "$BuildDir\prototype" -ErrorAction SilentlyContinue
 Copy-Item -Recurse -Force "$ServiceDir\app" "$BuildDir\app"
 Copy-Item -Recurse -Force "$RootDir\prototype" "$BuildDir\prototype"
 
@@ -96,6 +100,26 @@ $allowedKeys = @(
     "JIMS_CLOUD_AUTHORITATIVE",
     "JIMS_EMBEDDING_SERVICE_URL",
     "JIMS_EMBEDDING_SERVICE_TOKEN",
+    "JIMS_LLM_PROVIDER",
+    "JIMS_ENABLE_LOCAL_QWEN",
+    "JIMS_QWEN_SERVICE_URL",
+    "JIMS_QWEN_SERVICE_TOKEN",
+    "JIMS_QWEN_MODEL",
+    "JIMS_LOCAL_INFERENCE_URL",
+    "JIMS_LOCAL_INFERENCE_API_KEY",
+    "JIMS_LOCAL_INFERENCE_MODEL",
+    "JIMS_LOCAL_INFERENCE_CHAT_PATH",
+    "JIMS_LOCAL_INFERENCE_TIMEOUT",
+    "JIMS_LOCAL_RENDER_MODEL",
+    "JIMS_LOCAL_RENDER_CHAT_PATH",
+    "JIMS_LOCAL_RENDER_TIMEOUT",
+    "JIMS_RENDER_MODEL_NAME",
+    "JIMS_RENDER_MODEL_REPO",
+    "JIMS_RENDER_MODEL_FILE",
+    "JIMS_RENDER_CONTEXT",
+    "JIMS_RENDER_MAX_TOKENS",
+    "JIMS_RENDER_BATCH",
+    "JIMS_RENDER_THREADS",
     "JIMS_ENABLE_MULTIMODAL_ENCODERS",
     "JIMS_MULTIMODAL_ENCODER_MODE",
     "JIMS_MULTIMODAL_ENCODER_URL",
@@ -104,6 +128,16 @@ $allowedKeys = @(
     "JIMS_ENABLE_GROQ_T2",
     "JIMS_ENABLE_GROQ_CANVAS",
     "JIMS_ENABLE_GROQ_INVENTION",
+    "JIMS_ALLOW_EXTERNAL_GROQ",
+    "JIMS_ENABLE_SEMANTIC_CAPABILITY_ROUTER",
+    "JIMS_ENABLE_ZERO_SHOT_CAPABILITY_ROUTER",
+    "JIMS_ENABLE_LLM_CAPABILITY_ROUTER",
+    "JIMS_ENABLE_RESOLUTION_LEARNING",
+    "JIMS_CAPABILITY_EMBEDDING_SERVICE_URL",
+    "JIMS_CAPABILITY_EMBEDDING_SERVICE_TOKEN",
+    "JIMS_CAPABILITY_CLASSIFIER_URL",
+    "JIMS_CAPABILITY_CLASSIFIER_TOKEN",
+    "JIMS_CAPABILITY_CLASSIFIER_TIMEOUT",
     "JIMS_ADAPTIVE_TRANSFORMER_THINNING",
     "JIMS_T1_SKIP_CONFIDENCE",
     "JIMS_T2_SKIP_CONFIDENCE",
@@ -147,9 +181,10 @@ foreach ($key in $allowedKeys) {
 }
 
 $envVars["JIMS_STORAGE_BACKEND"] = "production"
-$envVars["JIMS_STRICT_PROVIDER_STARTUP"] = "true"
+$envVars["JIMS_STRICT_PROVIDER_STARTUP"] = "false"
 $envVars["JIMS_AUTH_PROVIDER"] = "supabase"
 $envVars["JIMS_AUTH_REQUIRED"] = "true"
+$envVars["JIMS_ENABLE_GROQ_T1"] = "false"
 # Add CORS origin
 $envVars["CORS_ORIGINS"] = $CorsAllowOrigin
 
@@ -161,12 +196,15 @@ $functionExists = aws lambda get-function --function-name $FunctionName --region
 
 if (-not $functionExists) {
     Write-Host "    Creating new Lambda function..."
+    Write-Host "    Uploading package to s3://$DeployBucket/$DeployKey..."
+    aws s3 cp $ZipPath "s3://$DeployBucket/$DeployKey" --region $Region | Out-Null
+
     aws lambda create-function `
         --function-name $FunctionName `
         --runtime $Runtime `
         --role $RoleArn `
         --handler app.lambda_handler.handler `
-        --zip-file "fileb://$ZipPath" `
+        --code "S3Bucket=$DeployBucket,S3Key=$DeployKey" `
         --region $Region `
         --memory-size $MemorySize `
         --timeout $Timeout `
@@ -193,9 +231,13 @@ if (-not $functionExists) {
 
 } else {
     Write-Host "    Updating existing Lambda function..."
+    Write-Host "    Uploading package to s3://$DeployBucket/$DeployKey..."
+    aws s3 cp $ZipPath "s3://$DeployBucket/$DeployKey" --region $Region | Out-Null
+
     aws lambda update-function-code `
         --function-name $FunctionName `
-        --zip-file "fileb://$ZipPath" `
+        --s3-bucket $DeployBucket `
+        --s3-key $DeployKey `
         --region $Region | Out-Null
 
     Write-Host "    Waiting for update to complete..."

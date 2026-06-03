@@ -596,7 +596,10 @@ export default function UserConsole() {
             <span className="recordKind">Verified runtime</span>
             <strong>Sources, gaps, and layer state</strong>
           </div>
-          <button className="iconTextButton" type="button" onClick={signOut}>Sign out</button>
+          <div className="railHeaderActions">
+            <button className="iconTextButton compact" type="button" onClick={() => setInsightsOpen(false)}>Close</button>
+            <button className="iconTextButton" type="button" onClick={signOut}>Sign out</button>
+          </div>
         </div>
 
         <section className="panel threadPanel">
@@ -651,7 +654,7 @@ export default function UserConsole() {
                 <span className={layer.activated ? "state on" : "state"} />
                 <div>
                   <strong>{layer.layer}</strong>
-                  <small>{layer.deterministic ? "deterministic" : "bounded Groq"}</small>
+                  <small>{layer.deterministic ? "deterministic" : "bounded local model"}</small>
                 </div>
               </div>
             )) ?? <div className="muted">No execution trace yet.</div>}

@@ -640,6 +640,58 @@ class SupabasePostgresStore:
             )
             return int(cursor.rowcount or 0)
 
+    def review_world_model_candidate(
+        self,
+        provenance: str,
+        rule: str,
+        action: str,
+        corrected_rule: str | None = None,
+    ) -> int:
+        if not self.settings.postgres_url:
+            return self._review_world_model_candidate_rest(provenance, rule, action, corrected_rule)
+        from psycopg.types.json import Jsonb
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT id, panel, payload, created_at
+                FROM training_panel_items
+                WHERE kind = 'world_model_candidate'
+                  AND panel = ANY(%s)
+                  AND payload->>'provenance' = %s
+                  AND (payload->>'rule' = %s OR title = %s)
+                """,
+                (["review", "world-model"], provenance, rule, rule),
+            ).fetchall()
+            if action == "reject":
+                for row in rows:
+                    connection.execute("DELETE FROM training_panel_items WHERE id = %s", (row["id"],))
+                return len(rows)
+            updated = 0
+            for row in rows:
+                payload = dict(row["payload"] or {})
+                final_rule = (corrected_rule or "").strip() if action == "correct" and corrected_rule else str(payload.get("rule") or rule)
+                payload["rule"] = final_rule
+                payload["review_required"] = action == "rollback"
+                if action in {"accept", "promote", "correct"}:
+                    payload["review_required"] = False
+                if action == "correct":
+                    payload["confidence"] = max(float(payload.get("confidence") or 0.0), 0.9)
+                state = "review required" if payload.get("review_required") else "accepted"
+                confidence = float(payload.get("confidence") or 0.0)
+                connection.execute(
+                    """
+                    UPDATE training_panel_items
+                    SET title = %s,
+                        subtitle = %s,
+                        payload = %s
+                    WHERE id = %s
+                    """,
+                    (final_rule, f"{state} / confidence {confidence:.2f} / {provenance}", Jsonb(payload), row["id"]),
+                )
+                updated += 1
+            return updated
+
     def list_panel_items(self, panel: str, cursor: str | None, limit: int) -> TrainingPanelPage:
         if not self.settings.postgres_url:
             return self._list_panel_items_rest(panel, cursor, limit)
@@ -817,6 +869,67 @@ class SupabasePostgresStore:
         response.raise_for_status()
         content_range = response.headers.get("content-range", "")
         return _total_from_content_range(content_range, 0)
+
+    def _review_world_model_candidate_rest(
+        self,
+        provenance: str,
+        rule: str,
+        action: str,
+        corrected_rule: str | None,
+    ) -> int:
+        response = httpx.get(
+            self._rest_url("training_panel_items"),
+            headers=self._rest_headers(),
+            params={
+                "select": "id,panel,title,payload,created_at",
+                "kind": "eq.world_model_candidate",
+                "panel": "in.(review,world-model)",
+                "payload->>provenance": f"eq.{provenance}",
+                "or": f"(payload->>rule.eq.{rule},title.eq.{rule})",
+                "limit": "100",
+            },
+            timeout=30,
+        )
+        response.raise_for_status()
+        rows = response.json()
+        if action == "reject":
+            deleted = 0
+            for row in rows:
+                delete_response = httpx.delete(
+                    self._rest_url("training_panel_items"),
+                    headers=self._rest_headers(),
+                    params={"id": f"eq.{row['id']}"},
+                    timeout=30,
+                )
+                delete_response.raise_for_status()
+                deleted += 1
+            return deleted
+        updated = 0
+        for row in rows:
+            payload = dict(row.get("payload") or {})
+            final_rule = (corrected_rule or "").strip() if action == "correct" and corrected_rule else str(payload.get("rule") or rule)
+            payload["rule"] = final_rule
+            payload["review_required"] = action == "rollback"
+            if action in {"accept", "promote", "correct"}:
+                payload["review_required"] = False
+            if action == "correct":
+                payload["confidence"] = max(float(payload.get("confidence") or 0.0), 0.9)
+            state = "review required" if payload.get("review_required") else "accepted"
+            confidence = float(payload.get("confidence") or 0.0)
+            patch_response = httpx.patch(
+                self._rest_url("training_panel_items"),
+                headers=self._rest_headers("return=minimal"),
+                params={"id": f"eq.{row['id']}"},
+                json={
+                    "title": final_rule,
+                    "subtitle": f"{state} / confidence {confidence:.2f} / {provenance}",
+                    "payload": payload,
+                },
+                timeout=30,
+            )
+            patch_response.raise_for_status()
+            updated += 1
+        return updated
 
     def _save_panel_items_rest(self, items: list[TrainingPanelItem]) -> None:
         payload = [
@@ -1190,7 +1303,7 @@ class ExternalMultimodalEncoderAdapter:
         response = httpx.get(
             f"{self._base_url()}/health",
             headers=self._headers(),
-            timeout=20,
+            timeout=5,
         )
         response.raise_for_status()
         return "external embedding service reachable"
@@ -1414,6 +1527,17 @@ class ProductionRuntime:
     def delete_panel_items_for_signature(self, signature_id: str) -> int:
         if self.postgres and self.statuses["supabase_postgres"].available:
             return self._attempt("supabase_postgres", lambda: self.postgres.delete_panel_items_for_signature(signature_id)) or 0
+        return 0
+
+    def review_world_model_candidate(self, provenance: str, rule: str, action: str, corrected_rule: str | None = None) -> int:
+        if self.postgres and self.statuses["supabase_postgres"].available:
+            return (
+                self._attempt(
+                    "supabase_postgres",
+                    lambda: self.postgres.review_world_model_candidate(provenance, rule, action, corrected_rule),
+                )
+                or 0
+            )
         return 0
 
     def list_panel_items(self, panel: str, cursor: str | None, limit: int) -> TrainingPanelPage | None:

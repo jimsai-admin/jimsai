@@ -674,6 +674,13 @@ select:focus {
   font-size: 14px;
 }
 
+.railHeaderActions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .panel {
   border-bottom: 1px solid var(--line);
   padding: 15px 0;
@@ -1300,10 +1307,76 @@ select:focus {
   .messages {
     padding-left: 12px;
     padding-right: 12px;
+    padding-top: 14px;
   }
 
   .message {
-    max-width: 96%;
+    max-width: 100%;
+    width: auto;
+  }
+
+  .chatWorkspace {
+    height: calc(100dvh - 120px);
+    min-height: 0;
+  }
+
+  .workbench.chatWorkbench {
+    min-height: 0;
+  }
+
+  .composer {
+    width: calc(100% - 16px);
+    margin-bottom: 8px;
+    grid-template-columns: 40px minmax(0, 1fr);
+    gap: 7px;
+    padding: 8px;
+  }
+
+  .composer textarea {
+    min-height: 40px;
+    padding: 9px 8px;
+  }
+
+  .composerActions {
+    width: 100%;
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: 40px 40px minmax(0, 1fr);
+  }
+
+  .composerActions .sendButton {
+    min-width: 0;
+  }
+
+  .insightRail {
+    top: 0;
+    left: 0;
+    width: 100vw;
+    max-width: none;
+    padding: 12px 14px 22px;
+  }
+
+  .insightRailHeader {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .railHeaderActions,
+  .railHeaderActions .iconTextButton {
+    width: 100%;
+  }
+
+  .railHeaderActions .iconTextButton {
+    justify-content: center;
+  }
+
+  .threadControls {
+    grid-template-columns: minmax(0, 1fr) 40px;
+  }
+
+  .threadControls .danger {
+    grid-column: 1 / -1;
+    width: 100%;
   }
 
   .fieldGrid,
@@ -1342,11 +1415,36 @@ select:focus {
     flex-direction: column;
   }
 
+  .recordActions {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .recordActions .iconTextButton {
+    width: 100%;
+    justify-content: center;
+  }
+
   .dataRecord time {
     white-space: normal;
   }
 
   .sendButton span {
     display: none;
+  }
+}
+
+@media (max-width: 420px) {
+  .brandLink small {
+    display: none;
+  }
+
+  .navLinks a {
+    padding-left: 7px;
+    padding-right: 7px;
+  }
+
+  .metricGrid.compact {
+    grid-template-columns: 1fr;
   }
 }

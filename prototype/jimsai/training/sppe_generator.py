@@ -13,8 +13,7 @@ from uuid import UUID, uuid4
 import json
 import hashlib
 
-# Events are defined in the eventing module, not here
-# SPPEPairGenerated, T1SkipDecided, T2SkipDecided are emitted by phase5_integration
+# Events are defined in the eventing module, not here.
 
 logger = logging.getLogger(__name__)
 

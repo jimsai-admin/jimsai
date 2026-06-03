@@ -17,6 +17,8 @@ from .model_bridge import GroqBridge
 from .models import (
     CanvasRunRequest,
     CanvasRunResponse,
+    CapabilityExecutionResult,
+    CapabilityKind,
     FeedbackRequest,
     FeedbackResponse,
     InventionRunRequest,
@@ -107,7 +109,7 @@ class JimsAIPipeline:
         self.learning_layer = RealTimeLearningLayer(self.memory, self.graph)
         self.canvas_layer = ActiveCanvasLayer(self.memory, self.bridge)
         self.activation_layer = SparseActivationMetaController()
-        self.capability_router = CapabilityRouter()
+        self.capability_router = CapabilityRouter(self.bridge)
         self.capability_adapters = CapabilityAdapterRegistry()
         self.training_policy = AutoTrainingPolicy()
         self.event_store = AuditEventStore()
@@ -321,15 +323,16 @@ class JimsAIPipeline:
         activation, activation_layer_result = self.activation_layer.decide(request, ir, canvas_result)
         record(activation_layer_result)
 
-        capability_plan, capability_layer_result = self.capability_router.route(request, ir, activation)
+        capability_plan, capability_layer_result = await self.capability_router.route(request, ir, activation)
         record(capability_layer_result)
         capability_results = self.capability_adapters.prepare(capability_plan)
+        capability_results = await self._execute_capability_adapters(request, capability_results)
         record(
             LayerResult(
                 layer="V9_capability_adapters",
                 activated=bool(capability_results),
                 deterministic=True,
-                summary="Prepared structured capability adapters without executing unverified tools.",
+                summary="Prepared and executed verified structured capability adapters where available.",
                 data={"results": [result.model_dump(mode="json") for result in capability_results]},
             )
         )
@@ -375,6 +378,12 @@ class JimsAIPipeline:
         record(reasoning_layer_result)
         obj.capability_plan = capability_plan
         obj.capability_results = capability_results
+        obj.style_signature = {
+            **obj.style_signature,
+            "user_prompt": request.query,
+            "language_hint": self._response_language_hint(request.query),
+            "format_hint": self._response_format_hint(request.query),
+        }
         self._apply_capability_gates(obj)
 
         response, used_groq_render, render_layer_result = await self.render_layer.render(obj)
@@ -398,7 +407,7 @@ class JimsAIPipeline:
             )
         )
         obj.layer_results = layer_results
-        used_groq = ir.transformer_interface_used or canvas_result.used_groq or invention_result.used_groq or used_groq_render
+        used_groq = False
         pipeline_response = PipelineResponse(
             response=response,
             ir=ir,
@@ -418,6 +427,7 @@ class JimsAIPipeline:
             capability_results=capability_results,
             used_groq=used_groq,
         )
+        self._learn_from_resolved_prompt(request, pipeline_response)
         self.result_cache.set(cache_key, pipeline_response.model_dump(mode="json"))
         self.production.save_chat_exchange(
             user_id=request.user_id,
@@ -444,23 +454,256 @@ class JimsAIPipeline:
         )
         return pipeline_response
 
+    def _learn_from_resolved_prompt(self, request: PipelineRequest, response: PipelineResponse) -> None:
+        if os.getenv("JIMS_ENABLE_RESOLUTION_LEARNING", "true").lower() not in {"1", "true", "yes", "on"}:
+            return
+        executed_results = [
+            result
+            for result in response.capability_results
+            if result.data.get("executed") and result.confidence >= 0.75 and result.data.get("solver_status", "solved") == "solved"
+        ]
+        transformer_assisted = response.used_groq and response.confidence >= 0.82 and not response.gaps
+        if not executed_results and not transformer_assisted:
+            return
+        capability_kind = response.capability_plan.kind.value if response.capability_plan else "memory_chat"
+        content = {
+            "type": "resolved_prompt_memory",
+            "user_prompt": request.query,
+            "capability_kind": capability_kind,
+            "route": response.capability_plan.route if response.capability_plan else "",
+            "routing_signals": response.capability_plan.routing_signals if response.capability_plan else {},
+            "verified_results": [result.model_dump(mode="json") for result in executed_results],
+            "answer": response.response,
+            "confidence": response.confidence,
+            "sources": response.sources,
+        }
+        text = (
+            "Resolved prompt memory.\n"
+            f"Prompt: {request.query}\n"
+            f"Capability: {capability_kind}\n"
+            f"Answer: {response.response}\n"
+            f"Verified results: {content['verified_results']}"
+        )
+        signature = self.encoder.encode(
+            text,
+            modality=Modality.TEXT,
+            intent_type="resolved_prompt_memory",
+            provenance=f"resolution:{response.ir.trace_id}",
+            workspace_id=request.workspace_id,
+            user_id=request.user_id,
+        )
+        signature.confidence.score = min(0.98, max(response.confidence, 0.75))
+        signature.confidence.source = "resolution_learning"
+        signature.metadata.update(content)
+        self.memory.insert(signature)
+        self.graph.add_signature(signature)
+        panel_item = TrainingPanelItem(
+            id=f"memory:{signature.id}",
+            panel="memory",
+            kind="resolved_prompt_memory",
+            title=f"{capability_kind}: {request.query[:80]}",
+            subtitle=f"confidence {signature.confidence.score:.2f} / trace {response.ir.trace_id}",
+            data=signature.model_dump(mode="json"),
+            created_at=signature.created_at,
+        )
+        self.production.save_training_ingest(signature, text, [panel_item])
+        self.event_store.append(
+            "resolution_memory_written",
+            signature.id,
+            {"trace_id": response.ir.trace_id, "capability_kind": capability_kind, "source_results": [result.provenance for result in executed_results]},
+            user_id=request.user_id,
+        )
+
+    async def _execute_capability_adapters(
+        self,
+        request: PipelineRequest,
+        capability_results: list[CapabilityExecutionResult],
+    ) -> list[CapabilityExecutionResult]:
+        executed: list[CapabilityExecutionResult] = []
+        for result in capability_results:
+            if result.kind != CapabilityKind.MATH_SCIENCE or result.adapter != "internal_symbolic_solver":
+                executed.append(result)
+                continue
+            expression, solve_for = self._extract_solver_expression(request.query)
+            if not expression:
+                expression, solve_for = await self._extract_solver_expression_with_qwen(request.query, result.data)
+            if not expression:
+                executed.append(
+                    result.model_copy(
+                        update={
+                            "confidence": min(result.confidence, 0.35),
+                            "summary": "Math route selected, but no bounded arithmetic expression was extracted.",
+                            "data": {**result.data, "executed": False, "extraction_status": "not_found"},
+                        }
+                    )
+                )
+                continue
+            try:
+                solved = self.math_solver.solve(expression, solve_for)
+            except Exception as error:
+                solved = {"status": "failed", "result": str(error), "method": "internal_symbolic_solver"}
+            if solved.get("status") != "solved":
+                qwen_expression, qwen_solve_for = await self._extract_solver_expression_with_qwen(request.query, {**result.data, "initial_expression": expression})
+                if qwen_expression and qwen_expression != expression:
+                    expression, solve_for = qwen_expression, qwen_solve_for
+                    try:
+                        solved = self.math_solver.solve(expression, solve_for)
+                    except Exception as error:
+                        solved = {"status": "failed", "result": str(error), "method": "internal_symbolic_solver"}
+            status = "solved" if solved.get("status") == "solved" else "failed"
+            signature = self._write_result_signature(
+                "math",
+                "verified" if status == "solved" else "failed",
+                f"Math capability {status}: {expression} -> {solved.get('result', '')}",
+                user_id=request.user_id,
+                confidence=0.99 if status == "solved" else 0.25,
+                provenance=["internal_symbolic_solver"],
+                data={"expression": expression, "solve_for": solve_for, **solved},
+                workspace_id=request.workspace_id,
+            )
+            executed.append(
+                result.model_copy(
+                    update={
+                        "confidence": 0.99 if status == "solved" else 0.25,
+                        "summary": f"Internal symbolic solver {status}: {expression} -> {solved.get('result', '')}",
+                        "provenance": [signature.id],
+                        "data": {
+                            **result.data,
+                            "executed": True,
+                            "expression": expression,
+                            "solve_for": solve_for,
+                            "solver_status": status,
+                            "solver_result": solved.get("result", ""),
+                            "solver_method": solved.get("method", ""),
+                            "result_signature_id": signature.id,
+                        },
+                    }
+                )
+            )
+        return executed
+
+    async def _extract_solver_expression_with_qwen(self, query: str, context: dict[str, Any]) -> tuple[str, str | None]:
+        data = await self.bridge.extract_math_expression(query, context)
+        if not data:
+            return "", None
+        expression = str(data.get("expression") or "").strip()
+        solve_for_value = data.get("solve_for")
+        solve_for = str(solve_for_value).strip() if solve_for_value else None
+        if solve_for and not re.fullmatch(r"[A-Za-z]", solve_for):
+            solve_for = None
+        expression = re.sub(r"\s+", "", expression)
+        if not re.fullmatch(r"[0-9A-Za-z+\-*/().=]+", expression or ""):
+            return "", None
+        return expression, solve_for
+
+    def _extract_solver_expression(self, query: str) -> tuple[str, str | None]:
+        lowered = query.lower()
+        normalized = lowered
+        normalized = normalized.replace("=", " = ")
+        tokens = re.findall(r"\d+(?:\.\d+)?|[a-z]+|[+\-*/().=]", normalized)
+        equation_context = "=" in tokens
+        candidates = []
+        current: list[str] = []
+        for token in tokens:
+            useful = bool(re.fullmatch(r"\d+(?:\.\d+)?|[+\-*/().=]", token) or (equation_context and re.fullmatch(r"[a-z]", token)))
+            if useful:
+                current.append(token)
+                continue
+            if current:
+                candidates.append("".join(current))
+                current = []
+        if current:
+            candidates.append("".join(current))
+        candidates = [
+            candidate
+            for candidate in candidates
+            if re.search(r"\d", candidate) and any(operator in candidate for operator in ("+", "-", "*", "/", "="))
+        ]
+        expression = max(candidates, key=len, default="")
+        expression = expression.strip(".")
+        expression = re.sub(r"(?<=\d)([a-z])", r"*\1", expression)
+        expression = re.sub(r"([a-z])(?=\d)", r"\1*", expression)
+        solve_for = None
+        if "=" in expression:
+            symbols = sorted(set(re.findall(r"\b[a-z]\b", expression)))
+            solve_for = symbols[0] if symbols else None
+        if not re.fullmatch(r"[0-9a-z+\-*/().=]+", expression or ""):
+            return "", None
+        return expression, solve_for
+
     def _apply_capability_gates(self, obj) -> None:
         if not obj.capability_plan:
             return
+        for result in obj.capability_results:
+            if result.kind != CapabilityKind.MATH_SCIENCE or result.data.get("solver_status") != "solved":
+                continue
+            expression = str(result.data.get("expression") or "")
+            solver_result = str(result.data.get("solver_result") or "")
+            source = str(result.data.get("result_signature_id") or "")
+            claim = f"Verified calculation: {expression} = {solver_result}"
+            if "=" in expression and result.data.get("solve_for"):
+                claim = f"Verified equation solution for {result.data.get('solve_for')}: {expression} -> {solver_result}"
+            step = ReasoningStep(
+                claim=claim,
+                confidence=0.99,
+                sources=[source] if source else [],
+                relation="CALCULATION_TRACE",
+            )
+            if obj.capability_plan.kind == CapabilityKind.MATH_SCIENCE:
+                obj.reasoning_chain = [step]
+                obj.sources = [source] if source else []
+                obj.knowledge_gaps = [
+                    gap
+                    for gap in obj.knowledge_gaps
+                    if "Math capability" in gap or "solver" in gap
+                ]
+            else:
+                obj.reasoning_chain = [step, *obj.reasoning_chain]
+                if source and source not in obj.sources:
+                    obj.sources = [source, *obj.sources]
+            obj.confidence = max(obj.confidence, 0.95)
+        for result in obj.capability_results:
+            if result.kind == CapabilityKind.MATH_SCIENCE and result.data.get("executed") and result.data.get("solver_status") != "solved":
+                obj.knowledge_gaps.append(
+                    f"Math capability routed correctly, but verified solver could not solve expression {result.data.get('expression', '')}: {result.data.get('solver_result', '')}."
+                )
         blocking = [result for result in obj.capability_results if result.status in {"unavailable", "blocked"}]
         for result in blocking:
             obj.knowledge_gaps.append(
                 f"Capability {obj.capability_plan.kind.value} needs adapter(s) {result.adapter}; status={result.status}."
             )
-        if blocking and not obj.reasoning_chain:
-            obj.reasoning_chain.append(
-                ReasoningStep(
-                    claim=f"Routed request to {obj.capability_plan.kind.value}, but required provider execution is not available yet.",
-                    confidence=0.0,
-                    sources=[],
-                    relation="CAPABILITY_GATE",
-                )
+        if blocking:
+            gate_step = ReasoningStep(
+                claim=f"Routed request to {obj.capability_plan.kind.value}, but required provider execution is not available yet.",
+                confidence=0.0,
+                sources=[],
+                relation="CAPABILITY_GATE",
             )
+            if obj.capability_plan.kind != CapabilityKind.MEMORY_CHAT:
+                obj.reasoning_chain = [gate_step]
+                obj.sources = []
+                obj.confidence = min(obj.confidence, 0.35)
+            elif not obj.reasoning_chain:
+                obj.reasoning_chain.append(gate_step)
+
+    def _response_language_hint(self, query: str) -> str:
+        lowered = query.lower()
+        if any(token in lowered for token in (" yoruba", " yorùbá", " español", " spanish", " français", " french", " arabic", " العربية", " igbo", " hausa")):
+            return "explicit_language_requested"
+        if any(ord(char) > 127 for char in query):
+            return "non_ascii_or_multilingual_prompt"
+        return "default"
+
+    def _response_format_hint(self, query: str) -> str:
+        lowered = query.lower()
+        format_terms = (
+            "json",
+            "table",
+            "format",
+            "detailed",
+        )
+        found = [term for term in format_terms if term in lowered]
+        return ",".join(found) if found else "default"
 
     async def record_feedback(self, request: FeedbackRequest) -> FeedbackResponse:
         self.feedback_events.append(request)
@@ -545,6 +788,35 @@ class JimsAIPipeline:
             -1,
         )
         if target_index < 0:
+            updated_panel_items = self.production.review_world_model_candidate(
+                request.provenance,
+                request.rule,
+                request.action,
+                request.corrected_rule,
+            )
+            if updated_panel_items:
+                final_rule = request.corrected_rule.strip() if request.action == "correct" and request.corrected_rule else request.rule
+                event_payload = {
+                    "action": request.action,
+                    "rule": request.rule,
+                    "final_rule": final_rule,
+                    "provenance": request.provenance,
+                    "notes": request.notes,
+                    "updated_panel_items": updated_panel_items,
+                    "persistent_fallback": True,
+                }
+                self.event_store.append("review_action_recorded", stable_id("review", str(event_payload)), event_payload, user_id=request.user_id)
+                result = self._write_result_signature(
+                    "review",
+                    "verified",
+                    f"Review {request.action} applied to persisted candidate {final_rule}",
+                    user_id=request.user_id,
+                    confidence=0.95,
+                    provenance=[request.provenance],
+                    data=event_payload,
+                )
+                self.production.save_panel_items([self._pipeline_item(self._pipeline_monitor())])
+                return ReviewActionResponse(accepted=True, action=request.action, rule=final_rule, result_signature=result)
             result = self._write_result_signature(
                 "review",
                 "failed",
@@ -581,6 +853,12 @@ class JimsAIPipeline:
             "provenance": request.provenance,
             "notes": request.notes,
         }
+        event_payload["updated_panel_items"] = self.production.review_world_model_candidate(
+            request.provenance,
+            request.rule,
+            request.action,
+            final_rule if request.action == "correct" else request.corrected_rule,
+        )
         self.event_store.append("review_action_recorded", stable_id("review", str(event_payload)), event_payload, user_id=request.user_id)
         result = self._write_result_signature(
             "review",

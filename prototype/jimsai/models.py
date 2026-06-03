@@ -172,6 +172,8 @@ class CapabilityPlan(BaseModel):
     route: str = "memory_first"
     confidence: float = 0.0
     reason: str = ""
+    secondary_intents: list[CapabilityKind] = Field(default_factory=list)
+    routing_signals: dict[str, Any] = Field(default_factory=dict)
     requires_external_adapter: bool = False
     allowed_adapters: list[str] = Field(default_factory=list)
     verification_requirements: list[str] = Field(default_factory=list)

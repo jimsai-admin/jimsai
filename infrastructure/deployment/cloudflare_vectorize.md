@@ -23,12 +23,12 @@ CF_VECTORIZE_INDEX=jimsai-embeddings
 ```
 
 The API token must be scoped to the same Cloudflare account as `CF_ACCOUNT_ID` and needs account-level
-Vectorize read/write capability. If `scripts/check_providers.py` reports HTTP 403, recreate
+Vectorize read/write capability. If provider readiness reports HTTP 403, recreate
 `CF_VECTORIZE_API_TOKEN` with the account permission required for Vectorize writes and make sure the
 account filter includes the account that owns the index.
 
 ## Verification
 
-- `python scripts/check_providers.py` reports `vectorize: configured=True available=True`.
+- Lambda provider readiness reports `vectorize: configured=True available=True`.
 - Deterministic test still passes without provider-specific behavior drift.
 - Traces include provider operation names and resource identifiers.

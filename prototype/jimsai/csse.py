@@ -21,18 +21,19 @@ class ConstrainedSemanticSynthesisEngine:
 
         lines: list[str] = []
         if user_facing_steps:
-            lines.append("Here's what I can verify from memory:")
             summary = self._summary_sentence(user_facing_steps)
             if summary:
                 lines.append(summary)
                 lines.append("")
-            for step in user_facing_steps:
-                lines.append(f"- {self._clean_claim(step.claim)}")
+            if len(user_facing_steps) > 1:
+                lines.append("Evidence:")
+                for step in user_facing_steps[:6]:
+                    lines.append(f"- {self._clean_claim(step.claim)}")
         else:
             if obj.sources:
-                lines.append("I found related memory, but it does not yet contain a directly answerable verified claim.")
+                lines.append("I found related memory, but it does not contain a directly answerable verified claim yet.")
             else:
-                lines.append("I do not have verified memory signatures for a factual answer yet.")
+                lines.append("I do not have enough verified memory to answer that confidently yet.")
 
         if obj.simulation_results and self._should_show_simulation(obj):
             lines.append("")
@@ -44,7 +45,7 @@ class ConstrainedSemanticSynthesisEngine:
                     lines.append(f"  - {outcome}")
         if obj.knowledge_gaps:
             lines.append("")
-            lines.append("Explicit gaps:")
+            lines.append("Gaps:")
             for gap in self._unique(obj.knowledge_gaps):
                 lines.append(f"- {gap}")
         lines.append("")
@@ -64,6 +65,18 @@ class ConstrainedSemanticSynthesisEngine:
         if causal_path:
             return f"Verified path: {' -> '.join(causal_path)}."
         if len(claims) == 1:
+            calculation = re.fullmatch(r"Verified calculation:\s*(.+?)\s*=\s*(.+?)\.?", claims[0])
+            if calculation:
+                expression = calculation.group(1).strip()
+                result = calculation.group(2).strip()
+                return (
+                    f"The answer is **{result}**.\n\n"
+                    f"Steps:\n"
+                    f"- Start with `{expression}`.\n"
+                    f"- Evaluate the expression with the verified symbolic solver.\n"
+                    f"- Result: **{result}**.\n\n"
+                    f"Calculation: `{expression} = {result}`"
+                )
             return claims[0]
         return " ".join(claims[:3])
 

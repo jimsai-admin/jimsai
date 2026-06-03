@@ -74,7 +74,7 @@ INTENT_DOMAINS: dict[str, IntentDomain] = {
     "META_INQUIRY": IntentDomain.META_SYSTEM,
 }
 
-TOKEN_RE = re.compile(r"[a-z0-9_+\-.#]+")
+TOKEN_RE = re.compile(r"[\w+\-.#]+", re.UNICODE)
 
 
 def _stem(token: str) -> str:
@@ -102,11 +102,12 @@ def normalize_language(raw: str) -> str:
     normalized = unicodedata.normalize("NFKC", str(raw or ""))
     
     # Fix common OCR/typing confusables (shape-based, not language-specific)
-    char_map = str.maketrans("01345678", "oleasytb")
-    normalized = normalized.translate(char_map)
+    # Keep digits and non-Latin scripts intact. OCR/confusable repair belongs in
+    # a dedicated document-normalization step, not in universal prompt routing.
     
     # Collapse 3+ repeated characters to 2: coool→cool, baaad→bad
-    normalized = re.sub(r"(.)\1{2,}", r"\1\1", normalized)
+    # Do not collapse repeated characters globally; this can corrupt non-English
+    # scripts and intentionally repeated symbols in code/math prompts.
     
     # Normalize whitespace
     return re.sub(r"\s+", " ", normalized).strip()
@@ -123,7 +124,7 @@ def sanitize(raw: str) -> list[str]:
     Note: Intent classification is now embedding-based (intent_classifier.py),
     not token-based, so this is just for data cleaning.
     """
-    surface_tokens = canonical_terms(raw, keep_stop=False)  # Apply stop word filter
+    surface_tokens = canonical_terms(raw, keep_stop=True)
     tokens = [token for token in surface_tokens if len(token) > 1]
     return tokens
 
@@ -304,6 +305,7 @@ class SemanticCompilerRuntime:
         return scope
 
     def _v9_capability_override(self, tokens: list[str], raw_input: str) -> tuple[str, float, str] | None:
+        return None
         token_set = {token.strip(".,:;!?").lower() for token in tokens}
         raw_lower = raw_input.lower()
         has_generation_action = bool(token_set & GENERATION_ACTION_TOKENS)

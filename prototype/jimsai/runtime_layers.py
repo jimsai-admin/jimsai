@@ -119,22 +119,24 @@ class TransformerIntentInterface:
 
     async def infer(self, request: PipelineRequest, session: dict[str, Any]) -> tuple[SemanticIR, LayerResult]:
         deterministic_ir = self.compiler.compile(request.query, namespace="TECHNICAL", session=session)
-        groq_overlay = await self.bridge.infer_intent(request.query, deterministic_ir.model_dump(mode="json"))
-        used_groq = False
+        local_overlay = await self.bridge.infer_intent(request.query, deterministic_ir.model_dump(mode="json"))
+        used_local_model = False
         ir = deterministic_ir
-        if groq_overlay:
-            candidate = self._overlay_to_ir(deterministic_ir, groq_overlay)
+        if local_overlay:
+            candidate = self._overlay_to_ir(deterministic_ir, local_overlay)
             if candidate:
                 ir = candidate
-                used_groq = True
+                used_local_model = True
         data = {
             "target_ir": ir.target_ir,
             "confidence": ir.confidence,
-            "used_groq": used_groq,
-            "groq_skip_reason": self.bridge.last_t1_skip_reason,
+            "used_groq": False,
+            "used_local_model": used_local_model,
+            "local_model_skip_reason": self.bridge.last_t1_skip_reason,
+            "groq_skip_reason": "external_groq_disabled",
             "deterministic_target_ir": deterministic_ir.target_ir,
         }
-        return ir, _layer("T1_transformer_intent_interface", True, "Compiled input into bounded Semantic IR.", data, deterministic=not used_groq)
+        return ir, _layer("T1_transformer_intent_interface", True, "Compiled input into bounded Semantic IR.", data, deterministic=not used_local_model)
 
     def _overlay_to_ir(self, deterministic_ir: SemanticIR, overlay: dict[str, Any]) -> SemanticIR | None:
         target = str(overlay.get("target_ir") or overlay.get("intent") or "").strip().upper()
@@ -929,17 +931,19 @@ class TransformerRenderInterface:
 
     async def render(self, obj: VerifiedCognitiveObject) -> tuple[str, bool, LayerResult]:
         deterministic_render = self.csse.render(obj)
-        groq_render = await self.bridge.render(obj, deterministic_render)
-        used_groq = bool(groq_render)
-        response = groq_render or deterministic_render
-        return response, used_groq, _layer(
+        local_render = await self.bridge.render(obj, deterministic_render)
+        used_local_model = bool(local_render)
+        response = local_render or deterministic_render
+        return response, used_local_model, _layer(
             "T2_transformer_render_interface",
             True,
-            "Rendered Verified Cognitive Object through CSSE with optional bounded Groq phrasing.",
+            "Rendered Verified Cognitive Object through CSSE with optional bounded local model phrasing.",
             {
-                "used_groq": used_groq,
-                "mode": "groq_bounded" if used_groq else "csse",
-                "groq_skip_reason": self.bridge.last_t2_skip_reason,
+                "used_groq": False,
+                "used_local_model": used_local_model,
+                "mode": "local_bounded" if used_local_model else "csse",
+                "local_model_skip_reason": self.bridge.last_t2_skip_reason,
+                "groq_skip_reason": "external_groq_disabled",
             },
-            deterministic=not used_groq,
+            deterministic=not used_local_model,
         )

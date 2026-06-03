@@ -86,7 +86,7 @@ Set `JIMS_STORAGE_BACKEND=production` to activate the real provider adapters for
 Supabase REST/Auth, Neo4j Aura, Redis/Celery, and external multimodal encoders. See `production/README.md` and
 `.env.production.example`.
 
-Run `python scripts/check_providers.py` after changing `.env`. The script performs redacted readiness checks for
+Use the provider readiness endpoint after changing `.env`. The endpoint performs redacted readiness checks for
 R2, Vectorize, Supabase, Neo4j Aura, Redis/Celery, the external encoder service, and Kaggle orchestration.
 
 For media training at public scale, the default path is now KaggleHub batch handoff:

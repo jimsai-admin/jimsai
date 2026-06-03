@@ -1,6 +1,6 @@
 # Architecture Analysis
 
-Source of truth: `JimsAI Complete Specification v9.pdf` plus `docs/Jims_AI_v9.md`.
+Source of truth: `docs/JimsAI Complete Specification v9.pdf` plus current deployment/spec notes.
 
 ## Extracted Intent
 

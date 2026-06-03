@@ -51,6 +51,10 @@ RETRIEVAL_STOP_TERMS = {
 }
 
 
+def _is_ascii_stop_term(term: str) -> bool:
+    return term.isascii() and term in RETRIEVAL_STOP_TERMS
+
+
 def cosine(left: list[float], right: list[float]) -> float:
     dot = sum(a * b for a, b in zip(left, right))
     lnorm = math.sqrt(sum(a * a for a in left)) or 1.0
@@ -80,7 +84,7 @@ class MultiIndexRetrievalEngine:
         exclude_ids = exclude_ids or set()
         query_vec = hash_embedding(query)
         raw_query_terms = set(ir.tokens) | {str(entity).lower() for entity in ir.scope_constraints.get("entities", [])}
-        query_terms = {term for term in raw_query_terms if term not in RETRIEVAL_STOP_TERMS}
+        query_terms = {term for term in raw_query_terms if not _is_ascii_stop_term(term)}
         if not query_terms:
             query_terms = raw_query_terms
         query_phrases = self._query_phrases(query)
@@ -206,7 +210,7 @@ class MultiIndexRetrievalEngine:
         tokens = [
             token
             for token in re.findall(r"[a-z0-9_+\-.#]+", query.lower())
-            if len(token) >= 3 and token not in RETRIEVAL_STOP_TERMS
+            if len(token) >= 3 and not _is_ascii_stop_term(token)
         ]
         phrases: set[str] = set()
         for size in (2, 3):

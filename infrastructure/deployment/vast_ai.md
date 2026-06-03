@@ -23,13 +23,13 @@ VAST_ENCODER_DISK_GB=50
 Use `VAST_API` or `VAST_API_KEY` from your Vast.ai account:
 
 ```bash
-python scripts/vast_encoder.py search --max-price 0.40 --min-gpu-ram 16000
+The old local `scripts/vast_encoder.py` helper was removed. Use Vast.ai directly or replace this with a maintained deployment tool before using Vast in production.
 ```
 
 For an RTX 4000 class card, add a GPU-name filter that matches the offer name shown by Vast:
 
 ```bash
-python scripts/vast_encoder.py search --gpu-name "RTX 4000 Ada" --max-price 0.40
+Use the Vast.ai console/API to search for an RTX 4000 Ada or equivalent instance under the target price.
 ```
 
 ## 3. Launch The Encoder
@@ -37,7 +37,7 @@ python scripts/vast_encoder.py search --gpu-name "RTX 4000 Ada" --max-price 0.40
 Launching spends Vast.ai credit, so the script requires `--confirm-launch`:
 
 ```bash
-python scripts/vast_encoder.py launch --offer-id OFFER_ID --confirm-launch
+Launch through the Vast.ai console/API, then configure the endpoint in the relevant service environment.
 ```
 
 The script creates a paid instance with:

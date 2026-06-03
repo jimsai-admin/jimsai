@@ -121,7 +121,7 @@ def stable_id(prefix: str, text: str) -> str:
 
 def hash_embedding(text: str, dimensions: int = 64) -> list[float]:
     vector = [0.0] * dimensions
-    for token in re.findall(r"[A-Za-z0-9_\.]+", text.lower()):
+    for token in re.findall(r"[\w\.]+", text.lower(), flags=re.UNICODE):
         digest = hashlib.sha256(token.encode("utf-8")).digest()
         idx = int.from_bytes(digest[:2], "big") % dimensions
         sign = 1.0 if digest[2] % 2 == 0 else -1.0
@@ -269,7 +269,7 @@ class DualRepresentationEncoder:
             for subject, predicate, obj, confidence in data_relations:
                 add_relation(subject, predicate, obj, confidence)
 
-        for token in re.findall(r"\b[a-z][a-z0-9_]{4,}\b", text.lower()):
+        for token in re.findall(r"\b[^\W\d_][\w]{4,}\b", text.lower(), flags=re.UNICODE):
             if token not in STOP_TAGS:
                 tags.add(token)
             if len(entity_names) < 12 and not entity_names and token not in STOP_TAGS:
