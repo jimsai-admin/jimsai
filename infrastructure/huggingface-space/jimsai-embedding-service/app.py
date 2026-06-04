@@ -59,6 +59,9 @@ render_error = ""
 qwen_lock = asyncio.Lock()
 render_lock = asyncio.Lock()
 
+models_cache = {}
+models_lock = asyncio.Lock()
+
 CAPABILITY_LABELS = {
     "memory_chat": "memory recall",
     "world_knowledge": "current world knowledge",
@@ -73,7 +76,9 @@ CAPABILITY_LABELS = {
 
 
 class EmbedRequest(BaseModel):
-    texts: list[str] = Field(default_factory=list, min_length=1, max_length=128)
+    texts: list[str] | None = None
+    input: str | list[str] | None = None
+    model: str | None = None
     workspace_id: str | None = None
     purpose: str = "query"
 
@@ -129,6 +134,16 @@ def fit_dimensions(values: list[float]) -> list[float]:
     return normalize([*values, *([0.0] * (TARGET_DIMENSIONS - len(values)))])
 
 
+def fit_dimensions_for_model(values: list[float], model_id: str) -> list[float]:
+    if model_id == "intfloat/multilingual-e5-small":
+        if len(values) == TARGET_DIMENSIONS:
+            return normalize(values)
+        if len(values) > TARGET_DIMENSIONS:
+            return normalize(values[:TARGET_DIMENSIONS])
+        return normalize([*values, *([0.0] * (TARGET_DIMENSIONS - len(values)))])
+    return normalize(values)
+
+
 def hash_embed(text: str) -> list[float]:
     dimensions = TARGET_DIMENSIONS
     vector = [0.0] * dimensions
@@ -146,14 +161,35 @@ def prefixed(text: str, purpose: str) -> str:
     return text
 
 
+def get_model(model_name: str):
+    if model_name in models_cache:
+        return models_cache[model_name]
+    
+    if model_name == "intfloat/multilingual-e5-small":
+        from sentence_transformers import SentenceTransformer
+        m = SentenceTransformer(model_name)
+    elif model_name == "jinaai/jina-embeddings-v3":
+        from sentence_transformers import SentenceTransformer
+        m = SentenceTransformer(model_name, trust_remote_code=True)
+    elif model_name == "microsoft/codebert-base":
+        from transformers import AutoModel, AutoTokenizer
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        model_obj = AutoModel.from_pretrained(model_name)
+        m = (model_obj, tokenizer)
+    else:
+        from sentence_transformers import SentenceTransformer
+        m = SentenceTransformer(model_name)
+        
+    models_cache[model_name] = m
+    return m
+
+
 def load_model():
     global model, model_error
     if model is not None:
         return model
     try:
-        from sentence_transformers import SentenceTransformer
-
-        model = SentenceTransformer(MODEL_NAME)
+        model = get_model(MODEL_NAME)
         model_error = ""
         return model
     except Exception as exc:
@@ -266,13 +302,46 @@ def inference_failed_hard(exc: Exception) -> bool:
     return "ggml_assert" in lowered or "assert" in lowered or "failed" in lowered or "repack" in lowered
 
 
-def embed_texts(texts: list[str], purpose: str) -> tuple[list[list[float]], bool, str]:
-    loaded = load_model()
-    if loaded is None:
-        return [hash_embed(text) for text in texts], True, "hash_fallback"
+def encode_codebert(text: str, model_obj, tokenizer_obj) -> list[float]:
+    import torch
+    inputs = tokenizer_obj(text, return_tensors="pt", max_length=512, truncation=True)
+    with torch.no_grad():
+        outputs = model_obj(**inputs)
+    embeddings = outputs[0].mean(dim=1).squeeze(0)
+    norm = torch.norm(embeddings, p=2)
+    if norm > 1e-9:
+        embeddings = embeddings / norm
+    return embeddings.cpu().tolist()
+
+
+def encode_sentence_transformer(text: str, model_obj, purpose: str, model_name: str) -> list[float]:
+    text_to_encode = text
+    if model_name.endswith("e5-small") or "/e5-" in model_name:
+        text_to_encode = f"{'query' if purpose == 'query' else 'passage'}: {text}"
+    vector = model_obj.encode(text_to_encode, normalize_embeddings=True).tolist()
+    return vector
+
+
+def embed_texts(texts: list[str], purpose: str, model_name: str | None = None) -> tuple[list[list[float]], bool, str]:
+    target_model = model_name or MODEL_NAME
     try:
-        vectors = loaded.encode([prefixed(text[:16000], purpose) for text in texts], normalize_embeddings=True).tolist()
-        return [fit_dimensions([float(value) for value in vector]) for vector in vectors], False, MODEL_NAME
+        m = get_model(target_model)
+    except Exception as exc:
+        if not HASH_FALLBACK:
+            raise HTTPException(status_code=503, detail=f"embedding model unavailable: {exc}") from exc
+        return [hash_embed(text) for text in texts], True, "hash_fallback"
+
+    try:
+        vectors = []
+        for text in texts:
+            if target_model == "microsoft/codebert-base":
+                model_obj, tokenizer_obj = m
+                vec = encode_codebert(text[:16000], model_obj, tokenizer_obj)
+            else:
+                vec = encode_sentence_transformer(text[:16000], m, purpose, target_model)
+            vec = fit_dimensions_for_model(vec, target_model)
+            vectors.append(vec)
+        return vectors, False, target_model
     except Exception as exc:
         if not HASH_FALLBACK:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -366,10 +435,32 @@ def warm(req: WarmRequest) -> dict[str, Any]:
 
 
 @app.post("/v1/embed", dependencies=[Depends(verify_token)])
-def embed(req: EmbedRequest) -> dict[str, Any]:
-    vectors, fallback, model_name = embed_texts(req.texts, req.purpose)
+async def embed(req: EmbedRequest) -> dict[str, Any]:
+    texts = []
+    if req.input is not None:
+        if isinstance(req.input, list):
+            texts = req.input
+        else:
+            texts = [req.input]
+    elif req.texts is not None:
+        texts = req.texts
+    else:
+        raise HTTPException(status_code=400, detail="Either 'input' or 'texts' must be provided.")
+
+    model_id = req.model or MODEL_NAME
+    async with models_lock:
+        vectors, fallback, model_name = embed_texts(texts, req.purpose, model_id)
     dimension = len(vectors[0]) if vectors else 0
     return {
+        "object": "list",
+        "data": [
+            {
+                "object": "embedding",
+                "index": idx,
+                "embedding": vec
+            }
+            for idx, vec in enumerate(vectors)
+        ],
         "model": model_name,
         "artifact_id": ARTIFACT_ID,
         "dimension": dimension,
@@ -381,14 +472,16 @@ def embed(req: EmbedRequest) -> dict[str, Any]:
 
 
 @app.post("/v1/embed-batch", dependencies=[Depends(verify_token)])
-def embed_batch(req: EmbedRequest) -> dict[str, Any]:
-    return embed(req)
+async def embed_batch(req: EmbedRequest) -> dict[str, Any]:
+    return await embed(req)
 
 
 @app.post("/v1/encode", dependencies=[Depends(verify_token)])
-def encode(payload: dict[str, Any]) -> dict[str, Any]:
+async def encode(payload: dict[str, Any]) -> dict[str, Any]:
     text = str(payload.get("content") or payload.get("text") or "")
-    vectors, fallback, model_name = embed_texts([text], str(payload.get("purpose") or "document"))
+    model_id = payload.get("model") or MODEL_NAME
+    async with models_lock:
+        vectors, fallback, model_name = embed_texts([text], str(payload.get("purpose") or "document"), model_id)
     return {
         "model": model_name,
         "artifact_id": ARTIFACT_ID,
