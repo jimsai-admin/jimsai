@@ -41,24 +41,39 @@ class EmbeddingClassifier:
         # These will be embedded once and reused for all queries
         # Prototypes tuned for semantic coverage across all 10 IR targets
         # FETCH_DOCUMENT prototype includes OCR-error variants of common actions
-        self.ir_prototypes: dict[str, np.ndarray] = {
-            "FETCH_DOCUMENT": "fetch retrieve download upload attach file document export save read open import load u1oad uplod d0wnload fi1e",
-            "SYSTEM_DIAGNOSTIC": "system error status crash failure bug log trace debug issue diagnostic exception problem",
-            "WORKSPACE_QUERY": "workspace affects changed impact query what happens if codebase relation dependency effect consequence causation",
-            "CODE_GENERATE": "generate code write function method API create script implementation logic python javascript ruby java cpp testing tests",
-            "RUN_CANVAS": "run analyze deep codebase synthesis comprehensive corpus investigation background execution",
-            "RUN_INVENTION": "invent design novel architecture create blueprint prototype strategy plan original innovative solution",
+        self.ir_prototypes: dict[str, str] = {
+            "FETCH_DOCUMENT": (
+                "fetch retrieve download upload attach file file document export save read open import load gba fifipamọ nweta chekwaa samu ajiye "
+                "télécharger document récupérer archivo descargar"
+            ),
+            "SYSTEM_DIAGNOSTIC": "system error status crash failure bug log trace debug issue diagnostic exception problem yọọda nye aka koma diagnostic crash erreur",
+            "WORKSPACE_QUERY": (
+                "workspace database db affects changed impact query what happens if codebase relation dependency effect consequence causation "
+                "base de données consulta"
+            ),
+            "CODE_GENERATE": (
+                "generate code write function method API create script implementation logic python javascript ruby java cpp testing tests koodu kodi "
+                "générer du code python écrire une fonction python generar código python escribir una función python "
+                "编写用于排序的Python函数 Python代码生成 ソート用のPython関数を書いてください Pythonコード生成 "
+                "اكتب دالة Python للفرز توليد رمز Python सॉर्टिंग के लिए Python फ़ंक्शन लिखें Python कोड उत्पन्न करें"
+            ),
+            "RUN_CANVAS": "run analyze deep codebase synthesis comprehensive corpus investigation background execution canvas",
+            "RUN_INVENTION": "invent design novel architecture create blueprint prototype strategy plan original innovative solution invention",
             "GENERAL_FACT": "general knowledge define explain concept understand information fact learning educational reference",
-            "EMOTIONAL_CATCH": "help emotional support stress overwhelmed sad tired anxious upset frustrated struggling difficulty how overwhelm distressed worried concerned scared nervous confused broken unclear incoherent please xqz xyz abc",
+            "EMOTIONAL_CATCH": (
+                "help emotional support stress overwhelmed sad tired anxious upset frustrated struggling difficulty how overwhelm distressed worried concerned scared nervous confused broken unclear incoherent please xqz xyz abc taimako nye aka "
+                "Je suis stressé Je suis stressé et confus Estoy estresado Estoy estresado y confundido 我感到压力 我感到压力和困惑 ストレスを感じています ストレスを感じていて、混乱しています "
+                "أشعر بالتوتر أشعر بالتوتر والارتباك मैं तनावग्रस्त हूँ मैं तनावग्रस्त और भ्रमित हूँ"
+            ),
             "META_INQUIRY": "meta about yourself reasoning explain sources confidence introspection self know capability awareness",
-            "OP_ESCAPE_TO_SANDBOX": "zzzz qqqq unknown random nonsense",
+            "OP_ESCAPE_TO_SANDBOX": "zzzz qqqq unknown random nonsense xxxx yyyy wwww vvvv",
         }
         
         # Embed all prototypes once
         self._prototype_embeddings: dict[str, np.ndarray] = {}
         for ir_target, description in self.ir_prototypes.items():
             try:
-                embedding = self.model.encode(description, normalize_embeddings=True)
+                embedding = self.model.encode("passage: " + description, normalize_embeddings=True)
                 self._prototype_embeddings[ir_target] = embedding
             except Exception:
                 # Fallback: create zero embedding if model fails
@@ -68,7 +83,7 @@ class EmbeddingClassifier:
         self.profile_prototype_text = "tell me about myself my profile personal information who am i me"
         try:
             self.profile_embedding = self.model.encode(
-                self.profile_prototype_text, 
+                "passage: " + self.profile_prototype_text, 
                 normalize_embeddings=True
             )
         except Exception:
@@ -85,7 +100,7 @@ class EmbeddingClassifier:
             Tuple of (best_ir_target, confidence_score)
         """
         try:
-            query_embedding = self.model.encode(query, normalize_embeddings=True)
+            query_embedding = self.model.encode("query: " + query, normalize_embeddings=True)
         except Exception:
             # If embedding fails, return sandbox
             return "OP_ESCAPE_TO_SANDBOX", 0.0
@@ -115,7 +130,7 @@ class EmbeddingClassifier:
             True if query appears to be profile-related.
         """
         try:
-            query_embedding = self.model.encode(query, normalize_embeddings=True)
+            query_embedding = self.model.encode("query: " + query, normalize_embeddings=True)
         except Exception:
             return False
         
@@ -135,7 +150,7 @@ class EmbeddingClassifier:
             Dict mapping IR targets to similarity scores.
         """
         try:
-            query_embedding = self.model.encode(query, normalize_embeddings=True)
+            query_embedding = self.model.encode("query: " + query, normalize_embeddings=True)
         except Exception:
             return {ir_target: 0.0 for ir_target in self.ir_prototypes}
         

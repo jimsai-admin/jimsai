@@ -85,14 +85,22 @@ class IngestionWorker:
             normalized = normalize_language(doc.content)
             
             # Step 3: Extract facts
-            facts = extract_document_facts(normalized, language=doc.language)
+            facts = extract_document_facts(normalized)
             
             # Step 4: Create signature
+            from .document_ingestion import DocumentFact
+            if facts:
+                first_fact = facts[0]
+            else:
+                first_fact = DocumentFact(
+                    subject="FinalYearProject",
+                    predicate="has_content",
+                    object=doc.content[:100],
+                    raw_excerpt=doc.content
+                )
             signature = fact_to_signature(
-                facts=facts,
-                raw_content=doc.content,
-                source_url=doc.metadata.get("source_url", f"{doc.source}/{doc.document_id}"),
-                source=doc.source,
+                fact=first_fact,
+                source_id=doc.metadata.get("source_url", f"{doc.source}/{doc.document_id}")
             )
             
             # Step 5: Generate embeddings (latent representation)
@@ -151,7 +159,7 @@ class IngestionWorker:
         )
         
         pair = SPPETrainingPair(
-            id=f"sppe-{stable_id(doc.document_id)}",
+            id=f"sppe-{stable_id('sppe', doc.document_id)}",
             semantic_ir=str(signature.metadata.get("ir_target", "WORKSPACE_QUERY")),
             query=doc.metadata.get("title", doc.content[:100]),
             response=doc.content[:500],

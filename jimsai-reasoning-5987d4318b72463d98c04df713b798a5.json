@@ -1,0 +1,634 @@
+{
+  "trace_id": "5987d4318b72463d98c04df713b798a5",
+  "layer_results": [
+    {
+      "layer": "input",
+      "activated": true,
+      "deterministic": true,
+      "summary": "Accepted request into the JIMS-AI strict prototype pipeline.",
+      "data": {
+        "user_id": "supabase:99137a45-f0b6-4af6-8c6e-cd1845e04a98",
+        "workspace_id": "workspace:99137a45-f0b6-4af6-8c6e-cd1845e04a98",
+        "thread_id": "12c1bddf-fc44-40bc-a898-ac9821af2484",
+        "modality": "text",
+        "return_trace": true
+      }
+    },
+    {
+      "layer": "T1_transformer_intent_interface",
+      "activated": true,
+      "deterministic": true,
+      "summary": "Compiled input into bounded Semantic IR.",
+      "data": {
+        "target_ir": "GENERAL_FACT",
+        "confidence": 0.65,
+        "used_groq": false,
+        "used_local_model": false,
+        "local_model_skip_reason": "disabled",
+        "groq_skip_reason": "external_groq_disabled",
+        "deterministic_target_ir": "GENERAL_FACT"
+      }
+    },
+    {
+      "layer": "L1_full_encoder",
+      "activated": true,
+      "deterministic": true,
+      "summary": "Built dual-representation signature with symbolic fields and latent embedding.",
+      "data": {
+        "signature_id": "sig_6db0fefd8bf6fcde",
+        "modality": "text",
+        "entities": [],
+        "relations": 0,
+        "causal_links": 0,
+        "abstraction_tags": [
+          "dual_representation",
+          "text"
+        ],
+        "latent_source": "hash_projection"
+      }
+    },
+    {
+      "layer": "L2_real_time_learning",
+      "activated": true,
+      "deterministic": true,
+      "summary": "Validated source trust, linked related signatures, checked conflicts, and updated all memory indexes.",
+      "data": {
+        "signature_id": "sig_6db0fefd8bf6fcde",
+        "memory": {
+          "sensory": 7,
+          "working": 2,
+          "episodic": 2,
+          "semantic": 2,
+          "entity_terms": 38,
+          "causal_terms": 11
+        },
+        "linked_signatures": [],
+        "conflicts": [],
+        "source_trust": 0.62
+      }
+    },
+    {
+      "layer": "V9_persistent_retrieval_hydration",
+      "activated": false,
+      "deterministic": true,
+      "summary": "Hydrated local runtime memory with Vectorize/Supabase matches before retrieval.",
+      "data": {
+        "hydrated": 0,
+        "vectorize_available": true,
+        "supabase_available": true
+      }
+    },
+    {
+      "layer": "L3_active_canvas",
+      "activated": false,
+      "deterministic": true,
+      "summary": "Canvas skipped by sparse routing preconditions.",
+      "data": {
+        "activated": false,
+        "session_id": null,
+        "signatures_created": [],
+        "patterns": [],
+        "used_groq": false
+      }
+    },
+    {
+      "layer": "L4_sparse_activation_meta_controller",
+      "activated": true,
+      "deterministic": true,
+      "summary": "Selected bounded runtime route.",
+      "data": {
+        "route": "retrieval",
+        "run_canvas": false,
+        "run_invention": false,
+        "run_retrieval": true,
+        "run_abstraction": true,
+        "run_world_model": true,
+        "reason": "Default deterministic retrieval route.",
+        "confidence": 0.65
+      }
+    },
+    {
+      "layer": "V9_capability_router",
+      "activated": true,
+      "deterministic": true,
+      "summary": "Selected v9 capability route: math_science.",
+      "data": {
+        "kind": "math_science",
+        "route": "solver_verified",
+        "confidence": 0.94,
+        "reason": "Structural and semantic routing selected math_science.",
+        "secondary_intents": [],
+        "routing_signals": {
+          "scores": {
+            "memory_chat": 0,
+            "world_knowledge": 0,
+            "coding": 0,
+            "math_science": 0.82,
+            "creative_text": 0,
+            "image_generation": 0,
+            "audio_generation": 0,
+            "video_generation": 0,
+            "agentic_task": 0
+          },
+          "structural": {
+            "math_science": 0.82
+          },
+          "language_hint": "unknown_or_english"
+        },
+        "requires_external_adapter": true,
+        "allowed_adapters": [
+          "calculator",
+          "symbolic_solver",
+          "paper_retrieval"
+        ],
+        "verification_requirements": [
+          "source_trace",
+          "confidence_score",
+          "gap_reporting",
+          "csse_no_extra_claims",
+          "calculation_trace"
+        ],
+        "energy_profile": "medium",
+        "context_strategy": "tool_augmented",
+        "human_approval_required": false
+      }
+    },
+    {
+      "layer": "V9_capability_adapters",
+      "activated": true,
+      "deterministic": true,
+      "summary": "Prepared and executed verified structured capability adapters where available.",
+      "data": {
+        "results": [
+          {
+            "kind": "math_science",
+            "adapter": "internal_symbolic_solver",
+            "status": "available",
+            "confidence": 0.99,
+            "summary": "Internal symbolic solver solved: 3*(4+5) -> 27",
+            "provenance": [
+              "result_adbb834ea132cb4f"
+            ],
+            "data": {
+              "verification_requirements": [
+                "source_trace",
+                "confidence_score",
+                "gap_reporting",
+                "csse_no_extra_claims",
+                "calculation_trace"
+              ],
+              "executed": true,
+              "expression": "3*(4+5)",
+              "solve_for": null,
+              "solver_status": "solved",
+              "solver_result": "27",
+              "solver_method": "linear_fallback",
+              "result_signature_id": "result_adbb834ea132cb4f"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "layer": "L5_invention_engine",
+      "activated": false,
+      "deterministic": true,
+      "summary": "Invention engine skipped by sparse activation.",
+      "data": {
+        "activated": false,
+        "goal": "GENERAL_FACT",
+        "candidate_steps": [],
+        "simulation_notes": [],
+        "used_groq": false
+      }
+    },
+    {
+      "layer": "L6_multi_index_retrieval",
+      "activated": true,
+      "deterministic": true,
+      "summary": "Retrieved ranked signatures from local multi-index memory.",
+      "data": {
+        "count": 3,
+        "ids": [
+          "sig_fabc2037a47bfb07",
+          "sig_3c2f01bf769ff6f7",
+          "sig_cef83c65009b2bee"
+        ],
+        "reasons": {
+          "sig_fabc2037a47bfb07": [
+            "abstraction_tag_index",
+            "semantic_index"
+          ],
+          "sig_3c2f01bf769ff6f7": [
+            "abstraction_tag_index",
+            "semantic_index"
+          ],
+          "sig_cef83c65009b2bee": [
+            "abstraction_tag_index",
+            "semantic_index"
+          ]
+        }
+      }
+    },
+    {
+      "layer": "L7_abstraction_engine",
+      "activated": true,
+      "deterministic": true,
+      "summary": "Built deterministic abstractions from retrieved signatures.",
+      "data": {
+        "concepts": [
+          "Answer",
+          "Capability",
+          "Confidence",
+          "Explicit",
+          "Here",
+          "I",
+          "Internal",
+          "No",
+          "None",
+          "Prompt",
+          "Resolved",
+          "Source",
+          "True",
+          "Verified",
+          "abbreviation",
+          "adapter"
+        ],
+        "analogies": [
+          "claims --is_a--> withheld.\n\nConfidence",
+          "claims --is_a--> withheld.\n\nConfidence"
+        ],
+        "confidence": 0.2393
+      }
+    },
+    {
+      "layer": "L8_latent_world_model",
+      "activated": false,
+      "deterministic": true,
+      "summary": "Activated causal world-model rules from local graph.",
+      "data": {
+        "rules": [],
+        "graph_entities": []
+      }
+    },
+    {
+      "layer": "L9_reasoning_bridge",
+      "activated": true,
+      "deterministic": true,
+      "summary": "Built Verified Cognitive Object from plan, simulation, constraints, graph, and sources.",
+      "data": {
+        "confidence": 0.5714,
+        "sources": [
+          "sig_cef83c65009b2bee"
+        ],
+        "gaps": [],
+        "simulation_count": 1
+      }
+    },
+    {
+      "layer": "T2_transformer_render_interface",
+      "activated": true,
+      "deterministic": true,
+      "summary": "Rendered Verified Cognitive Object through CSSE with optional bounded local model phrasing.",
+      "data": {
+        "used_groq": false,
+        "used_local_model": false,
+        "mode": "csse",
+        "local_model_skip_reason": "verified_confidence_0.95",
+        "groq_skip_reason": "external_groq_disabled"
+      }
+    },
+    {
+      "layer": "output",
+      "activated": true,
+      "deterministic": true,
+      "summary": "Returned bounded response and persisted trace for feedback.",
+      "data": {
+        "trace_id": "5987d4318b72463d98c04df713b798a5",
+        "sources": [
+          "result_adbb834ea132cb4f"
+        ],
+        "confidence": 0.95
+      }
+    },
+    {
+      "layer": "feedback",
+      "activated": false,
+      "deterministic": true,
+      "summary": "Feedback endpoint is ready for user correction, acceptance, or rejection.",
+      "data": {
+        "trace_id": "5987d4318b72463d98c04df713b798a5",
+        "endpoint": "/v1/feedback"
+      }
+    }
+  ],
+  "trace": [
+    {
+      "stage": "input",
+      "message": "Accepted request into the JIMS-AI strict prototype pipeline.",
+      "data": {
+        "user_id": "supabase:99137a45-f0b6-4af6-8c6e-cd1845e04a98",
+        "workspace_id": "workspace:99137a45-f0b6-4af6-8c6e-cd1845e04a98",
+        "thread_id": "12c1bddf-fc44-40bc-a898-ac9821af2484",
+        "modality": "text",
+        "return_trace": true
+      },
+      "timestamp": "2026-06-03T03:31:41.529919Z"
+    },
+    {
+      "stage": "T1_transformer_intent_interface",
+      "message": "Compiled input into bounded Semantic IR.",
+      "data": {
+        "target_ir": "GENERAL_FACT",
+        "confidence": 0.65,
+        "used_groq": false,
+        "used_local_model": false,
+        "local_model_skip_reason": "disabled",
+        "groq_skip_reason": "external_groq_disabled",
+        "deterministic_target_ir": "GENERAL_FACT"
+      },
+      "timestamp": "2026-06-03T03:31:41.754293Z"
+    },
+    {
+      "stage": "L1_full_encoder",
+      "message": "Built dual-representation signature with symbolic fields and latent embedding.",
+      "data": {
+        "signature_id": "sig_6db0fefd8bf6fcde",
+        "modality": "text",
+        "entities": [],
+        "relations": 0,
+        "causal_links": 0,
+        "abstraction_tags": [
+          "dual_representation",
+          "text"
+        ],
+        "latent_source": "hash_projection"
+      },
+      "timestamp": "2026-06-03T03:32:27.038389Z"
+    },
+    {
+      "stage": "L2_real_time_learning",
+      "message": "Validated source trust, linked related signatures, checked conflicts, and updated all memory indexes.",
+      "data": {
+        "signature_id": "sig_6db0fefd8bf6fcde",
+        "memory": {
+          "sensory": 7,
+          "working": 2,
+          "episodic": 2,
+          "semantic": 2,
+          "entity_terms": 38,
+          "causal_terms": 11
+        },
+        "linked_signatures": [],
+        "conflicts": [],
+        "source_trust": 0.62
+      },
+      "timestamp": "2026-06-03T03:32:27.038765Z"
+    },
+    {
+      "stage": "V9_persistent_retrieval_hydration",
+      "message": "Hydrated local runtime memory with Vectorize/Supabase matches before retrieval.",
+      "data": {
+        "hydrated": 0,
+        "vectorize_available": true,
+        "supabase_available": true
+      },
+      "timestamp": "2026-06-03T03:32:28.386908Z"
+    },
+    {
+      "stage": "L3_active_canvas",
+      "message": "Canvas skipped by sparse routing preconditions.",
+      "data": {
+        "activated": false,
+        "session_id": null,
+        "signatures_created": [],
+        "patterns": [],
+        "used_groq": false
+      },
+      "timestamp": "2026-06-03T03:32:28.386965Z"
+    },
+    {
+      "stage": "L4_sparse_activation_meta_controller",
+      "message": "Selected bounded runtime route.",
+      "data": {
+        "route": "retrieval",
+        "run_canvas": false,
+        "run_invention": false,
+        "run_retrieval": true,
+        "run_abstraction": true,
+        "run_world_model": true,
+        "reason": "Default deterministic retrieval route.",
+        "confidence": 0.65
+      },
+      "timestamp": "2026-06-03T03:32:28.387014Z"
+    },
+    {
+      "stage": "V9_capability_router",
+      "message": "Selected v9 capability route: math_science.",
+      "data": {
+        "kind": "math_science",
+        "route": "solver_verified",
+        "confidence": 0.94,
+        "reason": "Structural and semantic routing selected math_science.",
+        "secondary_intents": [],
+        "routing_signals": {
+          "scores": {
+            "memory_chat": 0,
+            "world_knowledge": 0,
+            "coding": 0,
+            "math_science": 0.82,
+            "creative_text": 0,
+            "image_generation": 0,
+            "audio_generation": 0,
+            "video_generation": 0,
+            "agentic_task": 0
+          },
+          "structural": {
+            "math_science": 0.82
+          },
+          "language_hint": "unknown_or_english"
+        },
+        "requires_external_adapter": true,
+        "allowed_adapters": [
+          "calculator",
+          "symbolic_solver",
+          "paper_retrieval"
+        ],
+        "verification_requirements": [
+          "source_trace",
+          "confidence_score",
+          "gap_reporting",
+          "csse_no_extra_claims",
+          "calculation_trace"
+        ],
+        "energy_profile": "medium",
+        "context_strategy": "tool_augmented",
+        "human_approval_required": false
+      },
+      "timestamp": "2026-06-03T03:32:28.387680Z"
+    },
+    {
+      "stage": "V9_capability_adapters",
+      "message": "Prepared and executed verified structured capability adapters where available.",
+      "data": {
+        "results": [
+          {
+            "kind": "math_science",
+            "adapter": "internal_symbolic_solver",
+            "status": "available",
+            "confidence": 0.99,
+            "summary": "Internal symbolic solver solved: 3*(4+5) -> 27",
+            "provenance": [
+              "result_adbb834ea132cb4f"
+            ],
+            "data": {
+              "verification_requirements": [
+                "source_trace",
+                "confidence_score",
+                "gap_reporting",
+                "csse_no_extra_claims",
+                "calculation_trace"
+              ],
+              "executed": true,
+              "expression": "3*(4+5)",
+              "solve_for": null,
+              "solver_status": "solved",
+              "solver_result": "27",
+              "solver_method": "linear_fallback",
+              "result_signature_id": "result_adbb834ea132cb4f"
+            }
+          }
+        ]
+      },
+      "timestamp": "2026-06-03T03:33:13.456457Z"
+    },
+    {
+      "stage": "L5_invention_engine",
+      "message": "Invention engine skipped by sparse activation.",
+      "data": {
+        "activated": false,
+        "goal": "GENERAL_FACT",
+        "candidate_steps": [],
+        "simulation_notes": [],
+        "used_groq": false
+      },
+      "timestamp": "2026-06-03T03:33:13.456496Z"
+    },
+    {
+      "stage": "L6_multi_index_retrieval",
+      "message": "Retrieved ranked signatures from local multi-index memory.",
+      "data": {
+        "count": 3,
+        "ids": [
+          "sig_fabc2037a47bfb07",
+          "sig_3c2f01bf769ff6f7",
+          "sig_cef83c65009b2bee"
+        ],
+        "reasons": {
+          "sig_fabc2037a47bfb07": [
+            "abstraction_tag_index",
+            "semantic_index"
+          ],
+          "sig_3c2f01bf769ff6f7": [
+            "abstraction_tag_index",
+            "semantic_index"
+          ],
+          "sig_cef83c65009b2bee": [
+            "abstraction_tag_index",
+            "semantic_index"
+          ]
+        }
+      },
+      "timestamp": "2026-06-03T03:33:13.457614Z"
+    },
+    {
+      "stage": "L7_abstraction_engine",
+      "message": "Built deterministic abstractions from retrieved signatures.",
+      "data": {
+        "concepts": [
+          "Answer",
+          "Capability",
+          "Confidence",
+          "Explicit",
+          "Here",
+          "I",
+          "Internal",
+          "No",
+          "None",
+          "Prompt",
+          "Resolved",
+          "Source",
+          "True",
+          "Verified",
+          "abbreviation",
+          "adapter"
+        ],
+        "analogies": [
+          "claims --is_a--> withheld.\n\nConfidence",
+          "claims --is_a--> withheld.\n\nConfidence"
+        ],
+        "confidence": 0.2393
+      },
+      "timestamp": "2026-06-03T03:33:13.457680Z"
+    },
+    {
+      "stage": "L8_latent_world_model",
+      "message": "Activated causal world-model rules from local graph.",
+      "data": {
+        "rules": [],
+        "graph_entities": []
+      },
+      "timestamp": "2026-06-03T03:33:13.457704Z"
+    },
+    {
+      "stage": "L9_reasoning_bridge",
+      "message": "Built Verified Cognitive Object from plan, simulation, constraints, graph, and sources.",
+      "data": {
+        "confidence": 0.5714,
+        "sources": [
+          "sig_cef83c65009b2bee"
+        ],
+        "gaps": [],
+        "simulation_count": 1
+      },
+      "timestamp": "2026-06-03T03:33:13.458039Z"
+    },
+    {
+      "stage": "T2_transformer_render_interface",
+      "message": "Rendered Verified Cognitive Object through CSSE with optional bounded local model phrasing.",
+      "data": {
+        "used_groq": false,
+        "used_local_model": false,
+        "mode": "csse",
+        "local_model_skip_reason": "verified_confidence_0.95",
+        "groq_skip_reason": "external_groq_disabled"
+      },
+      "timestamp": "2026-06-03T03:33:13.458168Z"
+    },
+    {
+      "stage": "output",
+      "message": "Returned bounded response and persisted trace for feedback.",
+      "data": {
+        "trace_id": "5987d4318b72463d98c04df713b798a5",
+        "sources": [
+          "result_adbb834ea132cb4f"
+        ],
+        "confidence": 0.95
+      },
+      "timestamp": "2026-06-03T03:33:13.458177Z"
+    },
+    {
+      "stage": "feedback",
+      "message": "Feedback endpoint is ready for user correction, acceptance, or rejection.",
+      "data": {
+        "trace_id": "5987d4318b72463d98c04df713b798a5",
+        "endpoint": "/v1/feedback"
+      },
+      "timestamp": "2026-06-03T03:33:13.458186Z"
+    }
+  ],
+  "sources": [
+    "result_adbb834ea132cb4f"
+  ],
+  "gaps": []
+}

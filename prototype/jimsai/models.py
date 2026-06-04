@@ -22,6 +22,11 @@ class ExecutionMode(str, Enum):
 class Modality(str, Enum):
     TEXT = "text"
     CODE = "code"
+
+
+class Modality(str, Enum):
+    TEXT = "text"
+    CODE = "code"
     IMAGE = "image"
     AUDIO = "audio"
     VIDEO = "video"
@@ -33,6 +38,15 @@ class IntentDomain(str, Enum):
     GENERAL_KNOWLEDGE = "GENERAL_KNOWLEDGE"
     EMOTIONAL_SOCIAL = "EMOTIONAL_SOCIAL"
     META_SYSTEM = "META_SYSTEM"
+    UNKNOWN = "UNKNOWN"
+
+
+class ProvenanceClass(str, Enum):
+    SYMBOLIC_SOLVER = "SYMBOLIC_SOLVER"
+    HIGH_CONFIDENCE = "HIGH_CONFIDENCE"
+    PLAUSIBLE_LEARNED = "PLAUSIBLE_LEARNED"
+    UNVERIFIED_STALE = "UNVERIFIED_STALE"
+    GAP_UNRESOLVED = "GAP_UNRESOLVED"
     UNKNOWN = "UNKNOWN"
 
 
@@ -206,6 +220,9 @@ class InventionResult(BaseModel):
     candidate_steps: list[str] = Field(default_factory=list)
     simulation_notes: list[str] = Field(default_factory=list)
     used_groq: bool = False
+    mcts_traces: list[dict[str, Any]] = Field(default_factory=list)
+    node_scores: dict[str, float] = Field(default_factory=dict)
+    simulation_metrics: dict[str, Any] = Field(default_factory=dict)
 
 
 class AbstractionResult(BaseModel):
@@ -370,6 +387,8 @@ class ReasoningStep(BaseModel):
     confidence: float
     sources: list[str] = Field(default_factory=list)
     relation: str = "ASSERT"
+    source_signature_ids: list[str] = Field(default_factory=list)
+    provenance_class: ProvenanceClass = ProvenanceClass.UNKNOWN
 
 
 class VerifiedCognitiveObject(BaseModel):
@@ -383,6 +402,7 @@ class VerifiedCognitiveObject(BaseModel):
     knowledge_gaps: list[str] = Field(default_factory=list)
     sources: list[str] = Field(default_factory=list)
     confidence: float = 0.0
+    confidence_tier: int = 5
     style_signature: dict[str, Any] = Field(default_factory=lambda: {"tone": "technical", "format": "answer"})
     generation_mode: Literal["FACT", "CREATIVE", "HYBRID", "TEMPLATE"] = "FACT"
     activation: ActivationDecision | None = None
@@ -452,6 +472,22 @@ class MemoryDeleteRequest(BaseModel):
     reason: str = ""
 
 
+class MemoryRollbackRequest(BaseModel):
+    user_id: str
+    time_window_hours: int = 24
+    workspace_id: str | None = None
+    batch_id: str | None = None
+
+
+class MemoryRollbackResponse(BaseModel):
+    accepted: bool
+    deleted_count: int
+    time_window_hours: int
+    workspace_id: str | None = None
+    batch_id: str | None = None
+    detail: str = ""
+
+
 class MemoryMutationResponse(BaseModel):
     accepted: bool
     action: Literal["update", "delete"]
@@ -469,11 +505,54 @@ class WorldModelCandidate(BaseModel):
 
 
 class SPPETrainingPair(BaseModel):
-    signature_id: str
-    semantic_intention_graph: dict[str, Any]
-    original_text: str
-    confidence: float
-    accepted: bool
+    # Set 1 (Ingestion, Tests, Training UI Bridge)
+    id: str | None = None
+    semantic_ir: str | None = None
+    query: str | None = None
+    response: str | None = None
+    quality_score: float | None = None
+    source: str | None = None
+    created_at: datetime | None = None
+
+    # Set 2 (Pipeline)
+    signature_id: str | None = None
+    semantic_intention_graph: dict[str, Any] | None = None
+    original_text: str | None = None
+    confidence: float | None = None
+    accepted: bool | None = None
+
+    def __init__(self, **data: Any) -> None:
+        super().__init__(**data)
+        # Populate Set 1 from Set 2 if missing
+        if self.signature_id and not self.id:
+            self.id = f"sppe-{self.signature_id}"
+        if self.original_text and not self.query:
+            self.query = self.original_text
+        if self.original_text and not self.response:
+            self.response = self.original_text
+        if self.confidence is not None and self.quality_score is None:
+            self.quality_score = self.confidence
+        if not self.source:
+            self.source = "pipeline"
+        if not self.created_at:
+            self.created_at = utc_now()
+        if self.accepted is None:
+            if self.confidence is not None:
+                self.accepted = self.confidence >= 0.75
+            elif self.quality_score is not None:
+                self.accepted = self.quality_score >= 0.75
+            else:
+                self.accepted = False
+
+        # Populate Set 2 from Set 1 if missing
+        if self.id and not self.signature_id:
+            self.signature_id = self.id
+        if self.query and not self.original_text:
+            self.original_text = self.query
+        if self.quality_score is not None and self.confidence is None:
+            self.confidence = self.quality_score
+        if self.accepted is None and self.quality_score is not None:
+            self.accepted = self.quality_score >= 0.75
 
 
 class AutoTrainingDecision(BaseModel):

@@ -19,10 +19,46 @@ class ConstrainedSemanticSynthesisEngine:
         ]
         user_facing_steps = sourced_steps or fallback_steps
 
+        # Compute or read dynamic confidence tier
+        tier = getattr(obj, "confidence_tier", 5)
+        if tier == 5 and obj.confidence > 0.0:
+            if obj.confidence >= 0.99:
+                tier = 1
+            elif obj.confidence >= 0.90:
+                tier = 2
+            elif obj.confidence >= 0.70:
+                tier = 3
+            elif obj.confidence >= 0.40:
+                tier = 4
+            else:
+                tier = 5
+
         lines: list[str] = []
+        
+        # Prepend calculated Provenance Label
+        provenance_labels = {
+            1: "[Verified • Symbolic Solver]",
+            2: "[High Confidence • Approved Memory]",
+            3: "[Plausible • Learned Pattern]",
+            4: "[Unverified • Needs Review]",
+            5: "[Gap • Unresolved]"
+        }
+        lines.append(provenance_labels.get(tier, "[Gap • Unresolved]"))
+        lines.append("")
+
         if user_facing_steps:
+            if tier in {1, 2, 3}:
+                lines.append("Here's what I can verify from memory:")
             summary = self._summary_sentence(user_facing_steps)
             if summary:
+                # Prepend logical hedging qualifiers to Tier 3 claims
+                if tier == 3:
+                    summary = "Based on workspace patterns, it is likely that " + summary
+                # Append warning tags and traceback links directly to Tier 4 outputs
+                elif tier == 4:
+                    source_id = obj.sources[0] if obj.sources else "unknown"
+                    summary = f"{summary} ⚠️ [Unverified Memory] [Fix/Edit](file:///v1/memory/edit/{source_id})"
+                
                 lines.append(summary)
                 lines.append("")
             if len(user_facing_steps) > 1:
@@ -31,7 +67,11 @@ class ConstrainedSemanticSynthesisEngine:
                     lines.append(f"- {self._clean_claim(step.claim)}")
         else:
             if obj.sources:
-                lines.append("I found related memory, but it does not contain a directly answerable verified claim yet.")
+                fallback_msg = "I found related memory, but it does not contain a directly answerable verified claim yet."
+                if tier == 4:
+                    source_id = obj.sources[0]
+                    fallback_msg = f"{fallback_msg} ⚠️ [Unverified Memory] [Fix/Edit](file:///v1/memory/edit/{source_id})"
+                lines.append(fallback_msg)
             else:
                 lines.append("I do not have enough verified memory to answer that confidently yet.")
 
@@ -54,7 +94,7 @@ class ConstrainedSemanticSynthesisEngine:
             lines.append("")
             lines.append("Source signatures:")
             for source in obj.sources:
-                lines.append(f"- {source}")
+                lines.append(f"- [{source}](file:///v1/memory/edit/{source})")
         return "\n".join(lines)
 
     def _summary_sentence(self, steps) -> str:

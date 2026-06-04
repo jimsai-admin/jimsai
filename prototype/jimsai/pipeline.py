@@ -30,9 +30,12 @@ from .models import (
     Entity,
     MemoryDeleteRequest,
     MemoryMutationResponse,
+    MemoryRollbackRequest,
+    MemoryRollbackResponse,
     MemoryUpdateRequest,
     PipelineRequest,
     PipelineResponse,
+    ProvenanceClass,
     ReasoningStep,
     Relation,
     ReviewActionRequest,
@@ -121,6 +124,7 @@ class JimsAIPipeline:
         self.abstraction_layer = AbstractionEngineLayer()
         self.world_model_layer = LatentWorldModelLayer(self.graph)
         self.reasoning_bridge_layer = ReasoningBridgeLayer(self.simulation, self.validator, self.planner, self.graph)
+        self.reasoning_layer = self.reasoning_bridge_layer
         self.render_layer = TransformerRenderInterface(self.csse, self.bridge)
         self.sessions: dict[str, dict[str, str]] = {}
         self.feedback_events: list[FeedbackRequest] = []
@@ -283,11 +287,60 @@ class JimsAIPipeline:
         )
 
         session = self._load_session(request.user_id, request.thread_id)
+        print(f"DEBUG LOADED SESSION: keys={list(session.keys())} content={session}")
+        
+        # Context Decoupling / topic drift check
+        from datetime import datetime, timezone, timedelta
+        now_time = datetime.now(timezone.utc)
+        last_activity_str = session.get("last_activity")
+        clear_context = False
+        if last_activity_str:
+            try:
+                last_activity = datetime.fromisoformat(last_activity_str)
+                if last_activity.tzinfo is None:
+                    last_activity = last_activity.replace(tzinfo=timezone.utc)
+                if now_time - last_activity > timedelta(minutes=15):
+                    clear_context = True
+            except Exception:
+                pass
+        if not clear_context and session.get("ACTIVE_OBJECT"):
+            active_obj = session["ACTIVE_OBJECT"]
+            print(f"DEBUG DECOUPLING: active_obj={active_obj} query={request.query}")
+            try:
+                def get_pipeline_emb(text: str) -> list[float]:
+                    try:
+                        from .encoder import hash_embedding
+                        return hash_embedding(text, 768)
+                    except Exception:
+                        try:
+                            from .encoder.dual_encoder import hash_embedding
+                            return hash_embedding(text, 768)
+                        except Exception:
+                            return [0.0] * 768
+
+                q_emb = get_pipeline_emb(request.query)
+                o_emb = get_pipeline_emb(active_obj)
+                import math
+                dot = sum(a * b for a, b in zip(q_emb, o_emb))
+                norm1 = math.sqrt(sum(a * a for a in q_emb))
+                norm2 = math.sqrt(sum(b * b for b in o_emb))
+                sim = dot / (norm1 * norm2) if norm1 > 0 and norm2 > 0 else 0.0
+                if sim < 0.35:
+                    clear_context = True
+            except Exception:
+                pass
+        if clear_context:
+            session.pop("ACTIVE_OBJECT", None)
+            session.pop("ACTIVE_INTENT", None)
+            session["_prevent_active_object"] = True
+        session["last_activity"] = now_time.isoformat()
+
         ir, intent_layer_result = await self.intent_layer.infer(request, session)
         record(intent_layer_result)
         session["ACTIVE_INTENT"] = ir.target_ir
-        if ir.scope_constraints.get("entities"):
+        if ir.scope_constraints.get("entities") and not session.get("_prevent_active_object"):
             session["ACTIVE_OBJECT"] = str(ir.scope_constraints["entities"][0])
+        session.pop("_prevent_active_object", None)
         self._save_session(request.user_id, session, request.thread_id)
 
         input_signature, encoder_layer_result = self.encoder_layer.encode(request, ir)
@@ -647,6 +700,8 @@ class JimsAIPipeline:
                 claim=claim,
                 confidence=0.99,
                 sources=[source] if source else [],
+                source_signature_ids=[source] if source else [],
+                provenance_class=ProvenanceClass.SYMBOLIC_SOLVER,
                 relation="CALCULATION_TRACE",
             )
             if obj.capability_plan.kind == CapabilityKind.MATH_SCIENCE:
@@ -677,6 +732,8 @@ class JimsAIPipeline:
                 claim=f"Routed request to {obj.capability_plan.kind.value}, but required provider execution is not available yet.",
                 confidence=0.0,
                 sources=[],
+                source_signature_ids=[],
+                provenance_class=ProvenanceClass.GAP_UNRESOLVED,
                 relation="CAPABILITY_GATE",
             )
             if obj.capability_plan.kind != CapabilityKind.MEMORY_CHAT:
@@ -692,6 +749,16 @@ class JimsAIPipeline:
             return "explicit_language_requested"
         if any(ord(char) > 127 for char in query):
             return "non_ascii_or_multilingual_prompt"
+        
+        low_resource_keywords = {
+            "nibo", "bawo", "koni", "odabo", "kaabo", "e ku", "olofe",
+            "kedu", "bia", "imela", "otito", "nno",
+            "sannu", "lafiya", "nagode", "gida", "baba"
+        }
+        words = set(lowered.split())
+        if words & low_resource_keywords:
+            return "non_ascii_or_multilingual_prompt"
+            
         return "default"
 
     def _response_format_hint(self, query: str) -> str:
@@ -1103,6 +1170,39 @@ class JimsAIPipeline:
             },
         )
         groq_used = self._apply_ingestion_overlay(signature, groq_overlay, request.source_trust)
+        
+        # Causal and Relational Conflict Detection & Downgrading for older/stale memory signatures
+        for existing in list(self.memory.visible_signatures(workspace_id=request.workspace_id, user_id=request.user_id)):
+            has_conflict = False
+            # Check relational conflict
+            for existing_rel in existing.structured.relations:
+                for new_rel in signature.structured.relations:
+                    if (existing_rel.predicate == new_rel.predicate and
+                        existing_rel.subject.lower() == new_rel.subject.lower() and
+                        existing_rel.object.lower() != new_rel.object.lower()):
+                        has_conflict = True
+                        break
+                if has_conflict:
+                    break
+            
+            # Check causal conflict
+            if not has_conflict:
+                for existing_cause in existing.structured.causal_chain:
+                    for new_cause in signature.structured.causal_chain:
+                        if (existing_cause.cause.lower() == new_cause.cause.lower() and
+                            existing_cause.effect.lower() != new_cause.effect.lower()):
+                            has_conflict = True
+                            break
+                    if has_conflict:
+                        break
+
+            # If there is a conflict, downgrade the older signature to Tier 4 / UNVERIFIED_STALE_MEMORY (< 0.6)
+            if has_conflict:
+                existing.confidence.score = 0.5
+                existing.provenance = "unverified_stale_memory"
+                existing.metadata["validity"] = "stale"
+                self.memory.insert(existing)
+
         self.memory.insert(signature)
         self.graph.add_signature(signature)
         self.event_store.append(
@@ -1434,6 +1534,72 @@ class JimsAIPipeline:
             signature_id=request.signature_id,
             memory_stats=self.memory.stats(),
             detail="signature removed from local memory, graph, candidates, and caches",
+        )
+
+    async def rollback_memory(self, request: MemoryRollbackRequest) -> MemoryRollbackResponse:
+        from datetime import datetime, timezone, timedelta
+        
+        time_window = timedelta(hours=request.time_window_hours)
+        cutoff_time = datetime.now(timezone.utc) - time_window
+        
+        matching_signatures = []
+        for sig in self.memory.all_signatures():
+            created_at = sig.created_at
+            if created_at.tzinfo is None:
+                created_at = created_at.replace(tzinfo=timezone.utc)
+                
+            if created_at >= cutoff_time:
+                if request.workspace_id and sig.workspace_id != request.workspace_id:
+                    continue
+                if request.batch_id and sig.metadata.get("batch_id") != request.batch_id:
+                    continue
+                matching_signatures.append(sig)
+                
+        if self.cloud_authoritative or not matching_signatures:
+            prod_sigs = self.production.load_recent_signatures(limit=1000)
+            for sig in prod_sigs:
+                created_at = sig.created_at
+                if created_at.tzinfo is None:
+                    created_at = created_at.replace(tzinfo=timezone.utc)
+                if created_at >= cutoff_time:
+                    if request.workspace_id and sig.workspace_id != request.workspace_id:
+                        continue
+                    if request.batch_id and sig.metadata.get("batch_id") != request.batch_id:
+                        continue
+                    if not any(m.id == sig.id for m in matching_signatures):
+                        matching_signatures.append(sig)
+                        
+        deleted_count = 0
+        for sig in matching_signatures:
+            self.memory.delete(sig.id)
+            self.graph.remove_signature(sig.id)
+            self.production.delete_signature(sig.id)
+            self.production.delete_panel_items_for_signature(sig.id)
+            self.world_model_candidates = [c for c in self.world_model_candidates if c.provenance != sig.id]
+            self.training_history = [item for item in self.training_history if item.signature.id != sig.id]
+            deleted_count += 1
+            
+        if deleted_count > 0:
+            self.result_cache.clear()
+            self.event_store.append(
+                "memory_rollback_executed",
+                f"rollback_{datetime.now(timezone.utc).timestamp()}",
+                {
+                    "time_window_hours": request.time_window_hours,
+                    "deleted_count": deleted_count,
+                    "workspace_id": request.workspace_id,
+                    "batch_id": request.batch_id,
+                },
+                user_id=request.user_id,
+            )
+            
+        return MemoryRollbackResponse(
+            accepted=True,
+            deleted_count=deleted_count,
+            time_window_hours=request.time_window_hours,
+            workspace_id=request.workspace_id,
+            batch_id=request.batch_id,
+            detail=f"Rollback completed successfully. Deleted {deleted_count} signatures within the last {request.time_window_hours} hours."
         )
 
     async def training_panel_page(self, panel: str, cursor: str | None = None, limit: int = 25) -> TrainingPanelPage:

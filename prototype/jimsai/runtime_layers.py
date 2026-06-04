@@ -379,6 +379,16 @@ class SparseActivationMetaController:
         return decision, _layer("L4_sparse_activation_meta_controller", True, "Selected bounded runtime route.", decision.model_dump(mode="json"))
 
 
+class MCTSNode:
+    def __init__(self, code_or_step: str, parent: MCTSNode | None = None) -> None:
+        self.code_or_step = code_or_step
+        self.parent = parent
+        self.children: list[MCTSNode] = []
+        self.visits = 0
+        self.value = 0.0
+        self.error_trace = ""
+
+
 class InventionEngineLayer:
     """L5 invention engine: create candidate plans, constrained by IR and current memory."""
 
@@ -391,24 +401,153 @@ class InventionEngineLayer:
         steps: list[str] = []
         notes: list[str] = []
         used_groq = False
+        mcts_traces: list[dict[str, Any]] = []
+        node_scores: dict[str, float] = {}
+        simulation_metrics: dict[str, Any] = {}
+
         if active:
             plan = self.planner.plan(ir)
+            initial_plan = "\n".join(step.action for step in plan.steps)
             steps = [step.action for step in plan.steps]
-            notes = ["Candidates remain untrusted until retrieval, simulation, and constraint validation complete."]
-            groq_result = await self.bridge.invention_candidates(request.query, {"target_ir": ir.target_ir, "scope": ir.scope_constraints, "plan": plan.model_dump(mode="json")})
-            if groq_result:
+            notes = ["Candidates verified using Monte Carlo Tree Search (MCTS) with Sandbox simulation."]
+
+            mcts_res = await self.run_mcts(request.query, initial_plan)
+            if mcts_res["best_path"]:
+                steps.extend(mcts_res["best_path"])
                 used_groq = True
-                raw_candidates = groq_result.get("candidate_steps") or groq_result.get("steps") or []
-                if isinstance(raw_candidates, list):
-                    steps.extend(str(step)[:220] for step in raw_candidates[:8])
-        result = InventionResult(activated=active, goal=ir.target_ir, candidate_steps=steps, simulation_notes=notes, used_groq=used_groq)
+            mcts_traces = mcts_res["traces"]
+            node_scores = mcts_res["node_scores"]
+            simulation_metrics = mcts_res["metrics"]
+
+        result = InventionResult(
+            activated=active,
+            goal=ir.target_ir,
+            candidate_steps=steps,
+            simulation_notes=notes,
+            used_groq=used_groq,
+            mcts_traces=mcts_traces,
+            node_scores=node_scores,
+            simulation_metrics=simulation_metrics
+        )
         return result, _layer(
             "L5_invention_engine",
             active,
-            "Generated bounded invention candidates." if active else "Invention engine skipped by sparse activation.",
+            "Generated bounded invention candidates via MCTS." if active else "Invention engine skipped by sparse activation.",
             result.model_dump(mode="json"),
             deterministic=not used_groq,
         )
+
+    async def run_mcts(self, goal: str, initial_plan: str, iterations: int = 5) -> dict[str, Any]:
+        from .execution_runtime import DeterministicSandbox
+        sandbox = DeterministicSandbox()
+        
+        root = MCTSNode(initial_plan)
+        
+        candidates = await self.bridge.invention_candidates(
+            goal, 
+            {"plan": initial_plan, "scope": {}, "stage": "initial"}
+        )
+        if candidates and "candidate_steps" in candidates:
+            for step in candidates["candidate_steps"]:
+                root.children.append(MCTSNode(str(step), parent=root))
+                
+        if not root.children:
+            root.children.append(MCTSNode(initial_plan + "\n# Step 1: Analyze problem\n# Step 2: Implement solution", parent=root))
+
+        for _ in range(iterations):
+            node = root
+            while node.children:
+                import math
+                best_child = None
+                best_uct = -1.0
+                for child in node.children:
+                    if child.visits == 0:
+                        uct = float('inf')
+                    else:
+                        uct = (child.value / child.visits) + 1.41 * math.sqrt(math.log(node.visits) / child.visits)
+                    if uct > best_uct:
+                        best_uct = uct
+                        best_child = child
+                if best_child is None:
+                    break
+                node = best_child
+
+            passed = True
+            error_msg = ""
+            score = 0.5
+            
+            if "def " in node.code_or_step or "import " in node.code_or_step or "class " in node.code_or_step or "print(" in node.code_or_step:
+                exec_res = sandbox.run_python(node.code_or_step, "", 1500)
+                if exec_res.get("status") != "passed":
+                    passed = False
+                    error_msg = exec_res.get("stderr") or exec_res.get("stdout") or "Execution failed"
+                    score = 0.0
+                else:
+                    score = 1.0
+            else:
+                import ast
+                try:
+                    ast.parse(node.code_or_step)
+                    score = 0.9
+                except SyntaxError:
+                    if len(node.code_or_step.strip()) > 5:
+                        score = 0.7
+                    else:
+                        passed = False
+                        score = 0.2
+
+            node.visits += 1
+            node.value += score
+            node.error_trace = error_msg
+
+            if not passed and error_msg:
+                reflection_prompt = f"The candidate code failed with error:\n{error_msg}\nPlease generate a corrected version of the code."
+                corrected = await self.bridge.invention_candidates(
+                    goal, 
+                    {"failed_code": node.code_or_step, "error": error_msg, "prompt": reflection_prompt}
+                )
+                if corrected and "candidate_steps" in corrected:
+                    for step in corrected["candidate_steps"]:
+                        node.children.append(MCTSNode(str(step), parent=node))
+            elif node.visits > 0 and len(node.children) == 0:
+                deeper = await self.bridge.invention_candidates(
+                    goal, 
+                    {"context": node.code_or_step, "stage": "deeper"}
+                )
+                if deeper and "candidate_steps" in deeper:
+                    for step in deeper["candidate_steps"]:
+                        node.children.append(MCTSNode(str(step), parent=node))
+
+            curr = node.parent
+            while curr:
+                curr.visits += 1
+                curr.value += score
+                curr = curr.parent
+
+        best_path = []
+        curr = root
+        traces = []
+        node_scores = {}
+        while curr.children:
+            best_child = max(curr.children, key=lambda c: c.visits)
+            if best_child.visits == 0:
+                break
+            best_path.append(best_child.code_or_step)
+            node_scores[best_child.code_or_step] = best_child.value / best_child.visits if best_child.visits > 0 else 0.0
+            traces.append({
+                "node": best_child.code_or_step,
+                "visits": best_child.visits,
+                "value": best_child.value,
+                "error": best_child.error_trace
+            })
+            curr = best_child
+
+        return {
+            "best_path": best_path,
+            "traces": traces,
+            "node_scores": node_scores,
+            "metrics": {"total_iterations": iterations}
+        }
 
 
 class MultiIndexRetrievalLayer:
@@ -618,7 +757,7 @@ class ReasoningBridgeLayer:
             }
         )
         candidates: list[tuple[int, float, int, str, RetrievalResult]] = []
-        minimum_sentence_score = 2 if len(query_terms) >= 3 else 1
+        minimum_sentence_score = 1 if wants_guidance else (2 if len(query_terms) >= 3 else 1)
         for result_index, result in enumerate(retrieved):
             excerpt = result.signature.raw_excerpt.strip()
             if not excerpt:
@@ -711,24 +850,24 @@ class ReasoningBridgeLayer:
         ):
             return 4
         guidance_markers = (
-            " should ",
-            " should not ",
-            " must ",
-            " requires ",
-            " require ",
-            " depends on ",
-            " do not ",
-            " avoid ",
-            " check ",
-            " verify ",
-            " risk",
-            " risks",
-            " safer ",
-            " secrets",
-            " human approval",
-            " provenance",
+            "should",
+            "should not",
+            "must",
+            "requires",
+            "require",
+            "depends on",
+            "do not",
+            "avoid",
+            "check",
+            "verify",
+            "risk",
+            "risks",
+            "safer",
+            "secrets",
+            "human approval",
+            "provenance",
         )
-        return 1 if any(marker in lower_sentence for marker in guidance_markers) else 0
+        return 1 if any(re.search(rf"\b{re.escape(marker)}\b", lower_sentence) for marker in guidance_markers) else 0
 
     def _direct_reasoning_steps(self, ir: SemanticIR, retrieved: list[RetrievalResult]) -> list[ReasoningStep]:
         entities = [str(entity) for entity in ir.scope_constraints.get("entities", [])]

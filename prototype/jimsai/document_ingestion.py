@@ -23,7 +23,7 @@ class DocumentFact:
 def is_document_like(text: str) -> bool:
     upper = text.upper()
     return (
-        len(text) > 2500
+        len(text) > 10
         or "ABSTRACT" in upper
         or "CHAPTER ONE" in upper
         or "TABLE OF CONTENTS" in upper

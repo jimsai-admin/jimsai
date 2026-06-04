@@ -300,7 +300,7 @@ class ReportFormatter:
         lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
         
         def format_delta(label: str, before: float, after: float, delta: float, is_pct: bool = False) -> str:
-            fmt = "{:.2%" if is_pct else "{:.4f}"
+            fmt = "{:.2%}" if is_pct else "{:.4f}"
             arrow = "📈" if delta > 0 else "📉" if delta < 0 else "➡️"
             delta_fmt = "{:+.2%}" if is_pct else "{:+.4f}"
             return f"{label:.<40} {fmt.format(before)} → {fmt.format(after)} {arrow} {delta_fmt.format(delta)}"

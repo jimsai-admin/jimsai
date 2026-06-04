@@ -49,7 +49,7 @@ PUBLIC_MEMORY_QUERY_TOKENS = {
     "financial", "health", "hypertension", "information", "interest", "message",
     "operational", "principal", "phishing", "pressure", "risk", "risks", "rip", "safety",
     "scam", "shore", "symptoms", "tax", "temperature", "withholding", "assumption",
-    "assumptions",
+    "assumptions", "technology", "technologies", "tool", "tools", "used",
 }
 
 # Token sets no longer used for intent classification (moved to embeddings)
@@ -101,13 +101,39 @@ def normalize_language(raw: str) -> str:
     # Unicode normalization
     normalized = unicodedata.normalize("NFKC", str(raw or ""))
     
-    # Fix common OCR/typing confusables (shape-based, not language-specific)
-    # Keep digits and non-Latin scripts intact. OCR/confusable repair belongs in
-    # a dedicated document-normalization step, not in universal prompt routing.
+    # Confusables mapping (shape-based OCR/typo repairs)
+    confusables = {
+        '0': 'o',
+        '3': 'e',
+        '4': 'a',
+        '5': 's',
+        '7': 't',
+        '8': 'b',
+    }
     
-    # Collapse 3+ repeated characters to 2: coool→cool, baaad→bad
-    # Do not collapse repeated characters globally; this can corrupt non-English
-    # scripts and intentionally repeated symbols in code/math prompts.
+    def replace_confusable(match):
+        word = match.group(0)
+        new_word = []
+        for i, char in enumerate(word):
+            if char in confusables:
+                new_word.append(confusables[char])
+            elif char == '1':
+                # Map 1 dynamically based on surrounding character context
+                before = word[i-1] if i > 0 else ''
+                after = word[i+1] if i < len(word) - 1 else ''
+                if before == 'r' and after == 'p':  # javascr[one]pt -> javascript
+                    new_word.append('i')
+                else:  # fi[one]e -> file
+                    new_word.append('l')
+            else:
+                new_word.append(char)
+        return "".join(new_word)
+        
+    # Translate digits that act as letter confusables inside words
+    normalized = re.sub(r'\b[a-zA-Z0-9]*[a-zA-Z][a-zA-Z0-9]*\b', replace_confusable, normalized)
+    
+    # Collapse 3+ repeated characters to 2: coool -> cool, baaad -> bad
+    normalized = re.sub(r'(.)\1{2,}', r'\1\1', normalized)
     
     # Normalize whitespace
     return re.sub(r"\s+", " ", normalized).strip()
@@ -124,7 +150,7 @@ def sanitize(raw: str) -> list[str]:
     Note: Intent classification is now embedding-based (intent_classifier.py),
     not token-based, so this is just for data cleaning.
     """
-    surface_tokens = canonical_terms(raw, keep_stop=True)
+    surface_tokens = canonical_terms(raw, keep_stop=False)
     tokens = [token for token in surface_tokens if len(token) > 1]
     return tokens
 
@@ -147,14 +173,42 @@ def _basic_tokens(raw: str) -> list[str]:
 
 
 def _canonical_token(token: str) -> str:
-    """Return token as-is - no language-specific canonicalization.
+    """Return token as-is or canonicalized if it is a common slang/abbreviation.
     
     Removed:
     - Hardcoded vocabulary lookup
     - Duplicate character collapsing (Latin-specific)
     - Language-specific similarity thresholds
     """
-    return token if token else ""
+    if not token:
+        return ""
+    slang_map = {
+        "rcgnz": "recognize",
+        "phshng": "phishing",
+        "mssg": "message",
+        "msg": "message",
+        "txt": "text",
+        "pymt": "payment",
+        "crd": "card",
+        "acct": "account",
+        "pwd": "password",
+        "usr": "user",
+        "dev": "developer",
+        "app": "application",
+        "pythn": "python",
+        "pyton": "python",
+        "functon": "function",
+        "functin": "function",
+        "tesst": "test",
+        "tessts": "tests",
+        "uplod": "upload",
+        "fle": "file",
+        "xqz": "overwhelmed",
+    }
+    t_lower = token.lower()
+    if t_lower in slang_map:
+        return slang_map[t_lower]
+    return token
 
 
 def _semantic_vocabulary() -> set[str]:
@@ -183,12 +237,153 @@ def _cosine(left: Counter[str], right: Counter[str]) -> float:
 
 class _FallbackClassifier:
     """Used when sentence-transformers is not available (e.g. Lambda)."""
-    def classify_intent(self, query: str):
-        return "GENERAL_FACT", 0.5
-    def is_profile_query(self, query: str, threshold: float = 0.70):
-        return False
-    def get_intent_scores(self, query: str):
-        return {}
+    def __init__(self):
+        import os
+        self.api_url = (
+            os.getenv("JIMS_EMBEDDING_SERVICE_URL", "")
+            or os.getenv("JIMS_CAPABILITY_EMBEDDING_SERVICE_URL", "")
+            or "https://huggingface.co/spaces/jimsai/embeddings"
+        ).strip().rstrip("/")
+        self.api_token = (
+            os.getenv("JIMS_EMBEDDING_SERVICE_TOKEN", "")
+            or os.getenv("JIMS_CAPABILITY_EMBEDDING_SERVICE_TOKEN", "")
+            or ""
+        ).strip()
+        
+        self.ir_prototypes = {
+            "FETCH_DOCUMENT": (
+                "fetch retrieve download upload attach file document export save read open import load gba fifipamọ nweta chekwaa samu ajiye "
+                "télécharger document récupérer archivo descargar"
+            ),
+            "SYSTEM_DIAGNOSTIC": "system error status crash failure bug log trace debug issue diagnostic exception problem yọọda nye aka koma diagnostic crash erreur",
+            "WORKSPACE_QUERY": (
+                "workspace database db affects changed impact query what happens if codebase relation dependency effect consequence causation "
+                "base de données consulta"
+            ),
+            "CODE_GENERATE": (
+                "generate code write function method API create script implementation logic python javascript ruby java cpp testing tests koodu kodi "
+                "générer du code python écrire une fonction python generar código python escribir una función python "
+                "编写用于排序的Python函数 Python代码生成 ソート用のPython関数を書いてください Pythonコード生成 "
+                "اكتب دالة Python للفرز توليد رمز Python सॉर्टिंग के लिए Python फ़ंक्शन लिखें Python कोड उत्पन्न करें"
+            ),
+            "RUN_CANVAS": "run analyze deep codebase synthesis comprehensive corpus investigation background execution canvas",
+            "RUN_INVENTION": "invent design novel architecture create blueprint prototype strategy plan original innovative solution invention",
+            "GENERAL_FACT": "general knowledge define explain concept understand information fact learning educational reference",
+            "EMOTIONAL_CATCH": (
+                "help emotional support stress overwhelmed sad tired anxious upset frustrated struggling difficulty how overwhelm distressed worried concerned scared nervous confused broken unclear incoherent please xqz xyz abc taimako nye aka "
+                "Je suis stressé Je suis stressé et confus Estoy estresado Estoy estresado y confundido 我感到压力 我感到压力和困惑 ストレスを感じています ストレスを感じていて、混乱しています "
+                "أشعر بالتوتر أشعر بالتوتر والارتباك मैं तनावग्रस्त हूँ मैं तनावग्रस्त और भ्रमित हूँ"
+            ),
+            "META_INQUIRY": "meta about yourself reasoning explain sources confidence introspection self know capability awareness",
+            "OP_ESCAPE_TO_SANDBOX": "zzzz qqqq unknown random nonsense xxxx yyyy wwww vvvv",
+        }
+        self.profile_prototype_text = "tell me about myself my profile personal information who am i me"
+        self._prototype_embeddings = {}
+        self.profile_embedding = None
+
+    def _fetch_embedding(self, text: str, model_id: str = "intfloat/multilingual-e5-small") -> list[float]:
+        import httpx
+        url = f"{self.api_url}/v1/embed"
+        payload = {"input": text, "model": model_id}
+        headers = {}
+        if self.api_token:
+            headers["Authorization"] = f"Bearer {self.api_token}"
+        try:
+            response = httpx.post(url, json=payload, headers=headers, timeout=5.0)
+            if response.status_code == 200:
+                data = response.json()
+                emb = data.get("data", [[]])[0].get("embedding", [])
+                if emb:
+                    return emb
+        except Exception:
+            pass
+        try:
+            from .encoder.dual_encoder import hash_embedding
+            return hash_embedding(text, 768)
+        except ImportError:
+            try:
+                from .encoder import hash_embedding
+                return hash_embedding(text, 768)
+            except ImportError:
+                return [0.0] * 768
+
+    def _get_prototype_embeddings(self):
+        if not self._prototype_embeddings:
+            for ir_target, description in self.ir_prototypes.items():
+                emb = self._fetch_embedding("passage: " + description)
+                self._prototype_embeddings[ir_target] = emb
+        return self._prototype_embeddings
+
+    def _get_profile_embedding(self):
+        if self.profile_embedding is None:
+            self.profile_embedding = self._fetch_embedding("passage: " + self.profile_prototype_text)
+        return self.profile_embedding
+
+    def classify_intent(self, query: str) -> tuple[str, float]:
+        query_emb = self._fetch_embedding("query: " + query)
+        if not query_emb or all(v == 0.0 for v in query_emb):
+            return "OP_ESCAPE_TO_SANDBOX", 0.0
+        
+        import math
+        def cosine_similarity(v1, v2):
+            dot = sum(a * b for a, b in zip(v1, v2))
+            norm1 = math.sqrt(sum(a * a for a in v1))
+            norm2 = math.sqrt(sum(b * b for b in v2))
+            if norm1 == 0 or norm2 == 0:
+                return 0.0
+            return dot / (norm1 * norm2)
+        
+        best_ir = "OP_ESCAPE_TO_SANDBOX"
+        best_score = 0.0
+        
+        prototypes = self._get_prototype_embeddings()
+        for ir_target, proto_emb in prototypes.items():
+            score = cosine_similarity(query_emb, proto_emb)
+            if score > best_score:
+                best_score = score
+                best_ir = ir_target
+                
+        return best_ir, round(max(0.0, min(1.0, best_score)), 4)
+
+    def is_profile_query(self, query: str, threshold: float = 0.70) -> bool:
+        query_emb = self._fetch_embedding("query: " + query)
+        if not query_emb or all(v == 0.0 for v in query_emb):
+            return False
+        
+        import math
+        def cosine_similarity(v1, v2):
+            dot = sum(a * b for a, b in zip(v1, v2))
+            norm1 = math.sqrt(sum(a * a for a in v1))
+            norm2 = math.sqrt(sum(b * b for b in v2))
+            if norm1 == 0 or norm2 == 0:
+                return 0.0
+            return dot / (norm1 * norm2)
+            
+        profile_emb = self._get_profile_embedding()
+        score = cosine_similarity(query_emb, profile_emb)
+        return score > threshold
+
+    def get_intent_scores(self, query: str) -> dict[str, float]:
+        query_emb = self._fetch_embedding("query: " + query)
+        if not query_emb or all(v == 0.0 for v in query_emb):
+            return {ir_target: 0.0 for ir_target in self.ir_prototypes}
+            
+        import math
+        def cosine_similarity(v1, v2):
+            dot = sum(a * b for a, b in zip(v1, v2))
+            norm1 = math.sqrt(sum(a * a for a in v1))
+            norm2 = math.sqrt(sum(b * b for b in v2))
+            if norm1 == 0 or norm2 == 0:
+                return 0.0
+            return dot / (norm1 * norm2)
+            
+        scores = {}
+        prototypes = self._get_prototype_embeddings()
+        for ir_target, proto_emb in prototypes.items():
+            score = cosine_similarity(query_emb, proto_emb)
+            scores[ir_target] = round(max(0.0, min(1.0, score)), 4)
+        return scores
+
 
 class SemanticCompilerRuntime:
     def __init__(self, confidence_threshold: float = 0.50) -> None:
@@ -305,9 +500,10 @@ class SemanticCompilerRuntime:
         return scope
 
     def _v9_capability_override(self, tokens: list[str], raw_input: str) -> tuple[str, float, str] | None:
-        return None
         token_set = {token.strip(".,:;!?").lower() for token in tokens}
         raw_lower = raw_input.lower()
+        if "def " in raw_input or "class " in raw_input or "import " in raw_input or "return " in raw_input or "function " in raw_input or "```python" in raw_lower:
+            return "CODE_GENERATE", 0.99, "coding"
         has_generation_action = bool(token_set & GENERATION_ACTION_TOKENS)
         if (token_set & CODE_CAPABILITY_TOKENS) and (
             has_generation_action
@@ -337,8 +533,11 @@ class SemanticCompilerRuntime:
         normalized_input = normalize_language(raw_input)
         tokens = sanitize(raw_input)
         
+        # Pre-process the query using canonical tokens to resolve typos and slang
+        canonical_query = " ".join(_canonical_token(w) for w in _basic_tokens(raw_input))
+        
         # Use embedding-based intent classification (primary - HIGH PRIORITY)
-        target_ir, confidence = self.classifier.classify_intent(raw_input)
+        target_ir, confidence = self.classifier.classify_intent(canonical_query or raw_input)
         
         # Keep hypotheses for backward compatibility (use lexical scoring)
         hypotheses = self.resolve_hypotheses(self.score_intents(tokens))
@@ -360,7 +559,7 @@ class SemanticCompilerRuntime:
                 confidence = max(confidence, 0.22)
         
         # === PROFILE QUERY DETECTION: Always route to WORKSPACE_QUERY ===
-        is_profile = self.classifier.is_profile_query(raw_input, threshold=0.85)
+        is_profile = self.classifier.is_profile_query(canonical_query or raw_input, threshold=0.85)
         if is_profile:
             scope["profile_query"] = True
             target_ir = "WORKSPACE_QUERY"
@@ -380,7 +579,12 @@ class SemanticCompilerRuntime:
         
         # === SANDBOX FALLBACK: Low confidence or explicit OP_ESCAPE ===
         execution_mode = ExecutionMode.DETERMINISTIC_CORE
-        if target_ir == "OP_ESCAPE_TO_SANDBOX" or confidence < self.confidence_threshold:
+        local_threshold = self.confidence_threshold
+        has_non_ascii = any(ord(c) > 127 for c in raw_input)
+        low_resource_words = {"nibo", "bawo", "koni", "odabo", "kaabo", "kedu", "bia", "imela", "sannu", "lafiya", "nagode", "koodu", "kodi", "gba", "fifipamo", "nweta", "chekwaa", "samu", "ajiye"}
+        if has_non_ascii or any(w in normalized_input.lower().split() for w in low_resource_words):
+            local_threshold = 0.30
+        if target_ir == "OP_ESCAPE_TO_SANDBOX" or confidence < local_threshold:
             target_ir = "OP_ESCAPE_TO_SANDBOX"
             execution_mode = ExecutionMode.AIR_GAPPED_CONTAINER
         

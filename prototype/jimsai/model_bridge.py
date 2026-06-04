@@ -319,4 +319,44 @@ class GroqBridge:
             return False
         if str(style.get("format_hint") or "default") != "default":
             return False
+            
+        # Prevent skipping when the query involves conversational styles, typos, or low-resource languages
+        import re
+        raw_prompt = str(style.get("user_prompt") or "").lower()
+        words = set(raw_prompt.split())
+        
+        # Check for low-resource / conversational keywords
+        conversational_signals = {"hello", "hi", "howdy", "please", "stressed", "help", "thanks", "thank you", "nibo", "bawo", "kedu", "sannu", "lafiya", "nagode"}
+        if words & conversational_signals:
+            return False
+            
+        # Check for mixed digit/letter typos like fi1e, u1oad, javascr1pt
+        if any(re.search(r"[A-Za-z]\d|\d[A-Za-z]", word) for word in words):
+            return False
+
         return obj.confidence >= self.t2_skip_confidence
+
+    async def evaluate_candidate_node(self, goal: str, parent_context: str, candidate_node: str) -> float:
+        if not self.local_first or not self.local_url:
+            return 0.5
+        system = (
+            "You are a bounded logical consistency evaluator for JIMS-AI. Return only JSON. "
+            "Evaluate the consistency and score of the candidate child node relative to the goal and parent context. "
+            "Return a consistency score between 0.0 (completely logically inconsistent or incorrect) and 1.0 (perfectly consistent)."
+        )
+        user = json.dumps({
+            "goal": goal,
+            "parent_context": parent_context,
+            "candidate_node": candidate_node,
+            "schema": {
+                "score": "number between 0.0 and 1.0 representing logical consistency",
+                "reason": "short string explaining the score"
+            }
+        }, sort_keys=True)
+        res = await self._chat_json(self.intent_model, system, user, max_tokens=150)
+        if res and "score" in res:
+            try:
+                return float(res["score"])
+            except (TypeError, ValueError):
+                pass
+        return 0.5

@@ -23,6 +23,7 @@ from .jimsai.models import (
     KaggleTrainingRequest,
     MathSolveRequest,
     MemoryDeleteRequest,
+    MemoryRollbackRequest,
     MemoryUpdateRequest,
     PipelineRequest,
     ReviewActionRequest,
@@ -197,6 +198,11 @@ async def memory_update(request: MemoryUpdateRequest):
 @app.post("/v1/memory/delete", dependencies=[Depends(require_scope("training:write"))])
 async def memory_delete(request: MemoryDeleteRequest):
     return await pipeline.delete_memory(request)
+
+
+@app.post("/v1/memory/rollback", dependencies=[Depends(require_scope("training:write"))])
+async def memory_rollback(request: MemoryRollbackRequest):
+    return await pipeline.rollback_memory(request)
 
 
 @app.get("/v1/memory/stats")
