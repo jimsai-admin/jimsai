@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import logging
 import math
 import re
 from dataclasses import dataclass
@@ -10,6 +11,8 @@ from io import StringIO
 from typing import Any
 
 from ..models import CausalLink, Confidence, Entity, MemorySignature, Modality, Relation, SignatureIntent, StructuredSignature
+
+logger = logging.getLogger(__name__)
 
 
 QUESTION_SUBJECTS = {"what", "why", "how", "when", "where", "who", "which"}

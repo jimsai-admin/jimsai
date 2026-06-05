@@ -9,6 +9,9 @@ from typing import Any
 from urllib.parse import quote
 
 import httpx
+import logging
+
+logger = logging.getLogger(__name__)
 
 from .models import MemorySignature, Modality, ProviderStatus, TrainingPanelItem, TrainingPanelPage
 
