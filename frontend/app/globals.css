@@ -1448,3 +1448,489 @@ select:focus {
     grid-template-columns: 1fr;
   }
 }
+
+
+/* ══════════════════════════════════════════════════════════════════════════
+   Chat UI Redesign — Tasks 26–33
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/* ── Layout root ─────────────────────────────────────────────────────────── */
+.chatRoot {
+  display: flex;
+  flex-direction: row;
+  height: 100dvh;
+  overflow: hidden;
+  background: var(--canvas);
+}
+
+.chatMain {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* ── Sidebar ──────────────────────────────────────────────────────────────── */
+.sidebar {
+  width: 52px;
+  flex-shrink: 0;
+  height: 100dvh;
+  position: sticky;
+  top: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 10px 0 12px;
+  gap: 6px;
+  border-right: 1px solid var(--line);
+  background: var(--surface);
+  z-index: 20;
+}
+
+.sidebarBottom {
+  margin-top: auto;
+}
+
+.avatarCircle {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #13233a, #243b63);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 800;
+  cursor: pointer;
+  border: none;
+  flex-shrink: 0;
+}
+
+.sidePanel {
+  position: absolute;
+  left: 52px;
+  top: 0;
+  width: 280px;
+  height: 100dvh;
+  background: var(--surface);
+  border-right: 1px solid var(--line);
+  box-shadow: var(--shadow);
+  z-index: 19;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.sidePanelHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 14px 10px;
+  border-bottom: 1px solid var(--line);
+  flex-shrink: 0;
+}
+
+.sidePanelHeader h2 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.sidePanelSearch {
+  padding: 10px 10px 4px;
+  flex-shrink: 0;
+}
+
+.threadItem {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 9px 14px;
+  border-bottom: 1px solid var(--line);
+  cursor: pointer;
+  font-size: 13px;
+  text-align: left;
+  background: transparent;
+  color: var(--ink);
+  border-left: none;
+  border-right: none;
+  border-top: none;
+  width: 100%;
+}
+
+.threadItem:hover {
+  background: var(--surface-soft);
+}
+
+.threadItem.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.threadTimestamp {
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* ── Message bubbles ──────────────────────────────────────────────────────── */
+.messageBubbleWrapper {
+  display: flex;
+  flex-direction: column;
+}
+
+.messageBubbleWrapper.user {
+  align-items: flex-end;
+}
+
+.messageBubbleWrapper.assistant {
+  align-items: flex-start;
+}
+
+.messageActions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 4px;
+  padding: 0 2px;
+}
+
+.messageActions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--muted);
+  background: transparent;
+  cursor: pointer;
+}
+
+.messageActions button:hover {
+  border-color: var(--line);
+  background: var(--surface-soft);
+  color: var(--ink);
+}
+
+.insightsButton {
+  background: var(--accent-soft) !important;
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--line)) !important;
+  color: var(--accent) !important;
+}
+
+/* ── Markdown renderer extras ─────────────────────────────────────────────── */
+.inlineCode {
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 1px 5px;
+  background: var(--surface-soft);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 0.91em;
+}
+
+.tableWrapper {
+  overflow-x: auto;
+}
+
+.tableWrapper table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 13px;
+}
+
+.tableWrapper th,
+.tableWrapper td {
+  border: 1px solid var(--line);
+  padding: 7px 11px;
+  text-align: left;
+}
+
+.tableWrapper tr:nth-child(even) {
+  background: var(--surface-soft);
+}
+
+.markdownImage {
+  max-width: 100%;
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+  display: block;
+  margin: 4px 0;
+}
+
+.markdownQuote {
+  border-left: 3px solid var(--accent);
+  padding: 4px 0 4px 12px;
+  color: var(--muted);
+  margin: 0;
+  font-style: italic;
+}
+
+/* ── Composer extras ──────────────────────────────────────────────────────── */
+.hintToggle {
+  min-width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.hintToggle.active {
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 50%, var(--line));
+  color: var(--accent);
+}
+
+.composerModelLabel {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+  padding: 0 4px;
+  white-space: nowrap;
+}
+
+/* ── InsightsDrawer ───────────────────────────────────────────────────────── */
+.insightsDrawer {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 40;
+  height: 50vh;
+  background: var(--surface);
+  border-top: 1px solid var(--line);
+  border-radius: 14px 14px 0 0;
+  box-shadow: 0 -8px 32px rgba(0, 0, 0, 0.18);
+  display: flex;
+  flex-direction: column;
+}
+
+.drawerHandle {
+  width: 40px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--line-strong);
+  margin: 10px auto 0;
+  flex-shrink: 0;
+}
+
+.drawerHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px 0;
+  flex-shrink: 0;
+}
+
+.drawerTabs {
+  display: flex;
+  gap: 4px;
+  overflow-x: auto;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--line);
+  flex-shrink: 0;
+  scrollbar-width: none;
+}
+
+.drawerTabs::-webkit-scrollbar {
+  display: none;
+}
+
+.drawerTab {
+  white-space: nowrap;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 5px 10px;
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--muted);
+  background: var(--surface-soft);
+  cursor: pointer;
+}
+
+.drawerTab.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.drawerBody {
+  flex: 1;
+  overflow-y: auto;
+  padding: 14px 16px 24px;
+}
+
+.drawerBackdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 39;
+  background: rgba(0, 0, 0, 0.38);
+}
+
+/* ── Mobile top bar ───────────────────────────────────────────────────────── */
+.mobileTopBar {
+  display: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 14px;
+  height: 52px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+  flex-shrink: 0;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+.mobileTopBarTitle {
+  flex: 1;
+  font-size: 14px;
+  font-weight: 650;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: center;
+}
+
+.mobileNavBackdrop {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 49;
+  background: rgba(0, 0, 0, 0.42);
+}
+
+.mobileNavDrawer {
+  display: none;
+  position: fixed;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: min(80vw, 320px);
+  z-index: 50;
+  background: var(--surface);
+  border-right: 1px solid var(--line);
+  box-shadow: var(--shadow);
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.mobileNavHeader {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line);
+  flex-shrink: 0;
+}
+
+.mobileNavItems {
+  display: flex;
+  flex-direction: column;
+  padding: 8px 0;
+  flex: 1;
+  overflow-y: auto;
+}
+
+.mobileNavItem {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 13px 16px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--ink);
+  background: transparent;
+  border: none;
+  text-align: left;
+  cursor: pointer;
+  width: 100%;
+}
+
+.mobileNavItem:hover {
+  background: var(--surface-soft);
+}
+
+.mobileNavItem.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.mobileNavProfile {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  border-top: 1px solid var(--line);
+  flex-shrink: 0;
+}
+
+/* ── Responsive ───────────────────────────────────────────────────────────── */
+@media (max-width: 767px) {
+  /* Hide desktop sidebar */
+  .sidebar,
+  .sidePanel {
+    display: none !important;
+  }
+
+  /* Show mobile top bar */
+  .mobileTopBar {
+    display: flex;
+  }
+
+  /* Show mobile nav backdrop and drawer when open */
+  .mobileNavBackdrop,
+  .mobileNavDrawer {
+    display: flex;
+  }
+
+  /* Message bubbles full width on mobile */
+  .message {
+    max-width: 100%;
+    width: auto;
+  }
+
+  /* InsightsDrawer taller on mobile */
+  .insightsDrawer {
+    height: 80vh;
+  }
+
+  /* Composer full-width on mobile */
+  .composer {
+    width: calc(100% - 16px);
+    margin-bottom: 8px;
+  }
+
+  /* Auth card single column on mobile */
+  .authCard {
+    grid-template-columns: 1fr;
+    padding: 18px;
+  }
+
+  /* Adjust messages padding */
+  .messages {
+    padding-left: 12px;
+    padding-right: 12px;
+    padding-top: 14px;
+  }
+
+  /* chatMain needs padding-bottom for sticky composer */
+  .chatMain {
+    padding-bottom: 0;
+  }
+}
+
+@media (max-width: 420px) {
+  .sendButton span {
+    display: none;
+  }
+}

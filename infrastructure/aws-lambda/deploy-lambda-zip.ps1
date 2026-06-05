@@ -179,6 +179,9 @@ $envVars["JIMS_ALLOW_EXTERNAL_GROQ"] = "false"
 $envVars["JIMS_T1_SKIP_CONFIDENCE"] = "0.60"
 $envVars["JIMS_T2_SKIP_CONFIDENCE"] = "0.95"
 $envVars["JIMS_ADAPTIVE_TRANSFORMER_THINNING"] = "true"
+# Prompt robustness (Tasks 25)
+$envVars["JIMS_TYPO_CORRECTION_ENABLED"] = "true"
+$envVars["JIMS_CAUSAL_TRAVERSAL_DEPTH"] = "4"
 # Resolution learning: only write back verified high-quality results
 $envVars["JIMS_ENABLE_RESOLUTION_LEARNING"] = "true"
 $envVars["JIMS_RESOLUTION_LEARNING_MIN_CONFIDENCE"] = "0.90"

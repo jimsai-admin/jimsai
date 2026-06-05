@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 from typing import Any
 
@@ -122,6 +123,29 @@ class TransformerIntentInterface:
         local_overlay = await self.bridge.infer_intent(request.query, deterministic_ir.model_dump(mode="json"))
         used_local_model = False
         ir = deterministic_ir
+
+        # Typo-correction pass: if embedding confidence is low and Qwen is available,
+        # rewrite the query and re-classify. Only runs when JIMS_TYPO_CORRECTION_ENABLED=true.
+        typo_correction_enabled = (
+            os.getenv("JIMS_TYPO_CORRECTION_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
+        )
+        if (
+            typo_correction_enabled
+            and self.bridge.qwen_enabled
+            and 0.20 <= deterministic_ir.confidence < 0.50
+            and deterministic_ir.target_ir == "OP_ESCAPE_TO_SANDBOX"
+            and all(ord(c) < 128 for c in request.query)  # ASCII only — not low-resource language
+        ):
+            clean_query = await self.bridge.rewrite_for_clarity(request.query)
+            if clean_query and clean_query.strip().lower() != request.query.strip().lower():
+                rewritten_ir = self.compiler.compile(clean_query, namespace="TECHNICAL", session=session)
+                if rewritten_ir.confidence > deterministic_ir.confidence:
+                    # Use rewritten classification but keep original query text visible
+                    deterministic_ir = rewritten_ir.model_copy(
+                        update={"scope_constraints": {**rewritten_ir.scope_constraints, "typo_corrected_query": clean_query}}
+                    )
+                    ir = deterministic_ir
+
         if local_overlay:
             candidate = self._overlay_to_ir(deterministic_ir, local_overlay)
             if candidate:
@@ -605,6 +629,15 @@ class LatentWorldModelLayer:
         question_intent = ir.scope_constraints.get("question_intent", {})
         graph_view: dict[str, Any] = {}
         activations: list[WorldModelActivation] = []
+
+        # Configurable causal traversal depth — increase when query asks for full chain
+        base_depth = min(max(int(os.getenv("JIMS_CAUSAL_TRAVERSAL_DEPTH", "4") or "4"), 1), 8)
+        query_lower = ir.scope_constraints.get("raw_length", 0) and " ".join(ir.tokens).lower()
+        deep_chain_requested = isinstance(query_lower, str) and any(
+            kw in query_lower for kw in ("trace all", "full chain", "complete path", "all causes", "all effects")
+        )
+        causal_depth = min(base_depth + 2, 8) if deep_chain_requested else base_depth
+
         if decision.run_world_model:
             for entity in entities[:3]:
                 graph_view[entity] = self.graph.traverse(entity, depth=3)
@@ -613,9 +646,9 @@ class LatentWorldModelLayer:
                 direction = str(question_intent.get("direction") or "outgoing")
                 for entity in entities[:3]:
                     edges = (
-                        self.graph.incoming_edges(entity, predicates={"causes"}, depth=4)
+                        self.graph.incoming_edges(entity, predicates={"causes"}, depth=causal_depth)
                         if direction == "incoming"
-                        else self.graph.outgoing_edges(entity, predicates={"causes"}, depth=4)
+                        else self.graph.outgoing_edges(entity, predicates={"causes"}, depth=causal_depth)
                     )
                     for edge in edges:
                         rule = f"{edge['source']} causes {edge['target']}"

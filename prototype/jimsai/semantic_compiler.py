@@ -3,7 +3,6 @@ from __future__ import annotations
 import math
 import re
 import unicodedata
-from collections import Counter
 from typing import Any
 
 from .models import ExecutionMode, Hypothesis, IntentDomain, SemanticIR
@@ -52,16 +51,7 @@ PUBLIC_MEMORY_QUERY_TOKENS = {
     "assumptions", "technology", "technologies", "tool", "tools", "used",
 }
 
-# Token sets no longer used for intent classification (moved to embeddings)
-# Kept for reference only
-STOP_WORDS = {
-    "a", "an", "the", "yo", "please", "just", "over", "that", "we", "back", "in", "for",
-    "to", "of", "and", "or", "on", "with", "can", "you", "i", "me", "my", "is", "are",
-    "do", "does", "did", "would", "become", "what", "why", "how", "when", "where", "who", "which",
-    "should", "someone",
-}
 QUESTION_TOKENS = {"what", "why", "how", "when", "where", "who", "which"}
-CONTROL_TOKENS = {"if"}
 IMPACT_TOKENS = {
     "affect", "impact", "chang", "change", "happen", "break", "depend", "downstream",
     "upstream", "cause", "caus", "late", "delay", "fail", "failure", "slowdown", "occur",
@@ -75,15 +65,6 @@ INTENT_DOMAINS: dict[str, IntentDomain] = {
 }
 
 TOKEN_RE = re.compile(r"[\w+\-.#]+", re.UNICODE)
-
-
-def _stem(token: str) -> str:
-    """Return token unchanged - no language-specific stemming.
-    
-    Removed English-specific suffix stripping (ing, ed, s, etc.)
-    to support all languages universally.
-    """
-    return token
 
 
 def normalize_language(raw: str) -> str:
@@ -159,7 +140,7 @@ def canonical_terms(raw: str, keep_stop: bool = False) -> list[str]:
     return [
         token
         for token in (_canonical_token(token) for token in _basic_tokens(raw))
-        if token and (keep_stop or token not in STOP_WORDS)
+        if token
     ]
 
 
@@ -211,28 +192,7 @@ def _canonical_token(token: str) -> str:
     return token
 
 
-def _semantic_vocabulary() -> set[str]:
-    """Return empty set - vocabulary is now learned from embeddings.
-    
-    Kept for backward compatibility with existing code.
-    """
-    return set()
 
-
-
-def _vectorize(tokens: list[str]) -> Counter[str]:
-    return Counter(tokens)
-
-
-def _cosine(left: Counter[str], right: Counter[str]) -> float:
-    if not left or not right:
-        return 0.0
-    dot = sum(left[t] * right.get(t, 0) for t in left)
-    lnorm = math.sqrt(sum(v * v for v in left.values()))
-    rnorm = math.sqrt(sum(v * v for v in right.values()))
-    if lnorm == 0 or rnorm == 0:
-        return 0.0
-    return dot / (lnorm * rnorm)
 
 
 class _FallbackClassifier:
@@ -389,20 +349,6 @@ class SemanticCompilerRuntime:
     def __init__(self, confidence_threshold: float = 0.50) -> None:
         self.confidence_threshold = confidence_threshold
         self._classifier: Any = None  # Lazy initialization
-        # Template vectors kept for backward compatibility in score_intents
-        # Maps intent names to token frequency vectors for lexical scoring
-        self.template_vectors: dict[str, Counter[str]] = {
-            "FETCH_DOCUMENT": _vectorize(["document", "file", "download", "upload", "attachment"]),
-            "SYSTEM_DIAGNOSTIC": _vectorize(["error", "bug", "crash", "failure", "log", "issue"]),
-            "WORKSPACE_QUERY": _vectorize(["query", "workspace", "information", "analytics"]),
-            "CODE_GENERATE": _vectorize(["code", "function", "api", "python", "javascript"]),
-            "RUN_CANVAS": _vectorize(["analyze", "codebase", "synthesis", "full"]),
-            "RUN_INVENTION": _vectorize(["invent", "design", "create", "novel", "architecture"]),
-            "GENERAL_FACT": _vectorize(["explain", "define", "what", "concept"]),
-            "EMOTIONAL_CATCH": _vectorize(["help", "support", "stressed", "overwhelmed"]),
-            "META_INQUIRY": _vectorize(["meta", "system", "about", "yourself"]),
-            "OP_ESCAPE_TO_SANDBOX": _vectorize(["unknown", "sandbox", "escape"]),
-        }
 
     @property
     def classifier(self) -> Any:
@@ -413,31 +359,6 @@ class SemanticCompilerRuntime:
             except (ImportError, Exception):
                 self._classifier = _FallbackClassifier()
         return self._classifier
-
-    def score_intents(self, tokens: list[str]) -> list[Hypothesis]:
-        """Score intents using lexical method (kept for backward compatibility).
-        
-        The compile() method now uses embedding-based classification.
-        This is kept for tests and legacy code.
-        """
-        user_vec = _vectorize(tokens)
-        hypotheses = [
-            Hypothesis(target_ir=intent, score=round(_cosine(user_vec, vec), 4))
-            for intent, vec in self.template_vectors.items()
-        ]
-        hypotheses.sort(key=lambda h: (-h.score, h.target_ir))
-        return hypotheses
-
-    def resolve_hypotheses(self, hypotheses: list[Hypothesis]) -> list[Hypothesis]:
-        positive = [h for h in hypotheses if h.score > 0.0]
-        if not positive:
-            return [Hypothesis(target_ir="OP_ESCAPE_TO_SANDBOX", score=0.0, role="primary", reason="No ontology match")]
-        roles = ["primary", "overlay", "secondary"]
-        resolved: list[Hypothesis] = []
-        for idx, hyp in enumerate(positive[:3]):
-            role = roles[idx] if idx < len(roles) else "candidate"
-            resolved.append(hyp.model_copy(update={"role": role, "reason": "deterministic lexical score"}))
-        return resolved
 
     def _scope_from_tokens(self, tokens: list[str], raw_input: str) -> dict[str, Any]:
         scope: dict[str, Any] = {"raw_length": len(raw_input), "token_count": len(tokens)}
@@ -539,8 +460,8 @@ class SemanticCompilerRuntime:
         # Use embedding-based intent classification (primary - HIGH PRIORITY)
         target_ir, confidence = self.classifier.classify_intent(canonical_query or raw_input)
         
-        # Keep hypotheses for backward compatibility (use lexical scoring)
-        hypotheses = self.resolve_hypotheses(self.score_intents(tokens))
+        # Keep hypotheses for backward compatibility (empty list — lexical scoring removed)
+        hypotheses: list = []
         
         scope = self._scope_from_tokens(tokens, normalized_input)
         raw_lower = normalized_input.lower()
@@ -585,8 +506,22 @@ class SemanticCompilerRuntime:
         if has_non_ascii or any(w in normalized_input.lower().split() for w in low_resource_words):
             local_threshold = 0.30
         if target_ir == "OP_ESCAPE_TO_SANDBOX" or confidence < local_threshold:
-            target_ir = "OP_ESCAPE_TO_SANDBOX"
-            execution_mode = ExecutionMode.AIR_GAPPED_CONTAINER
+            # Fix 3: Context-less follow-up carry-forward — don't sandbox when session has active intent
+            # This handles "what about the error?" type queries with no clear standalone meaning
+            active_session_intent = session.get("ACTIVE_INTENT")
+            if (
+                active_session_intent
+                and active_session_intent != "OP_ESCAPE_TO_SANDBOX"
+                and confidence >= 0.20  # Only rescue if some signal present (not pure noise)
+                and not has_non_ascii  # Don't override low-resource language threshold reduction
+            ):
+                target_ir = active_session_intent
+                confidence = max(confidence, 0.35)
+                scope["session_intent_inherited"] = True
+                execution_mode = ExecutionMode.DETERMINISTIC_CORE
+            else:
+                target_ir = "OP_ESCAPE_TO_SANDBOX"
+                execution_mode = ExecutionMode.AIR_GAPPED_CONTAINER
         
         context_inherited = False
         context_boosted = False

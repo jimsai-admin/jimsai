@@ -20,6 +20,33 @@ class QwenBridge:
     into candidate JSON, or renders an already-verified cognitive object into natural
     language. The deterministic runtime remains authoritative; the bridge only
     activates when the local Qwen service is available and reachable.
+
+    ── Model-swap env var matrix ───────────────────────────────────────────────
+
+    T1 model (intent/routing/math extraction — smaller/faster, e.g. Qwen3-1.7B):
+      JIMS_QWEN_MODEL_REPO   — HuggingFace repo  (e.g. "ggml-org/Qwen3-1.7B-GGUF")
+      JIMS_QWEN_MODEL_FILE   — GGUF filename     (e.g. "Qwen3-1.7B-Q4_K_M.gguf")
+      JIMS_LOCAL_INFERENCE_MODEL / JIMS_QWEN_MODEL — model name tag
+      JIMS_QWEN_CONTEXT      — context window    (default 4096)
+      JIMS_QWEN_GPU_LAYERS   — GPU layers to offload (default 0 = CPU only)
+
+    T2 model (render/canvas/invention — larger, e.g. Qwen3-4B):
+      JIMS_RENDER_MODEL_REPO — HuggingFace repo  (e.g. "Qwen/Qwen3-4B-GGUF")
+      JIMS_RENDER_MODEL_FILE — GGUF filename     (e.g. "Qwen3-4B-Q4_K_M.gguf")
+      JIMS_LOCAL_RENDER_MODEL / JIMS_RENDER_MODEL_NAME — model name tag
+      JIMS_RENDER_CONTEXT    — context window    (default 8192)
+      JIMS_RENDER_GPU_LAYERS — GPU layers to offload (default 0 = CPU only)
+
+    Any OpenAI-compatible endpoint (Ollama, vLLM, llama.cpp server, etc.):
+      JIMS_LOCAL_INFERENCE_URL      — base URL
+      JIMS_LOCAL_INFERENCE_API_KEY  — Bearer token
+      JIMS_LOCAL_INFERENCE_CHAT_PATH — T1 path (default /v1/chat/completions)
+      JIMS_LOCAL_RENDER_CHAT_PATH   — T2 path (default /v1/chat/render)
+
+    GPU scaling (HF Space / bare metal):
+      JIMS_QWEN_GPU_LAYERS   — integer, passed as n_gpu_layers to llama.cpp
+      JIMS_RENDER_GPU_LAYERS — same for T2 render model
+    ────────────────────────────────────────────────────────────────────────────
     """
 
     def __init__(self) -> None:
@@ -78,6 +105,39 @@ class QwenBridge:
     def available(self) -> bool:
         """Alias for qwen_enabled — kept for backward compatibility."""
         return self.qwen_enabled
+
+    def describe(self) -> dict[str, str]:
+        """Return current model configuration for dashboard / observability."""
+        return {
+            "t1_model": self.local_model,
+            "t2_model": self.local_render_model,
+            "t1_endpoint": f"{self.local_url}{self.local_chat_path}",
+            "t2_endpoint": f"{self.local_url}{self.local_render_path}",
+            "endpoint": self.local_url,
+            "qwen_enabled": str(self.qwen_enabled),
+        }
+
+    async def rewrite_for_clarity(self, raw_input: str) -> str | None:
+        """Rewrite a chaotic/typo-heavy query into clear form without changing meaning.
+
+        Used by SemanticCompilerRuntime when embedding confidence is low (0.20–0.49)
+        and JIMS_TYPO_CORRECTION_ENABLED=true. Only activates when qwen_enabled.
+
+        Returns: cleaned query string, or None if Qwen is unavailable or no change needed.
+        """
+        if not self.qwen_enabled:
+            return None
+        system = (
+            "You are a text normalizer for JimsAI. "
+            "Fix spelling mistakes and typos only. "
+            "Do NOT rephrase, translate, or change the meaning. "
+            "Return JSON only: {\"clean\": \"corrected text here\"}"
+        )
+        data = await self._chat_json(self.local_model, system, raw_input[:512], max_tokens=120)
+        if not data:
+            return None
+        clean = str(data.get("clean") or "").strip()
+        return clean if clean and clean.lower() != raw_input.strip().lower() else None
 
     # ── Low-level HTTP ────────────────────────────────────────────────────────
 

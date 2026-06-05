@@ -22,11 +22,6 @@ class ExecutionMode(str, Enum):
 class Modality(str, Enum):
     TEXT = "text"
     CODE = "code"
-
-
-class Modality(str, Enum):
-    TEXT = "text"
-    CODE = "code"
     IMAGE = "image"
     AUDIO = "audio"
     VIDEO = "video"

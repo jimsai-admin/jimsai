@@ -496,7 +496,8 @@ class CapabilityAdapterRegistry:
 
     def readiness(self) -> dict[str, bool | str]:
         return {
-            "web_search_available": bool(os.getenv("JIMS_WEB_SEARCH_API_KEY") or os.getenv("BRAVE_SEARCH_API_KEY") or os.getenv("SERPAPI_API_KEY")),
+            "web_search_available": True,  # DuckDuckGo needs no API key — always available as fallback
+            "web_search_provider": "brave" if os.getenv("BRAVE_SEARCH_API_KEY") else ("custom" if os.getenv("JIMS_WEB_SEARCH_API_KEY") else "duckduckgo"),
             "code_docs_available": bool(os.getenv("JIMS_CODE_DOCS_PROVIDER")),
             "math_solver_available": True,
             "math_solver_detail": "internal_symbolic_solver",

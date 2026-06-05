@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import re
 from typing import Any
@@ -77,6 +78,8 @@ from .simulation import BoundedSimulationEngine
 from .constraints import ConstraintValidator
 from .provider_adapters import ProductionRuntime
 from .training_policy import AutoTrainingPolicy
+
+logger = logging.getLogger(__name__)
 
 
 TRAINING_PANEL_IDS = {
@@ -317,7 +320,7 @@ class JimsAIPipeline:
         )
 
         session = self._load_session(request.user_id, request.thread_id)
-        print(f"DEBUG LOADED SESSION: keys={list(session.keys())} content={session}")
+        logger.debug("Loaded session: keys=%s", list(session.keys()))
         
         # Context Decoupling / topic drift check
         from datetime import datetime, timezone, timedelta
@@ -335,7 +338,7 @@ class JimsAIPipeline:
                 pass
         if not clear_context and session.get("ACTIVE_OBJECT"):
             active_obj = session["ACTIVE_OBJECT"]
-            print(f"DEBUG DECOUPLING: active_obj={active_obj} query={request.query}")
+            logger.debug("Context decoupling check: active_obj=%s query=%r", active_obj, request.query)
             try:
                 def get_pipeline_emb(text: str) -> list[float]:
                     try:
@@ -650,6 +653,12 @@ class JimsAIPipeline:
     ) -> list[CapabilityExecutionResult]:
         executed: list[CapabilityExecutionResult] = []
         for result in capability_results:
+            # ── WORLD_KNOWLEDGE: DuckDuckGo web search ───────────────────
+            if result.kind == CapabilityKind.WORLD_KNOWLEDGE and result.status == "available":
+                web_result = await self._execute_web_search(request, result)
+                executed.append(web_result)
+                continue
+
             if result.kind != CapabilityKind.MATH_SCIENCE or result.adapter != "internal_symbolic_solver":
                 executed.append(result)
                 continue
@@ -710,6 +719,58 @@ class JimsAIPipeline:
                 )
             )
         return executed
+
+    async def _execute_web_search(
+        self,
+        request: PipelineRequest,
+        result: CapabilityExecutionResult,
+    ) -> CapabilityExecutionResult:
+        """Execute DuckDuckGo web search and ingest top results as memory signatures."""
+        from .web_search import WebAugmentedRetrieval
+        try:
+            searcher = WebAugmentedRetrieval(workspace_id=request.workspace_id or "global", max_results=5)
+            sources = await searcher.search(request.query)
+            if not sources:
+                return result.model_copy(
+                    update={"status": "unavailable", "summary": "Web search returned no results"}
+                )
+            ingested_ids: list[str] = []
+            for source in sources[:3]:
+                content = f"{source.title}: {source.snippet}" if source.snippet else source.title
+                sig = self.encoder.encode(
+                    content,
+                    modality=Modality.TEXT,
+                    intent_type="web_knowledge",
+                    provenance=f"web:{source.url}",
+                    workspace_id=request.workspace_id,
+                    user_id=request.user_id,
+                )
+                sig.metadata["web_source_url"] = source.url
+                sig.metadata["web_source_title"] = source.title
+                sig.metadata["fetched_at"] = source.fetched_at
+                sig.metadata["is_live_web"] = True
+                sig.confidence.score = round(min(source.confidence, 0.82), 4)
+                self.memory.insert(sig)
+                self.graph.add_signature(sig)
+                ingested_ids.append(sig.id)
+            return result.model_copy(
+                update={
+                    "status": "available",
+                    "confidence": 0.80,
+                    "summary": f"Web search: {len(sources)} sources found, {len(ingested_ids)} ingested into memory",
+                    "provenance": ingested_ids,
+                    "data": {
+                        **result.data,
+                        "executed": True,
+                        "web_sources": [s.to_signature() for s in sources[:3]],
+                    },
+                }
+            )
+        except Exception as exc:
+            logger.warning("Web search failed: %s", exc)
+            return result.model_copy(
+                update={"status": "unavailable", "summary": f"Web search failed: {exc}"}
+            )
 
     async def _extract_solver_expression_with_qwen(self, query: str, context: dict[str, Any]) -> tuple[str, str | None]:
         data = await self.bridge.extract_math_expression(query, context)

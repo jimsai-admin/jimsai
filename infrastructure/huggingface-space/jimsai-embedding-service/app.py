@@ -33,6 +33,7 @@ QWEN_MAX_TOKENS = max(int(os.environ.get("JIMS_QWEN_MAX_TOKENS", "256") or "256"
 QWEN_THREADS = max(int(os.environ.get("JIMS_QWEN_THREADS", "2") or "2"), 1)
 QWEN_BATCH = max(int(os.environ.get("JIMS_QWEN_BATCH", "64") or "64"), 1)
 QWEN_CHAT_FORMAT = os.environ.get("JIMS_QWEN_CHAT_FORMAT", "chatml")
+QWEN_GPU_LAYERS = int(os.environ.get("JIMS_QWEN_GPU_LAYERS", "0") or "0")
 RENDER_MODEL_REPO = os.environ.get("JIMS_RENDER_MODEL_REPO", "Qwen/Qwen3-4B-GGUF")
 RENDER_MODEL_FILE = os.environ.get("JIMS_RENDER_MODEL_FILE", "Qwen3-4B-Q4_K_M.gguf")
 RENDER_MODEL_NAME = os.environ.get("JIMS_RENDER_MODEL_NAME", "qwen3-4b-instruct")
@@ -40,6 +41,7 @@ RENDER_CONTEXT = max(int(os.environ.get("JIMS_RENDER_CONTEXT", "8192") or "8192"
 RENDER_MAX_TOKENS = max(int(os.environ.get("JIMS_RENDER_MAX_TOKENS", "1200") or "1200"), 16)
 RENDER_BATCH = max(int(os.environ.get("JIMS_RENDER_BATCH", "128") or "128"), 1)
 RENDER_THREADS = max(int(os.environ.get("JIMS_RENDER_THREADS", "2") or "2"), 1)
+RENDER_GPU_LAYERS = int(os.environ.get("JIMS_RENDER_GPU_LAYERS", "0") or "0")
 ROUTER_MODEL_NAME = os.environ.get("JIMS_ROUTER_MODEL", "MoritzLaurer/mDeBERTa-v3-base-mnli-xnli")
 HF_ACCESS_TOKEN = (
     os.environ.get("HF_TOKEN")
@@ -220,7 +222,7 @@ def load_qwen():
             n_ctx=QWEN_CONTEXT,
             n_threads=QWEN_THREADS,
             n_batch=QWEN_BATCH,
-            n_gpu_layers=0,
+            n_gpu_layers=QWEN_GPU_LAYERS,
             chat_format=QWEN_CHAT_FORMAT,
             verbose=False,
         )
@@ -252,7 +254,7 @@ def load_render_model():
             n_ctx=RENDER_CONTEXT,
             n_threads=RENDER_THREADS,
             n_batch=RENDER_BATCH,
-            n_gpu_layers=0,
+            n_gpu_layers=RENDER_GPU_LAYERS,
             chat_format="chatml",
             verbose=False,
         )
@@ -662,6 +664,31 @@ def current_artifact() -> dict[str, Any]:
         "render_context": RENDER_CONTEXT,
         "render_loaded": render_model is not None,
         "render_error": render_error,
+    }
+
+
+@app.get("/v1/model/config")
+def model_config() -> dict[str, Any]:
+    """Return current model configuration — no auth required (public metadata)."""
+    return {
+        "t1_model": {
+            "repo": QWEN_REPO_ID,
+            "file": QWEN_FILENAME,
+            "name": QWEN_MODEL_NAME,
+            "loaded": qwen_model is not None,
+            "context": QWEN_CONTEXT,
+            "gpu_layers": QWEN_GPU_LAYERS,
+        },
+        "t2_model": {
+            "repo": RENDER_MODEL_REPO,
+            "file": RENDER_MODEL_FILE,
+            "name": RENDER_MODEL_NAME,
+            "loaded": render_model is not None,
+            "context": RENDER_CONTEXT,
+            "gpu_layers": RENDER_GPU_LAYERS,
+        },
+        "embedding_model": MODEL_NAME,
+        "router_model": ROUTER_MODEL_NAME,
     }
 
 

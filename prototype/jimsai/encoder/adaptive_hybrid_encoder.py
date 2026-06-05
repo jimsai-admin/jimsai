@@ -258,10 +258,24 @@ class AdaptiveHybridEncoder:
         url = f"{self.api_url}/v1/embed"
         payload = {"input": text, "model": model_id}
         try:
-            response = httpx.post(url, json=payload, headers=headers, timeout=5.0)
+            timeout = float(os.environ.get("JIMS_MULTIMODAL_ENCODER_TIMEOUT", "30"))
+            response = httpx.post(url, json=payload, headers=headers, timeout=timeout)
             if response.status_code == 200:
                 data = response.json()
-                return data.get("data", [[]])[0].get("embedding", [])
+                # Try each known HF Space response shape in priority order
+                vec = None
+                if isinstance(data.get("embeddings"), list) and data["embeddings"]:
+                    first = data["embeddings"][0]
+                    vec = first if isinstance(first, list) else None
+                if vec is None and isinstance(data.get("data"), list) and data["data"]:
+                    first = data["data"][0]
+                    vec = first.get("embedding") if isinstance(first, dict) else (first if isinstance(first, list) else None)
+                if vec is None and isinstance(data.get("vectors"), list) and data["vectors"]:
+                    first = data["vectors"][0]
+                    vec = first if isinstance(first, list) else None
+                if vec is None and isinstance(data.get("embedding"), list):
+                    vec = data["embedding"]
+                return vec if isinstance(vec, list) else []
         except Exception:
             pass
         return []

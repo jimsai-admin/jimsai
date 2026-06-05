@@ -64,101 +64,248 @@ class DeterministicSandbox:
 
 
 class SymbolicMathSolver:
-    def solve(self, expression: str, solve_for: str | None = None) -> dict[str, str]:
-        # Normalize: strip trailing bare "=" and inject explicit multiplication
+    # Physics/chemistry constants available in expressions
+    _PHYSICS_NAMESPACE: dict = {
+        "g": 9.80665,    # gravitational acceleration m/s²
+        "c": 299792458,  # speed of light m/s
+        "h": 6.62607015e-34,  # Planck constant J·s
+        "k_B": 1.380649e-23,  # Boltzmann constant J/K
+        "R": 8.314462618,  # gas constant J/(mol·K)
+        "N_A": 6.02214076e23,  # Avogadro constant mol⁻¹
+        "e": 1.602176634e-19,  # elementary charge C
+        "pi": 3.14159265358979,
+    }
+
+    # Molar masses of common elements (g/mol)
+    _ELEMENT_MASSES: dict = {
+        "H": 1.008, "He": 4.003, "Li": 6.941, "Be": 9.012, "B": 10.811,
+        "C": 12.011, "N": 14.007, "O": 15.999, "F": 18.998, "Ne": 20.180,
+        "Na": 22.990, "Mg": 24.305, "Al": 26.982, "Si": 28.086, "P": 30.974,
+        "S": 32.065, "Cl": 35.453, "K": 39.098, "Ca": 40.078, "Fe": 55.845,
+        "Cu": 63.546, "Zn": 65.38, "Br": 79.904, "Ag": 107.868, "I": 126.904,
+        "Au": 196.967, "Pb": 207.2,
+    }
+
+    def solve(self, expression: str, solve_for: str | None = None, show_steps: bool = True) -> dict:
+        """Solve a mathematical expression and return result with step-by-step breakdown.
+
+        Returns:
+            {
+                "status": "solved" | "failed",
+                "result": str,
+                "method": str,
+                "steps": list[str],  # empty list when show_steps=False or steps unavailable
+            }
+        """
         text = expression.strip().rstrip("=").strip()
         if not text:
-            return {"status": "failed", "result": "empty expression", "method": "sympy_solve"}
-        # Convert implicit multiplication: 3x → 3*x, x3 → x*3
+            return {"status": "failed", "result": "empty expression", "method": "sympy_solve", "steps": []}
+
+        # ── Molar mass query ────────────────────────────────────────────────
+        molar_match = re.match(r"(?:molar\s+mass\s+of\s+|molar\s+mass\s*:?\s*)([A-Za-z0-9]+)", text, re.IGNORECASE)
+        if molar_match:
+            return self._compute_molar_mass(molar_match.group(1))
+
+        # Normalize implicit multiplication before anything else
         text = re.sub(r"(?<=\d)([a-zA-Z])", r"*\1", text)
         text = re.sub(r"([a-zA-Z])(?=\d)", r"\1*", text)
+
         try:
             import sympy as sp
             from sympy.parsing.sympy_parser import (
-                parse_expr,
-                standard_transformations,
-                implicit_multiplication_application,
+                parse_expr, standard_transformations, implicit_multiplication_application,
             )
             transformations = standard_transformations + (implicit_multiplication_application,)
 
             def safe_parse(s: str):
-                return parse_expr(s.strip() or "0", transformations=transformations)
+                # Inject physics constants into namespace
+                return parse_expr(s.strip() or "0", transformations=transformations,
+                                  local_dict={k: sp.Float(v) for k, v in self._PHYSICS_NAMESPACE.items()})
 
         except ModuleNotFoundError:
             return self._solve_without_sympy(text, solve_for)
 
+        # ── Calculus: derivatives ────────────────────────────────────────────
+        calc_kws = ("derivative", "differentiate", "d/dx", "d/dy", "d/dz", "∂", "diff(")
+        if any(kw in text.lower() for kw in calc_kws):
+            return self._solve_calculus(text, "diff", safe_parse)
+
+        # ── Calculus: integrals ──────────────────────────────────────────────
+        int_kws = ("integrate", "integral", "∫", "antiderivative")
+        if any(kw in text.lower() for kw in int_kws):
+            return self._solve_calculus(text, "integrate", safe_parse)
+
+        # ── System of equations: comma or newline separated ──────────────────
+        equations = [e.strip() for e in re.split(r"[,\n;]", text) if "=" in e.strip()]
+        if len(equations) >= 2:
+            return self._solve_system(equations, safe_parse)
+
         try:
             if "=" in text:
                 left, right = text.split("=", 1)
-                right = right.strip() or "0"  # bare LHS= → treat as LHS=0
+                right = right.strip() or "0"
                 lhs = safe_parse(left)
                 rhs = safe_parse(right)
                 free = lhs.free_symbols | rhs.free_symbols
                 if not free:
-                    # No variables — evaluate LHS - RHS numerically
                     val = sp.simplify(lhs - rhs)
-                    return {"status": "solved", "result": str(lhs), "method": "sympy_eval"}
+                    return {"status": "solved", "result": str(sp.simplify(lhs)), "method": "sympy_eval", "steps": [f"Evaluated: {text}"]}
                 symbol = sp.Symbol(solve_for) if solve_for else sorted(free, key=str)[0]
                 equation = sp.Eq(lhs, rhs)
                 solutions = sp.solve(equation, symbol)
-                return {"status": "solved", "result": str(solutions), "method": "sympy_solve"}
+                steps = []
+                if show_steps:
+                    steps = [
+                        f"Original equation: {left.strip()} = {right.strip()}",
+                        f"Solving for {symbol}",
+                        f"Solutions: {symbol} = {solutions}",
+                    ]
+                    # Try to show algebraic steps for simple linear equations
+                    try:
+                        factored = sp.factor(lhs - rhs)
+                        if factored != lhs - rhs:
+                            steps.insert(2, f"Factored form: {factored} = 0")
+                    except Exception:
+                        pass
+                return {"status": "solved", "result": str(solutions), "method": "sympy_solve", "steps": steps}
             else:
-                value = sp.simplify(safe_parse(text))
-                return {"status": "solved", "result": str(value), "method": "sympy_simplify"}
+                expr = safe_parse(text)
+                value = sp.simplify(expr)
+                steps = []
+                if show_steps:
+                    steps = [f"Expression: {text}", f"Simplified: {value}"]
+                    # Show numeric approximation if symbolic result is complex
+                    try:
+                        approx = float(value.evalf())
+                        if str(approx) != str(value):
+                            steps.append(f"Numeric approximation: ≈ {round(approx, 6)}")
+                    except Exception:
+                        pass
+                return {"status": "solved", "result": str(value), "method": "sympy_simplify", "steps": steps}
         except Exception:
-            # sympy failed — fall back to the regex-based linear solver
             return self._solve_without_sympy(text, solve_for)
 
-    def _solve_without_sympy(self, expression: str, solve_for: str | None = None) -> dict[str, str]:
+    def _solve_calculus(self, text: str, operation: str, safe_parse) -> dict:
+        """Handle derivative and integral computation."""
+        import sympy as sp
+
+        # Extract expression — strip operation keywords
+        clean = re.sub(
+            r"(?:derivative\s+of|differentiate|d/d[xyz]|∂|diff\(|integrate|integral\s+of|∫|antiderivative\s+of)\s*",
+            "", text, flags=re.IGNORECASE
+        ).strip().strip("()").strip()
+
+        # Determine variable (default x)
+        var_match = re.search(r"with\s+respect\s+to\s+([a-zA-Z])", text, re.IGNORECASE)
+        var_name = var_match.group(1) if var_match else "x"
+        # Remove "with respect to X" from expression
+        if var_match:
+            clean = clean[:var_match.start()].strip()
+
+        var = sp.Symbol(var_name)
+        try:
+            expr = safe_parse(clean.replace(var_name, str(var)))
+            if operation == "diff":
+                result = sp.diff(expr, var)
+                steps = [
+                    f"Expression: {clean}",
+                    f"Differentiate with respect to {var_name}",
+                    f"d/d{var_name}({expr}) = {result}",
+                ]
+                # Show simplified form if different
+                simplified = sp.simplify(result)
+                if simplified != result:
+                    steps.append(f"Simplified: {simplified}")
+                return {"status": "solved", "result": str(result), "method": "sympy_diff", "steps": steps}
+            else:
+                result = sp.integrate(expr, var)
+                steps = [
+                    f"Expression: {clean}",
+                    f"Integrate with respect to {var_name}",
+                    f"∫{expr} d{var_name} = {result} + C",
+                ]
+                return {"status": "solved", "result": f"{result} + C", "method": "sympy_integrate", "steps": steps}
+        except Exception as exc:
+            return {"status": "failed", "result": str(exc), "method": f"sympy_{operation}", "steps": []}
+
+    def _solve_system(self, equations: list[str], safe_parse) -> dict:
+        """Solve a system of equations."""
+        import sympy as sp
+
+        sym_names = set()
+        eq_objs = []
+        try:
+            for eq_text in equations:
+                left, right = eq_text.split("=", 1)
+                lhs = safe_parse(left)
+                rhs = safe_parse(right.strip() or "0")
+                eq_objs.append(sp.Eq(lhs, rhs))
+                for s in (lhs.free_symbols | rhs.free_symbols):
+                    sym_names.add(str(s))
+            syms = [sp.Symbol(n) for n in sorted(sym_names)]
+            solutions = sp.solve(eq_objs, syms)
+            steps = [f"System: {chr(10).join(equations)}", f"Solving for: {', '.join(sorted(sym_names))}", f"Solutions: {solutions}"]
+            return {"status": "solved", "result": str(solutions), "method": "sympy_system", "steps": steps}
+        except Exception as exc:
+            return {"status": "failed", "result": str(exc), "method": "sympy_system", "steps": []}
+
+    def _compute_molar_mass(self, formula: str) -> dict:
+        """Compute molar mass from a chemical formula like H2O, NaCl, C6H12O6."""
+        tokens = re.findall(r"([A-Z][a-z]?)(\d*)", formula)
+        total = 0.0
+        steps = [f"Chemical formula: {formula}"]
+        for element, count_str in tokens:
+            if not element:
+                continue
+            count = int(count_str) if count_str else 1
+            mass = self._ELEMENT_MASSES.get(element)
+            if mass is None:
+                return {"status": "failed", "result": f"Unknown element: {element}", "method": "molar_mass", "steps": steps}
+            contribution = mass * count
+            total += contribution
+            steps.append(f"{element}×{count}: {mass} × {count} = {contribution:.3f} g/mol")
+        steps.append(f"Total molar mass: {total:.3f} g/mol")
+        return {"status": "solved", "result": f"{round(total, 3)} g/mol", "method": "molar_mass", "steps": steps}
+
+    def _solve_without_sympy(self, expression: str, solve_for: str | None = None) -> dict:
         symbol = solve_for or "x"
-        # Strip a trailing bare "=" that some expression extractors emit (e.g. "2+9=")
         text = expression.rstrip("=").strip()
 
         if "=" not in text:
-            # Pure arithmetic — only digits, operators, parens, whitespace
             if not re.fullmatch(r"[\d\s+\-*/().]+", text):
-                return {
-                    "status": "failed",
-                    "result": "sympy unavailable and expression contains unsupported tokens",
-                    "method": "linear_fallback",
-                }
+                return {"status": "failed", "result": "sympy unavailable and expression contains unsupported tokens", "method": "linear_fallback", "steps": []}
             try:
-                value = eval(text, {"__builtins__": {}}, {})  # noqa: S307 - regex-gated arithmetic only.
-                return {"status": "solved", "result": str(value), "method": "linear_fallback"}
+                value = eval(text, {"__builtins__": {}}, {})  # noqa: S307
+                return {"status": "solved", "result": str(value), "method": "linear_fallback", "steps": [f"Arithmetic: {text} = {value}"]}
             except Exception:
-                return {
-                    "status": "failed",
-                    "result": "sympy unavailable and expression is not a supported arithmetic expression",
-                    "method": "linear_fallback",
-                }
+                return {"status": "failed", "result": "sympy unavailable and expression is not a supported arithmetic expression", "method": "linear_fallback", "steps": []}
 
-        # Equation — must match allowed characters
         allowed = re.fullmatch(rf"[\d\s+\-*/().{re.escape(symbol)}=]+", text)
         if not allowed:
-            return {
-                "status": "failed",
-                "result": "sympy unavailable and equation contains unsupported tokens",
-                "method": "linear_fallback",
-            }
+            return {"status": "failed", "result": "sympy unavailable and equation contains unsupported tokens", "method": "linear_fallback", "steps": []}
         left, right = text.split("=", 1)
-        right = right.strip() or "0"  # bare LHS=RHS where RHS is empty → treat as LHS=0
+        right = right.strip() or "0"
 
         def evaluate(side: str, value: float) -> float:
             scoped = side.replace(symbol, f"({value})")
-            return float(eval(scoped, {"__builtins__": {}}, {}))  # noqa: S307 - regex-gated arithmetic only.
+            return float(eval(scoped, {"__builtins__": {}}, {}))  # noqa: S307
 
         try:
             b = evaluate(left, 0.0) - evaluate(right, 0.0)
             a = (evaluate(left, 1.0) - evaluate(right, 1.0)) - b
             if abs(a) < 1e-12:
-                # No variable — both sides are constants, evaluate LHS directly
                 try:
                     value = eval(left.strip(), {"__builtins__": {}}, {})
-                    return {"status": "solved", "result": str(value), "method": "linear_fallback"}
+                    return {"status": "solved", "result": str(value), "method": "linear_fallback", "steps": []}
                 except Exception:
-                    return {"status": "failed", "result": "no linear solution found", "method": "linear_fallback"}
+                    return {"status": "failed", "result": "no linear solution found", "method": "linear_fallback", "steps": []}
             root = -b / a
         except Exception:
-            return {"status": "failed", "result": "sympy unavailable and fallback solve failed", "method": "linear_fallback"}
+            return {"status": "failed", "result": "sympy unavailable and fallback solve failed", "method": "linear_fallback", "steps": []}
         result = int(root) if float(root).is_integer() else round(root, 8)
-        return {"status": "solved", "result": f"[{result}]", "method": "linear_fallback"}
+        return {
+            "status": "solved",
+            "result": f"[{result}]",
+            "method": "linear_fallback",
+            "steps": [f"Linear equation: {left.strip()} = {right.strip()}", f"{symbol} = {result}"],
+        }

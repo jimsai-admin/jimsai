@@ -127,35 +127,35 @@
 
 ### Phase 6 — Code Quality & Correctness Fixes
 
-- [ ] 16. Add missing logger to provider_adapters.py and encoder/dual_encoder.py
+- [x] 16. Add missing logger to provider_adapters.py and encoder/dual_encoder.py
   - **Files:** `prototype/jimsai/provider_adapters.py`, `prototype/jimsai/encoder/dual_encoder.py`
   - Add `import logging` and `logger = logging.getLogger(__name__)` after imports in both files
   - `logger.warning()` calls already exist in both but `logger` is undefined — causes `NameError` at runtime on any embedding failure
   - Verify: `python -c "from prototype.jimsai.provider_adapters import ExternalMultimodalEncoderAdapter"` imports cleanly
   - _Requirements: No NameError on logger calls during embedding operations_
 
-- [ ] 17. Remove duplicate Modality class in models.py
+- [x] 17. Remove duplicate Modality class in models.py
   - **File:** `prototype/jimsai/models.py`
   - Lines 22–25: first `class Modality` with only `TEXT`/`CODE` — remove this stub
   - Lines 27–33: second `class Modality` with all 6 variants (`TEXT`, `CODE`, `IMAGE`, `AUDIO`, `VIDEO`, `DATA`) — keep this
   - Verify: `python -c "from prototype.jimsai.models import Modality; assert hasattr(Modality, 'DATA') and hasattr(Modality, 'IMAGE')"`
   - _Requirements: All 6 Modality variants accessible; no silent class shadowing_
 
-- [ ] 18. Replace print() debug statements in pipeline.py with logger.debug()
+- [x] 18. Replace print() debug statements in pipeline.py with logger.debug()
   - **File:** `prototype/jimsai/pipeline.py`
   - `print(f"DEBUG LOADED SESSION: ...")` → `logger.debug("Loaded session: keys=%s", list(session.keys()))`
   - `print(f"DEBUG DECOUPLING: ...")` → `logger.debug("Context decoupling check: active_obj=%s query=%r", active_obj, request.query)`
   - Confirm `logger = logging.getLogger(__name__)` exists in pipeline.py (add if missing)
   - _Requirements: No debug output in Lambda CloudWatch logs in production_
 
-- [ ] 19. Fix AdaptiveHybridEncoder._fetch_remote_vector() timeout and response parsing
+- [x] 19. Fix AdaptiveHybridEncoder._fetch_remote_vector() timeout and response parsing
   - **File:** `prototype/jimsai/encoder/adaptive_hybrid_encoder.py`
   - Replace hardcoded `timeout=5.0` with `float(os.environ.get("JIMS_MULTIMODAL_ENCODER_TIMEOUT", "30"))`
   - Fix response parsing — try all HF Space shapes in order: `data.get("embedding")`, then `data.get("embeddings")[0]`, then `data.get("data")[0]["embedding"]`, then `data.get("vectors")[0]`, fallback to `[]`
   - `AdaptiveHybridEncoder` runs inside the HF Space (not on Lambda) — this makes timeout consistent with the Lambda-side client
   - _Requirements: Timeout env-var controlled; response handles all HF Space payload shapes_
 
-- [ ] 21. Remove dead code from semantic_compiler.py
+- [x] 21. Remove dead code from semantic_compiler.py
   - **File:** `prototype/jimsai/semantic_compiler.py`
   - Remove `STOP_WORDS` set — replace `keep_stop or token not in STOP_WORDS` filter in `canonical_terms()` with `keep_stop or True` (i.e. always pass when `keep_stop=False`), or inline the logic
   - Remove `_semantic_vocabulary()` — returns empty set, never produces output
@@ -170,7 +170,7 @@
 
 ### Phase 7 — Full Capability Unlocks
 
-- [ ] 22. Upgrade SymbolicMathSolver with step-by-step output and extended domain support
+- [x] 22. Upgrade SymbolicMathSolver with step-by-step output and extended domain support
   - **File:** `prototype/jimsai/execution_runtime.py`
   - **Problem:** `SymbolicMathSolver.solve()` returns only `{"status", "result", "method"}` — no step breakdown. Physics, calculus, chemistry fall back to "failed".
 
@@ -194,7 +194,7 @@
   - Run `python -m pytest tests/ -x -q -k "math or solver"` to confirm no regressions
   - _Requirements: Step-by-step shown for all solvable expressions; calculus/physics/chemistry dispatch correct; no regression on existing arithmetic tests_
 
-- [ ] 23. Wire web search (DuckDuckGo) into the main pipeline for WORLD_KNOWLEDGE queries
+- [x] 23. Wire web search (DuckDuckGo) into the main pipeline for WORLD_KNOWLEDGE queries
   - **Files:** `prototype/jimsai/pipeline.py`, `prototype/jimsai/capability_router.py`, `services/world-knowledge/web_retrieval.py`
   - **Problem:** `WebAugmentedRetrieval` exists but is disconnected. `WORLD_KNOWLEDGE` always shows `"unavailable"` because `CapabilityAdapterRegistry.readiness()` only checks `BRAVE_SEARCH_API_KEY` — DuckDuckGo needs no key.
 
@@ -236,7 +236,7 @@
   - Mock `DDGS` in tests to avoid real HTTP: `python -m pytest tests/ -x -q -k "world_knowledge or web"`
   - _Requirements: `"What is the latest on X?"` routes to DuckDuckGo; top 3 results ingested as memory signatures; response cites sources; no API key needed; graceful fallback if search fails_
 
-- [ ] 24. Make T1/T2 model identity fully swappable via env vars
+- [x] 24. Make T1/T2 model identity fully swappable via env vars
   - **Files:** `prototype/jimsai/model_bridge.py`, `infrastructure/huggingface-space/jimsai-embedding-service/app.py`
 
   - **Step 1 — Add `/v1/model/config` endpoint to HF Space `app.py`** (no auth — public metadata):
@@ -283,7 +283,7 @@
     ```
   - _Requirements: Any GGUF model swappable via env vars only; GPU offloading via single env var; `/v1/model/config` returns current state; `QwenBridge.describe()` surfaces model identity in dashboard_
 
-- [ ] 25. Strengthen prompt robustness — chaotic input, multi-intent, and context-less queries
+- [x] 25. Strengthen prompt robustness — chaotic input, multi-intent, and context-less queries
   - **Files:** `prototype/jimsai/semantic_compiler.py`, `prototype/jimsai/model_bridge.py`, `prototype/jimsai/capability_router.py`, `prototype/jimsai/runtime_layers.py`
 
   - **Problem 1 — Extreme typos fall through to sandbox**: `normalize_language()` handles OCR confusables and known slang, but arbitrary misspellings (`"wha iz kinnetic enrgy formla"`) may fall below the confidence threshold and get sandboxed even though the intent is recognisable.
@@ -316,7 +316,8 @@
   - **Fix — Session intent carry-forward**: In `compile()`, after all classification, when `confidence < 0.50` and `session.get("ACTIVE_INTENT")` is set, boost confidence to `max(confidence, 0.35)` and set `target_ir = session["ACTIVE_INTENT"]` unless current `target_ir` is already something specific (not `OP_ESCAPE_TO_SANDBOX`). This prevents vague follow-ups from sandboxing when a clear conversational context exists.
 
   - **Problem 4 — Causal reasoning depth hardcoded at 4 hops**: Deep engineering/medical causal chains truncate at 4.
-  - **Fix — Configurable causal depth**: Add `JIMS_CAUSAL_TRAVERSAL_DEPTH` env var (default `4`, max `8`). Pass from `LatentWorldModelLayer.activate()` to `graph.incoming_edges()` / `graph.outgoing_edges()` / `_add_causal_path_steps()`. Only use depth > 4 when the query explicitly requests a complete chain (`"trace all"`, `"full chain"`, `"complete path"`, `"all causes"`, `"all effects"`).
+  - **Fix — Configurable causal depth**: Add `JIMS_CAUSAL_TRAVERSAL_DEPTH` env var (default `4`, max `8`). Pass from `LatentWorldModelLayer.activate()` to `graph.incoming_edges()` / `graph.outgoing_edges()` / `_add_causal_path_steps()`. Only use depth > 4 when the query explicitly requests a complete chain (`"trace all"`, `"full chain"`, `"complete path"`, `"all 
+  causes"`, `"all effects"`).
 
   - Run `python -m pytest tests/ -x -q --ignore=tests/test_training_loop.py` to confirm no regressions
   - _Requirements: Extreme typos route correctly after T1 rewrite; multi-intent queries produce sectioned responses; context-less follow-ups inherit session intent; deep causal chains configurable_
@@ -333,7 +334,7 @@
   - Add new env vars: `JIMS_TYPO_CORRECTION_ENABLED=true`, `JIMS_CAUSAL_TRAVERSAL_DEPTH=4`
   - _Requirements: All production env vars correct before deploy_
 
-- [ ] 14. Deploy HuggingFace Space (embedding service)
+- [x] 14. Deploy HuggingFace Space (embedding service)
   - **File:** `infrastructure/huggingface-space/jimsai-embedding-service/app.py`
   - Push updated Space files (Tasks 19, 24 changes)
   - Poll `GET /health` until `model_loaded=true`; verify `GET /ready` returns `{"ready": true}`
@@ -341,7 +342,7 @@
   - Verify `POST /v1/embed` with `{"input": "hello"}` returns 768-dim vector with `"fallback": false`
   - _Requirements: HF Space serving real embeddings and exposing model config before Lambda deploy_
 
-- [ ] 15. Deploy to Lambda
+- [x] 15. Deploy to Lambda
   - Run `.\infrastructure\aws-lambda\deploy-lambda-zip.ps1`
   - Verify exit code 0, Lambda URL printed, `GET /health` → `{"status": "ok"}`
   - _Requirements: All fixes (Tasks 16–19, 21–25) and new capabilities deployed_
@@ -371,7 +372,7 @@ The existing `frontend/app/user/page.tsx` is a single 1000-line monolithic file 
 
 **Dependencies to add first:** `react-markdown` + `remark-gfm` to `frontend/package.json`.
 
-- [ ] 26. Create shared types and Zustand store
+- [x] 26. Create shared types and Zustand store
   - **Files:** `frontend/app/user/types.ts`, `frontend/app/user/store.ts`
 
   - **`types.ts`** — all shared types:
@@ -458,7 +459,7 @@ The existing `frontend/app/user/page.tsx` is a single 1000-line monolithic file 
 
   - _Requirements: Online-first threads/messages; no localStorage for chat data; correct FeedbackRequest with source_signature_ids; correct TrainingIngestRequest fields; correct MemoryDeleteRequest_
 
-- [ ] 27. Create MarkdownRenderer component
+- [x] 27. Create MarkdownRenderer component
   - **File:** `frontend/app/user/MarkdownRenderer.tsx`
   - Install `react-markdown` and `remark-gfm`: add to `package.json` dependencies
   - Use `ReactMarkdown` with `remarkPlugins={[remarkGfm]}`
@@ -484,7 +485,7 @@ The existing `frontend/app/user/page.tsx` is a single 1000-line monolithic file 
     ```
   - _Requirements: All GFM elements render correctly; code copy works; tables scroll on mobile; images render_
 
-- [ ] 28. Create MessageBubble component
+- [x] 28. Create MessageBubble component
   - **File:** `frontend/app/user/MessageBubble.tsx`
   - Props: `message: Message`, `messageIndex: number`, `apiBase: string`, `authHeaders: () => Record<string, string>`
   - **User bubble**: right-aligned, `className="message user"`, renders `<MarkdownRenderer content={message.content} />`
@@ -510,7 +511,7 @@ The existing `frontend/app/user/page.tsx` is a single 1000-line monolithic file 
     ```
   - _Requirements: User/assistant styling correct; action row only on assistant; all 5 actions functional_
 
-- [ ] 29. Create InsightsDrawer component
+- [x] 29. Create InsightsDrawer component
   - **File:** `frontend/app/user/InsightsDrawer.tsx`
   - Uses `store.drawerOpen`, `store.drawerMessageIndex`, `store.drawerTab`, `store.messages[activeThreadId]`
   - Renders as `position: fixed; bottom: 0; left: 0; right: 0` with `height: 50vh` (desktop) / `75vh` (mobile)
@@ -539,7 +540,7 @@ The existing `frontend/app/user/page.tsx` is a single 1000-line monolithic file 
     ```
   - _Requirements: All 7 tabs functional; learn/unlearn work; backdrop closes drawer; correct heights per breakpoint_
 
-- [ ] 30. Create Sidebar component
+- [x] 30. Create Sidebar component
   - **File:** `frontend/app/user/Sidebar.tsx`
   - Narrow `52px` wide sidebar, `position: sticky; top: 0; height: 100dvh; flex-shrink: 0`
   - Top section (vertically stacked with `gap: 8px`):
@@ -577,7 +578,7 @@ The existing `frontend/app/user/page.tsx` is a single 1000-line monolithic file 
     ```
   - _Requirements: Icon-only sidebar; ThreadsPanel with search and relative timestamps; LearnPanel posts to API; mobile full-screen overlay_
 
-- [ ] 31. Create Composer component
+- [x] 31. Create Composer component
   - **File:** `frontend/app/user/Composer.tsx`
   - Floating box centered, `max-width: 760px`, `width: calc(100% - 32px)`, elevated shadow
   - Grid: `[attach-btn] [textarea] [actions]` on a single row, actions below on small screens
@@ -597,7 +598,7 @@ The existing `frontend/app/user/page.tsx` is a single 1000-line monolithic file 
     ```
   - _Requirements: Enter/Shift+Enter correct; file attach works; canvas/invention toggles; send dispatches to store; mobile sticky_
 
-- [ ] 32. Create MessageList component
+- [x] 32. Create MessageList component
   - **File:** `frontend/app/user/MessageList.tsx`
   - Renders `store.messages[activeThreadId]` mapped to `<MessageBubble>` components
   - Auto-scrolls to bottom on new message — `useEffect` on messages length, `scrollIntoView` on a sentinel `div`
@@ -607,7 +608,7 @@ The existing `frontend/app/user/page.tsx` is a single 1000-line monolithic file 
   - Add: `@media (max-width: 767px) { .message { max-width: 100%; width: auto; } }`
   - _Requirements: Auto-scroll works; loading state shown; all messages rendered; mobile full-width_
 
-- [ ] 33. Create ChatLayout and wire everything
+- [x] 33. Create ChatLayout and wire everything
   - **File:** `frontend/app/user/ChatLayout.tsx`
   - Root element: `<div className="chatRoot">` — `display: flex; flex-direction: row; height: 100dvh; overflow: hidden`
   - Children: `<Sidebar />` + `<div className="chatMain">` containing `<MessageList />` and `<Composer />`
@@ -636,7 +637,7 @@ The existing `frontend/app/user/page.tsx` is a single 1000-line monolithic file 
   - Preserve all existing API call logic (`/v1/query`, `/v1/feedback`, `/v1/training/ingest`, `/v1/memory/delete`, `/v1/chat/threads`, `/v1/auth/*`) — move it into the store actions and component-level `useCallback` hooks
   - _Requirements: Full layout assembled; mobile tab bar works; InsightsDrawer overlays; page.tsx is thin shell_
 
-- [ ] 34. E2E smoke tests for the new chat UI
+- [x] 34. E2E smoke tests for the new chat UI
   - **File:** `frontend/tests/chat-ui.spec.ts` (Playwright)
   - Test: sign-in flow renders auth form → submit → chat layout appears
   - Test: type message → press Enter → user bubble appears → loading indicator shows → assistant bubble appears
