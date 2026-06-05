@@ -7,7 +7,7 @@ param(
     [string]$FunctionName = "jimsai-api-gateway",
     [string]$CorsAllowOrigin = "https://jimsai.vercel.app",
     [string]$Runtime = "python3.11",
-    [string]$MemorySize = "1024",
+    [string]$MemorySize = "1536",
     [string]$Timeout = "120"
 )
 
@@ -127,15 +127,11 @@ $allowedKeys = @(
     "JIMS_ENABLE_SEMANTIC_CAPABILITY_ROUTER",
     "JIMS_ENABLE_ZERO_SHOT_CAPABILITY_ROUTER",
     "JIMS_ENABLE_LLM_CAPABILITY_ROUTER",
-    "JIMS_ENABLE_RESOLUTION_LEARNING",
     "JIMS_CAPABILITY_EMBEDDING_SERVICE_URL",
     "JIMS_CAPABILITY_EMBEDDING_SERVICE_TOKEN",
     "JIMS_CAPABILITY_CLASSIFIER_URL",
     "JIMS_CAPABILITY_CLASSIFIER_TOKEN",
     "JIMS_CAPABILITY_CLASSIFIER_TIMEOUT",
-    "JIMS_ADAPTIVE_TRANSFORMER_THINNING",
-    "JIMS_T1_SKIP_CONFIDENCE",
-    "JIMS_T2_SKIP_CONFIDENCE",
     "SUPABASE_URL",
     "SUPABASE_SERVICE_KEY",
     "SUPABASE_ANON_KEY",
@@ -179,6 +175,15 @@ $envVars["JIMS_ENABLE_GROQ_T2"] = "false"
 $envVars["JIMS_ENABLE_GROQ_CANVAS"] = "false"
 $envVars["JIMS_ENABLE_GROQ_INVENTION"] = "false"
 $envVars["JIMS_ALLOW_EXTERNAL_GROQ"] = "false"
+# T1/T2 thresholds: T1 runs more aggressively, T2 only skipped for near-perfect solver results
+$envVars["JIMS_T1_SKIP_CONFIDENCE"] = "0.60"
+$envVars["JIMS_T2_SKIP_CONFIDENCE"] = "0.95"
+$envVars["JIMS_ADAPTIVE_TRANSFORMER_THINNING"] = "true"
+# Resolution learning: only write back verified high-quality results
+$envVars["JIMS_ENABLE_RESOLUTION_LEARNING"] = "true"
+$envVars["JIMS_RESOLUTION_LEARNING_MIN_CONFIDENCE"] = "0.90"
+# Embedding timeout: allow 45s for HF Space on cold outbound connection
+$envVars["JIMS_MULTIMODAL_ENCODER_TIMEOUT"] = "45"
 # Add CORS origin
 $envVars["CORS_ORIGINS"] = $CorsAllowOrigin
 

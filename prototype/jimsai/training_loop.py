@@ -259,26 +259,97 @@ class KaggleTrainingOrchestrator:
     
     def upload_batch(self, batch: dict) -> dict:
         """
-        Upload training batch to KaggleHub.
-        
-        In production:
-        - Creates private Kaggle dataset
-        - Uploads SPPE pairs as CSV/JSON
-        - Triggers training notebook
-        - Downloads results
+        Upload training batch to Kaggle as a private dataset.
+
+        Requires:
+          - KAGGLE_API_TOKEN env var
+          - KAGGLE_DATASET_OWNER env var (or KAGGLE_USERNAME)
+
+        Optional:
+          - KAGGLE_KERNEL_SLUG env var to trigger a training notebook after upload
         """
+        import os
+        import json
+        import tempfile
+        from datetime import datetime as dt
+
         batch_id = batch["batch_id"]
-        
         logger.info(f"Uploading training batch to KaggleHub: {batch_id}")
-        
-        # Stub: In production would use Kaggle API
-        # kaggle.api.dataset_create_new(...)
-        
+
+        # Validate credentials
+        kaggle_token = os.getenv("KAGGLE_API_TOKEN", "").strip()
+        dataset_owner = (
+            os.getenv("KAGGLE_DATASET_OWNER", "").strip()
+            or os.getenv("KAGGLE_USERNAME", "").strip()
+            or self.kaggle_dataset_owner
+        )
+
+        if not kaggle_token:
+            raise RuntimeError(
+                "KAGGLE_API_TOKEN env var is required for KaggleTrainingOrchestrator.upload_batch(). "
+                "Set it to your Kaggle API token from https://www.kaggle.com/settings"
+            )
+        if not dataset_owner:
+            raise RuntimeError(
+                "KAGGLE_DATASET_OWNER (or KAGGLE_USERNAME) env var is required. "
+                "Set it to your Kaggle username."
+            )
+
+        # Import kagglehub
+        try:
+            import kagglehub
+        except ImportError:
+            raise RuntimeError(
+                "kagglehub is not installed. Install it with: pip install kagglehub"
+            )
+
+        # Write batch to a temp directory and upload
+        dataset_slug = f"jims-training-{batch_id}"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            batch_file = os.path.join(tmpdir, "batch.json")
+            with open(batch_file, "w", encoding="utf-8") as f:
+                json.dump(batch, f, default=str)
+
+            # Upload to Kaggle as private dataset
+            try:
+                kagglehub.dataset_upload(
+                    handle=f"{dataset_owner}/{dataset_slug}",
+                    local_dataset_dir=tmpdir,
+                    license_name="proprietary",
+                )
+                logger.info(f"Uploaded batch {batch_id} to {dataset_owner}/{dataset_slug}")
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Failed to upload batch {batch_id} to Kaggle: {exc}"
+                ) from exc
+
+        # Optionally trigger training notebook
+        notebook_triggered = False
+        kernel_slug = os.getenv("KAGGLE_KERNEL_SLUG", "").strip()
+        if kernel_slug:
+            try:
+                import kaggle  # kaggle CLI package
+                kaggle.api.authenticate()
+                kaggle.api.kernels_push(kernel_slug)
+                notebook_triggered = True
+                logger.info(f"Triggered training notebook: {kernel_slug}")
+            except Exception as exc:
+                logger.warning(
+                    f"Could not trigger training notebook {kernel_slug}: {exc}. "
+                    "Set KAGGLE_KERNEL_SLUG to a valid kernel slug to enable this."
+                )
+        else:
+            logger.warning(
+                "KAGGLE_KERNEL_SLUG not set — training notebook will not be triggered. "
+                "Set it to your Kaggle kernel slug to auto-trigger training after upload."
+            )
+
         return {
             "batch_id": batch_id,
             "status": "uploaded",
-            "kaggle_dataset": f"{self.kaggle_dataset_owner}/jims-training-{batch_id}",
-            "uploaded_at": datetime.now().isoformat(),
+            "kaggle_dataset": f"{dataset_owner}/{dataset_slug}",
+            "uploaded_at": dt.now().isoformat(),
+            "notebook_triggered": notebook_triggered,
         }
 
 

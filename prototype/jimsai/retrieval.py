@@ -71,6 +71,17 @@ def term_matches(left: str, right: str) -> bool:
 class MultiIndexRetrievalEngine:
     def __init__(self, memory: FourLayerMemoryStore) -> None:
         self.memory = memory
+        self._last_retrieval_stats: dict[str, int] = {"semantic_hits": 0, "lexical_hits": 0, "total": 0}
+
+    def get_last_retrieval_stats(self) -> dict[str, int]:
+        """Return stats from the most recent retrieve() call.
+
+        Returns a dict with:
+          - semantic_hits: count of results whose latent_embedding_source == "external_service"
+          - lexical_hits: count of results using hash_projection or with no embedding source
+          - total: total results returned
+        """
+        return dict(self._last_retrieval_stats)
 
     def retrieve(
         self,
@@ -201,10 +212,24 @@ class MultiIndexRetrievalEngine:
             ):
                 results[sig.id] = RetrievalResult(signature=sig, score=round(score, 4), reasons=reasons or ["importance_index"])
         ranked = sorted(results.values(), key=lambda r: (-r.score, r.signature.id))
-        for result in ranked[:effective_limit]:
+        final = ranked[:effective_limit]
+        for result in final:
             result.signature.importance.retrieval_count += 1
             result.signature.importance.current_score = min(1.0, result.signature.importance.current_score + 0.01)
-        return ranked[:effective_limit]
+
+        # Compute and cache retrieval stats for observability
+        semantic_hits = sum(
+            1 for r in final
+            if str(r.signature.metadata.get("latent_embedding_source") or "hash_projection") == "external_service"
+        )
+        lexical_hits = len(final) - semantic_hits
+        self._last_retrieval_stats = {
+            "semantic_hits": semantic_hits,
+            "lexical_hits": lexical_hits,
+            "total": len(final),
+        }
+
+        return final
 
     def _query_phrases(self, query: str) -> set[str]:
         tokens = [

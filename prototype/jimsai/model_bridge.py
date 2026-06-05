@@ -62,8 +62,8 @@ class QwenBridge:
         self.adaptive_thinning = os.getenv(
             "JIMS_ADAPTIVE_TRANSFORMER_THINNING", "true"
         ).lower() in {"1", "true", "yes", "on"}
-        self.t1_skip_confidence = float(os.getenv("JIMS_T1_SKIP_CONFIDENCE", "0.68") or "0.68")
-        self.t2_skip_confidence = float(os.getenv("JIMS_T2_SKIP_CONFIDENCE", "0.82") or "0.82")
+        self.t1_skip_confidence = float(os.getenv("JIMS_T1_SKIP_CONFIDENCE", "0.60") or "0.60")
+        self.t2_skip_confidence = float(os.getenv("JIMS_T2_SKIP_CONFIDENCE", "0.95") or "0.95")
         self.last_t1_skip_reason = ""
         self.last_t2_skip_reason = ""
 
@@ -415,25 +415,34 @@ class QwenBridge:
         return confidence >= self.t1_skip_confidence
 
     def _should_skip_t2(self, obj: VerifiedCognitiveObject) -> bool:
-        """Skip T2 render when the deterministic CSSE output is already high-quality."""
+        """Skip T2 Qwen render only for near-perfect verified results.
+
+        We want Qwen3-4B to run in almost all cases — it makes responses
+        dramatically more natural. Only skip when the symbolic solver has
+        produced a 100%-certain result (e.g. a verified math calculation)
+        and there are no gaps to explain.
+        """
         if not self.adaptive_thinning:
             return False
+        # Never skip when there are knowledge gaps — they need natural explanation
         if obj.knowledge_gaps:
             return False
+        # Never skip for non-FACT modes (creative, code, etc need natural language)
         if obj.generation_mode != "FACT":
             return False
+        # Never skip when no sources — nothing verified to render tersely
         if not obj.sources:
             return False
         style = obj.style_signature or {}
+        # Always run T2 for non-default language or format requests
         if str(style.get("language_hint") or "default") != "default":
             return False
         if str(style.get("format_hint") or "default") != "default":
             return False
 
+        # Preserve T2 for conversational / low-resource / multilingual prompts
         raw_prompt = str(style.get("user_prompt") or "").lower()
         words = set(raw_prompt.split())
-
-        # Preserve T2 for conversational / low-resource / multilingual prompts
         conversational_signals = {
             "hello", "hi", "howdy", "please", "stressed", "help",
             "thanks", "thank you", "nibo", "bawo", "kedu", "sannu", "lafiya", "nagode",
@@ -441,10 +450,12 @@ class QwenBridge:
         if words & conversational_signals:
             return False
 
-        # Preserve T2 when mixed digit/letter typos are present (OCR / casual input)
+        # Preserve T2 when mixed digit/letter typos are present
         if any(re.search(r"[A-Za-z]\d|\d[A-Za-z]", word) for word in words):
             return False
 
+        # Only skip T2 at very high confidence threshold (default 0.95, was 0.82)
+        # This means T2 renders all but the most certain symbolic solver outputs
         return obj.confidence >= self.t2_skip_confidence
 
 

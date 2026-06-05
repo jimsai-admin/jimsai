@@ -321,6 +321,7 @@ class DualRepresentationEncoder:
                 vector = adapter.encode(content, modality)
                 if vector:
                     return vector
+                logger.warning("Embedding service unavailable, using hash fallback")
             except Exception:
                 return []
         return []

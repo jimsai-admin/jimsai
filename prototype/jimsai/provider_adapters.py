@@ -1312,38 +1312,112 @@ class ExternalMultimodalEncoderAdapter:
         """Embed content using the HF Space /v1/embed endpoint.
 
         Model selection per modality:
-          - CODE  → microsoft/codebert-base  (768-dim, code-aware CLS pooling)
-          - other → intfloat/multilingual-e5-small  (768-dim, multilingual semantic)
+          - CODE  → microsoft/codebert-base       (768-dim, code-aware CLS pooling)
+          - DATA  → jinaai/jina-embeddings-v3      (when JIMS_JINA_EMBEDDINGS_ENABLED=true)
+                    Jina v3 is linked on the HF Space but off by default.
+                    Enable only when the Space confirms it's serving jina-embeddings-v3.
+          - other → intfloat/multilingual-e5-small (768-dim, multilingual semantic)
         """
         if not self.configured:
             return []
         base = self._base_url()
         headers = self._headers()
 
-        # Select embedding model based on modality
+        # Select embedding model based on modality:
+        #   CODE  → microsoft/codebert-base  (768-dim, code-aware)
+        #   DATA  → jinaai/jina-embeddings-v3 (when JIMS_JINA_EMBEDDINGS_ENABLED=true)
+        #           Jina v3 is linked on the HF Space but off by default.
+        #           Enable only when the Space confirms it's serving jina-embeddings-v3.
+        #   other → intfloat/multilingual-e5-small  (768-dim, multilingual semantic)
+        jina_enabled = os.getenv("JIMS_JINA_EMBEDDINGS_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
         if modality == Modality.CODE:
             model_id = "microsoft/codebert-base"
+            purpose = "document"
+        elif modality == Modality.DATA and jina_enabled:
+            model_id = "jinaai/jina-embeddings-v3"
             purpose = "document"
         else:
             model_id = os.getenv("JIMS_EMBEDDING_MODEL", "intfloat/multilingual-e5-small")
             purpose = "query" if modality == Modality.TEXT else "document"
 
         target_timeout = float(os.getenv("JIMS_MULTIMODAL_ENCODER_TIMEOUT", "30") or "30")
-        try:
-            response = httpx.post(
-                f"{base}/v1/embed",
-                headers=headers,
-                json={
-                    "input": content[:16000],
-                    "model": model_id,
-                    "purpose": purpose,
-                },
-                timeout=target_timeout,
-            )
-            response.raise_for_status()
-            return self._extract_vector(response.json())
-        except Exception:
-            return []
+        for attempt in range(2):
+            try:
+                timeout = target_timeout if attempt == 0 else 45.0
+                response = httpx.post(
+                    f"{base}/v1/embed",
+                    headers=headers,
+                    json={
+                        "input": content[:16000],
+                        "model": model_id,
+                        "purpose": purpose,
+                    },
+                    timeout=timeout,
+                )
+                response.raise_for_status()
+                return self._extract_vector(response.json())
+            except Exception:
+                if attempt == 1:
+                    logger.warning("Embedding service unavailable after retry, using hash fallback")
+                    return []
+                continue
+        return []  # unreachable but satisfies type checker
+
+    def embed_batch(
+        self,
+        texts: list[str],
+        purpose: str = "document",
+        model_id: str | None = None,
+    ) -> list[list[float]]:
+        """Embed a batch of texts using the HF Space /v1/embed endpoint.
+
+        Uses the same retry logic as encode(). Each text is embedded
+        independently. Returns a list of vectors in the same order;
+        failed items return empty list [] so the caller can detect them.
+
+        Args:
+            texts: List of text strings to embed.
+            purpose: 'document' for storage, 'query' for retrieval.
+            model_id: Override model. Defaults to JIMS_EMBEDDING_MODEL
+                      (intfloat/multilingual-e5-small).
+                      Set `model_id='jinaai/jina-embeddings-v3'` when
+                      `JIMS_JINA_EMBEDDINGS_ENABLED=true` and the Space
+                      confirms support.
+        """
+        if not self.configured or not texts:
+            return [[] for _ in texts]
+
+        base = self._base_url()
+        headers = self._headers()
+        resolved_model = model_id or os.getenv("JIMS_EMBEDDING_MODEL", "intfloat/multilingual-e5-small")
+        target_timeout = float(os.getenv("JIMS_MULTIMODAL_ENCODER_TIMEOUT", "30") or "30")
+
+        results: list[list[float]] = []
+        for text in texts:
+            for attempt in range(2):
+                try:
+                    timeout = target_timeout if attempt == 0 else 45.0
+                    response = httpx.post(
+                        f"{base}/v1/embed",
+                        headers=headers,
+                        json={
+                            "input": text[:16000],
+                            "model": resolved_model,
+                            "purpose": purpose,
+                        },
+                        timeout=timeout,
+                    )
+                    response.raise_for_status()
+                    results.append(self._extract_vector(response.json()))
+                    break
+                except Exception:
+                    if attempt == 1:
+                        logger.warning(
+                            "embed_batch: embedding service unavailable for item, using empty vector"
+                        )
+                        results.append([])
+                    continue
+        return results
 
     def _extract_vector(self, payload: Any) -> list[float]:
         vector = payload
@@ -1410,6 +1484,21 @@ class ProductionRuntime:
         self.neo4j = Neo4jAuraGraphStore(self.settings) if self.settings.enable_neo4j else None
         self.celery = RedisCeleryQueue(self.settings) if self.settings.enable_celery else None
         self.multimodal = self._build_multimodal_adapter()
+        # Lazy initialization: _initialized = False means _ensure_initialized()
+        # will connect to external providers on first actual use, not at startup.
+        # This cuts Lambda cold start from 60–150s to <5s.
+        self._initialized = False
+        # Pre-populate statuses as "not yet checked" so readiness() always works
+        for name in ("r2", "vectorize", "supabase_postgres", "neo4j_aura", "redis_celery", "multimodal_encoders"):
+            self.statuses[name] = ProviderStatus(
+                name=name, configured=False, available=False, detail="pending"
+            )
+
+    def _ensure_initialized(self) -> None:
+        """Connect to external providers on first use. Thread-safe for Lambda (single-process)."""
+        if self._initialized:
+            return
+        self._initialized = True
         self._initialize()
 
     @property
@@ -1448,6 +1537,8 @@ class ProductionRuntime:
                     raise
 
     def readiness(self) -> dict[str, str | bool]:
+        # Trigger lazy init so readiness() always reflects actual state
+        self._ensure_initialized()
         data: dict[str, str | bool] = {
             "storage_backend": self.settings.storage_backend,
             "graph_provider": self.settings.graph_provider,
@@ -1468,6 +1559,7 @@ class ProductionRuntime:
         raw_content: str,
         panel_items: list[TrainingPanelItem],
     ) -> None:
+        self._ensure_initialized()
         object_ref: str | None = None
         if self.r2 and self.statuses["r2"].available:
             object_ref = self._attempt("r2", lambda: self.r2.put_text(f"training/{signature.id}.txt", raw_content))
@@ -1480,10 +1572,12 @@ class ProductionRuntime:
             self._attempt("vectorize", lambda: self.vectorize.insert_signature(signature, object_ref=object_ref))
 
     def save_panel_items(self, panel_items: list[TrainingPanelItem]) -> None:
+        self._ensure_initialized()
         if self.postgres and self.statuses["supabase_postgres"].available:
             self._attempt("supabase_postgres", lambda: self.postgres.save_panel_items(panel_items))
 
     def save_user_feedback(self, feedback: dict[str, Any]) -> None:
+        self._ensure_initialized()
         if self.postgres and self.statuses["supabase_postgres"].available:
             self._attempt("supabase_postgres", lambda: self.postgres.save_user_feedback(feedback))
 
@@ -1498,6 +1592,7 @@ class ProductionRuntime:
         confidence: float,
         sources: list[str],
     ) -> None:
+        self._ensure_initialized()
         if self.postgres and self.statuses["supabase_postgres"].available:
             self._attempt(
                 "supabase_postgres",
@@ -1514,32 +1609,38 @@ class ProductionRuntime:
             )
 
     def list_chat_threads(self, user_id: str, workspace_id: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+        self._ensure_initialized()
         if self.postgres and self.statuses["supabase_postgres"].available:
             return self._attempt("supabase_postgres", lambda: self.postgres.list_chat_threads(user_id, workspace_id, limit)) or []
         return []
 
     def list_chat_messages(self, thread_id: str, user_id: str, limit: int = 200) -> list[dict[str, Any]]:
+        self._ensure_initialized()
         if self.postgres and self.statuses["supabase_postgres"].available:
             return self._attempt("supabase_postgres", lambda: self.postgres.list_chat_messages(thread_id, user_id, limit)) or []
         return []
 
     def delete_chat_thread(self, thread_id: str, user_id: str) -> int:
+        self._ensure_initialized()
         if self.postgres and self.statuses["supabase_postgres"].available:
             return self._attempt("supabase_postgres", lambda: self.postgres.delete_chat_thread(thread_id, user_id)) or 0
         return 0
 
     def delete_signature(self, signature_id: str) -> None:
+        self._ensure_initialized()
         if self.postgres and self.statuses["supabase_postgres"].available:
             self._attempt("supabase_postgres", lambda: self.postgres.delete_signature(signature_id))
         if self.vectorize and self.statuses["vectorize"].available:
             self._attempt("vectorize", lambda: self.vectorize.delete_signature(signature_id))
 
     def delete_panel_items_for_signature(self, signature_id: str) -> int:
+        self._ensure_initialized()
         if self.postgres and self.statuses["supabase_postgres"].available:
             return self._attempt("supabase_postgres", lambda: self.postgres.delete_panel_items_for_signature(signature_id)) or 0
         return 0
 
     def review_world_model_candidate(self, provenance: str, rule: str, action: str, corrected_rule: str | None = None) -> int:
+        self._ensure_initialized()
         if self.postgres and self.statuses["supabase_postgres"].available:
             return (
                 self._attempt(
@@ -1551,11 +1652,13 @@ class ProductionRuntime:
         return 0
 
     def list_panel_items(self, panel: str, cursor: str | None, limit: int) -> TrainingPanelPage | None:
+        self._ensure_initialized()
         if self.postgres and self.statuses["supabase_postgres"].available:
             return self.postgres.list_panel_items(panel, cursor, limit)
         return None
 
     def load_recent_signatures(self, limit: int = 500) -> list[MemorySignature]:
+        self._ensure_initialized()
         if self.postgres and self.statuses["supabase_postgres"].available:
             return self._attempt("supabase_postgres", lambda: self.postgres.list_recent_signatures(limit)) or []
         return []
@@ -1568,6 +1671,7 @@ class ProductionRuntime:
         user_id: str | None = None,
         exclude_ids: set[str] | None = None,
     ) -> list[MemorySignature]:
+        self._ensure_initialized()
         if not latent_embedding:
             return []
         if not (
@@ -1591,11 +1695,13 @@ class ProductionRuntime:
         return visible[:limit]
 
     def enqueue(self, task_name: str, payload: dict[str, Any]) -> str | None:
+        self._ensure_initialized()
         if self.celery and self.statuses["redis_celery"].available:
             return self._attempt("redis_celery", lambda: self.celery.enqueue(task_name, payload))
         return None
 
     def load_session(self, user_id: str) -> dict[str, str]:
+        self._ensure_initialized()
         if self.celery and self.statuses["redis_celery"].available:
             data = self._attempt("redis_celery", lambda: self.celery.get_json(f"session:{user_id}"))
             if isinstance(data, dict):
@@ -1603,6 +1709,7 @@ class ProductionRuntime:
         return {}
 
     def save_session(self, user_id: str, session: dict[str, str]) -> None:
+        self._ensure_initialized()
         if self.celery and self.statuses["redis_celery"].available:
             self._attempt("redis_celery", lambda: self.celery.set_json(f"session:{user_id}", session))
 

@@ -445,6 +445,7 @@ class PipelineResponse(BaseModel):
     capability_plan: CapabilityPlan | None = None
     capability_results: list[CapabilityExecutionResult] = Field(default_factory=list)
     used_groq: bool = False
+    suggestions: list[str] = Field(default_factory=list)
 
 
 class TrainingIngestRequest(BaseModel):

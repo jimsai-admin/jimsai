@@ -51,6 +51,7 @@ from .models import (
     TrainingIngestResponse,
     TrainingPanelItem,
     TrainingPanelPage,
+    VerifiedCognitiveObject,
     VerifiedResultSignature,
     WorldModelCandidate,
     utc_now,
@@ -96,8 +97,9 @@ TRAINING_PANEL_IDS = {
 class JimsAIPipeline:
     def __init__(self) -> None:
         self.production = ProductionRuntime()
-        self.kaggle = KaggleGPUOrchestrator()
-        self.compiler = SemanticCompilerRuntime()
+        # Lazy fields — instantiated on first access via @property
+        self._kaggle: KaggleGPUOrchestrator | None = None
+        self._compiler: SemanticCompilerRuntime | None = None
         self.encoder = DualRepresentationEncoder(multimodal_adapter=self.production.multimodal)
         self.memory = FourLayerMemoryStore()
         self.graph = CausalGraphEngine()
@@ -138,7 +140,28 @@ class JimsAIPipeline:
         self.active_training_artifacts: dict[str, str] = {}
         self.retrieval_misses = 0
         self.cloud_authoritative = self.production.settings.cloud_authoritative
-        self.hydrated_signatures = self._hydrate_memory()
+        # Defer memory hydration when cloud_authoritative but providers not yet
+        # initialized (common on Lambda cold start). Hydration will run on first query.
+        if self.cloud_authoritative and not self.production._initialized:
+            self._hydrate_pending = True
+            self.hydrated_signatures = 0
+        else:
+            self._hydrate_pending = False
+            self.hydrated_signatures = self._hydrate_memory()
+
+    @property
+    def compiler(self) -> SemanticCompilerRuntime:
+        """Lazy: SemanticCompilerRuntime is created on first access to avoid startup cost."""
+        if self._compiler is None:
+            self._compiler = SemanticCompilerRuntime()
+        return self._compiler
+
+    @property
+    def kaggle(self) -> KaggleGPUOrchestrator:
+        """Lazy: KaggleGPUOrchestrator is only needed for training runs."""
+        if self._kaggle is None:
+            self._kaggle = KaggleGPUOrchestrator()
+        return self._kaggle
 
     def _hydrate_memory(self) -> int:
         if self.cloud_authoritative:
@@ -212,7 +235,14 @@ class JimsAIPipeline:
         haystack = " ".join(haystack_parts)
         return sum(1 for term in query_terms if term in haystack)
 
+    def _flush_pending_hydration(self) -> None:
+        """Run deferred memory hydration if it was skipped at init time."""
+        if getattr(self, "_hydrate_pending", False):
+            self._hydrate_pending = False
+            self.hydrated_signatures = self._hydrate_memory()
+
     def _reset_request_cache(self) -> None:
+        self._flush_pending_hydration()
         if self.cloud_authoritative:
             return
 
@@ -479,6 +509,7 @@ class JimsAIPipeline:
             capability_plan=capability_plan,
             capability_results=capability_results,
             used_groq=used_qwen_render,
+            suggestions=self._build_suggestions(response, obj),
         )
         self._learn_from_resolved_prompt(request, pipeline_response)
         self.result_cache.set(cache_key, pipeline_response.model_dump(mode="json"))
@@ -506,6 +537,34 @@ class JimsAIPipeline:
             user_id=request.user_id,
         )
         return pipeline_response
+
+    def _build_suggestions(self, response_text: str, obj: VerifiedCognitiveObject) -> list[str]:
+        """Generate actionable suggestions for low-confidence or incomplete responses."""
+        suggestions: list[str] = []
+
+        # Low confidence — suggest ways to improve
+        if obj.confidence < 0.60:
+            suggestions.append("Share more context to help me give a better answer.")
+
+        # Math capability with no solution
+        capability_kind = ""
+        if obj.capability_plan:
+            capability_kind = str(getattr(obj.capability_plan, "kind", "") or "").upper()
+        if "MATH" in capability_kind and not obj.reasoning_chain:
+            suggestions.append("Try expressing maths as: `2 + 9` or `2x + 5 = 11`")
+
+        # Profile unknown
+        has_profile_gap = "profile" in str(getattr(obj, "intent", "") or "").lower() or (
+            obj.capability_plan and "profile" in str(getattr(obj.capability_plan, "route", "")).lower()
+        )
+        if has_profile_gap and not obj.sources:
+            suggestions.append("Tell me your name to help me remember you.")
+
+        # Code with no codebase
+        if ("CODE" in capability_kind or "CODING" in capability_kind) and not obj.sources:
+            suggestions.append("Share a file or describe what you're building.")
+
+        return suggestions
 
     def _learn_from_resolved_prompt(self, request: PipelineRequest, response: PipelineResponse) -> None:
         if os.getenv("JIMS_ENABLE_RESOLUTION_LEARNING", "true").lower() not in {"1", "true", "yes", "on"}:
