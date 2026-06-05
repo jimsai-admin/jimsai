@@ -244,6 +244,7 @@ class FeedbackRequest(BaseModel):
     notes: str = ""
     workspace_id: str | None = None
     thread_id: str | None = None
+    source_signature_ids: list[str] = Field(default_factory=list)
 
 
 class FeedbackResponse(BaseModel):

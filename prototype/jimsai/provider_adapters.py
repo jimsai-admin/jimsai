@@ -1309,32 +1309,41 @@ class ExternalMultimodalEncoderAdapter:
         return "external embedding service reachable"
 
     def encode(self, content: str, modality: Modality) -> list[float]:
+        """Embed content using the HF Space /v1/embed endpoint.
+
+        Model selection per modality:
+          - CODE  → microsoft/codebert-base  (768-dim, code-aware CLS pooling)
+          - other → intfloat/multilingual-e5-small  (768-dim, multilingual semantic)
+        """
         if not self.configured:
             return []
-        if self.settings.embedding_service_url:
+        base = self._base_url()
+        headers = self._headers()
+
+        # Select embedding model based on modality
+        if modality == Modality.CODE:
+            model_id = "microsoft/codebert-base"
+            purpose = "document"
+        else:
+            model_id = os.getenv("JIMS_EMBEDDING_MODEL", "intfloat/multilingual-e5-small")
+            purpose = "query" if modality == Modality.TEXT else "document"
+
+        target_timeout = float(os.getenv("JIMS_MULTIMODAL_ENCODER_TIMEOUT", "30") or "30")
+        try:
             response = httpx.post(
-                f"{self._base_url()}/v1/embed",
-                headers=self._headers(),
+                f"{base}/v1/embed",
+                headers=headers,
                 json={
-                    "texts": [content],
-                    "purpose": "query" if modality == Modality.TEXT else "document",
+                    "input": content[:16000],
+                    "model": model_id,
+                    "purpose": purpose,
                 },
-                timeout=45,
+                timeout=target_timeout,
             )
             response.raise_for_status()
             return self._extract_vector(response.json())
-        response = httpx.post(
-            f"{self._base_url()}/v1/encode",
-            headers=self._headers(),
-            json={
-                "content": content,
-                "modality": modality.value,
-                "dimensions": self.settings.vectorize_dimensions,
-            },
-            timeout=120,
-        )
-        response.raise_for_status()
-        return self._extract_vector(response.json())
+        except Exception:
+            return []
 
     def _extract_vector(self, payload: Any) -> list[float]:
         vector = payload
@@ -1445,6 +1454,7 @@ class ProductionRuntime:
             "production_runtime_enabled": self.enabled,
             "cloud_authoritative": self.settings.cloud_authoritative,
             "multimodal_encoder_mode": self.settings.effective_multimodal_encoder_mode,
+            "multimodal_configured": bool(self.multimodal and self.multimodal.configured),
         }
         for name, status in self.statuses.items():
             data[f"{name}_configured"] = status.configured

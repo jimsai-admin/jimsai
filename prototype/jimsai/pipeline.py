@@ -13,7 +13,7 @@ from .execution_runtime import DeterministicSandbox, SymbolicMathSolver
 from .graph import CausalGraphEngine
 from .kaggle_orchestrator import KaggleGPUOrchestrator
 from .memory import FourLayerMemoryStore
-from .model_bridge import GroqBridge
+from .model_bridge import QwenBridge
 from .models import (
     CanvasRunRequest,
     CanvasRunResponse,
@@ -106,7 +106,7 @@ class JimsAIPipeline:
         self.validator = ConstraintValidator()
         self.planner = SymbolicPlanner()
         self.csse = ConstrainedSemanticSynthesisEngine()
-        self.bridge = GroqBridge()
+        self.bridge = QwenBridge()
         self.intent_layer = TransformerIntentInterface(self.compiler, self.bridge)
         self.encoder_layer = FullEncoderLayer(self.encoder)
         self.learning_layer = RealTimeLearningLayer(self.memory, self.graph)
@@ -460,7 +460,7 @@ class JimsAIPipeline:
             )
         )
         obj.layer_results = layer_results
-        used_groq = False
+        used_qwen_render = used_groq_render  # True when Qwen3-4B rendered the response
         pipeline_response = PipelineResponse(
             response=response,
             ir=ir,
@@ -478,7 +478,7 @@ class JimsAIPipeline:
             world_model_activations=world_model_activations,
             capability_plan=capability_plan,
             capability_results=capability_results,
-            used_groq=used_groq,
+            used_groq=used_qwen_render,
         )
         self._learn_from_resolved_prompt(request, pipeline_response)
         self.result_cache.set(cache_key, pipeline_response.model_dump(mode="json"))
@@ -500,7 +500,7 @@ class JimsAIPipeline:
                 "confidence": obj.confidence,
                 "sources": obj.sources,
                 "gaps": obj.knowledge_gaps,
-                "used_groq": used_groq,
+                "used_groq": used_qwen_render,
                 "thread_id": request.thread_id or "default",
             },
             user_id=request.user_id,
@@ -510,14 +510,26 @@ class JimsAIPipeline:
     def _learn_from_resolved_prompt(self, request: PipelineRequest, response: PipelineResponse) -> None:
         if os.getenv("JIMS_ENABLE_RESOLUTION_LEARNING", "true").lower() not in {"1", "true", "yes", "on"}:
             return
+
+        # Only write back verified, executed, solver-backed results — no LLM-only threshold
         executed_results = [
             result
             for result in response.capability_results
             if result.data.get("executed") and result.confidence >= 0.75 and result.data.get("solver_status", "solved") == "solved"
         ]
-        transformer_assisted = response.used_groq and response.confidence >= 0.82 and not response.gaps
-        if not executed_results and not transformer_assisted:
+
+        # Threshold: 0.90 minimum confidence (configurable), no knowledge gaps, must have executed results
+        # (Previously: 0.82 + used_groq — Groq removed, threshold raised to avoid noisy write-back)
+        min_confidence = float(os.getenv("JIMS_RESOLUTION_LEARNING_MIN_CONFIDENCE", "0.90") or "0.90")
+        high_confidence_verified = (
+            response.confidence >= min_confidence
+            and not response.gaps
+            and executed_results
+        )
+
+        if not high_confidence_verified:
             return
+
         capability_kind = response.capability_plan.kind.value if response.capability_plan else "memory_chat"
         content = {
             "type": "resolved_prompt_memory",
@@ -545,8 +557,8 @@ class JimsAIPipeline:
             workspace_id=request.workspace_id,
             user_id=request.user_id,
         )
-        signature.confidence.score = min(0.98, max(response.confidence, 0.75))
-        signature.confidence.source = "resolution_learning"
+        signature.confidence.score = min(0.98, max(response.confidence, 0.90))
+        signature.confidence.source = "resolution_learning_verified"
         signature.metadata.update(content)
         self.memory.insert(signature)
         self.graph.add_signature(signature)
@@ -563,7 +575,12 @@ class JimsAIPipeline:
         self.event_store.append(
             "resolution_memory_written",
             signature.id,
-            {"trace_id": response.ir.trace_id, "capability_kind": capability_kind, "source_results": [result.provenance for result in executed_results]},
+            {
+                "trace_id": response.ir.trace_id,
+                "capability_kind": capability_kind,
+                "source_results": [result.provenance for result in executed_results],
+                "min_confidence_threshold": min_confidence,
+            },
             user_id=request.user_id,
         )
 
@@ -793,10 +810,46 @@ class JimsAIPipeline:
         self.feedback_history.append(record)
         self.production.save_user_feedback(record)
         self.production.save_panel_items([self._feedback_item(record, len(self.feedback_history))])
+
+        # ── Closed feedback loop ──────────────────────────────────────────────
+        # Positive ratings reinforce graph edges on causal links in cited signatures.
+        # Negative ratings decay confidence on cited signatures so they surface less.
+        POSITIVE_RATINGS = {"positive", "accept", "thumbs_up", "learn_this", "helpful"}
+        NEGATIVE_RATINGS = {"negative", "reject", "thumbs_down", "unhelpful", "wrong"}
+        rating_lower = str(request.rating or "").lower()
+        # Also treat notes == "learn_this" as positive
+        is_positive = rating_lower in POSITIVE_RATINGS or request.notes == "learn_this"
+        is_negative = rating_lower in NEGATIVE_RATINGS
+
+        if (is_positive or is_negative) and request.source_signature_ids:
+            for sig_id in request.source_signature_ids:
+                sig = self.memory.get(sig_id)
+                if sig is None:
+                    continue
+                if is_positive:
+                    # Reinforce causal edges — makes causal facts more retrievable
+                    for link in sig.structured.causal_chain:
+                        self.graph.reinforce(link.cause, link.effect, delta=0.05)
+                    # Also reinforce relational edges
+                    for relation in sig.structured.relations:
+                        self.graph.reinforce(relation.subject, relation.object, delta=0.03)
+                elif is_negative:
+                    # Lower confidence so this signature surfaces less in future retrievals
+                    new_score = round(max(0.10, sig.confidence.score - 0.10), 4)
+                    sig.confidence.score = new_score
+                    sig.confidence.source = "feedback_negative_decay"
+                    self.memory.update(sig)
+
         self.event_store.append(
             "feedback_recorded",
             request.trace_id,
-            {"rating": request.rating, "notes": request.notes},
+            {
+                "rating": request.rating,
+                "notes": request.notes,
+                "is_positive": is_positive,
+                "is_negative": is_negative,
+                "source_signatures": request.source_signature_ids if hasattr(request, "source_signature_ids") else [],
+            },
             user_id=request.user_id,
         )
         return FeedbackResponse(accepted=True, trace_id=request.trace_id, stored_events=len(self.feedback_events))

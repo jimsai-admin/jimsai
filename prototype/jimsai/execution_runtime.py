@@ -65,36 +65,83 @@ class DeterministicSandbox:
 
 class SymbolicMathSolver:
     def solve(self, expression: str, solve_for: str | None = None) -> dict[str, str]:
-        text = expression.strip()
+        # Normalize: strip trailing bare "=" and inject explicit multiplication
+        text = expression.strip().rstrip("=").strip()
+        if not text:
+            return {"status": "failed", "result": "empty expression", "method": "sympy_solve"}
+        # Convert implicit multiplication: 3x → 3*x, x3 → x*3
+        text = re.sub(r"(?<=\d)([a-zA-Z])", r"*\1", text)
+        text = re.sub(r"([a-zA-Z])(?=\d)", r"\1*", text)
         try:
             import sympy as sp
+            from sympy.parsing.sympy_parser import (
+                parse_expr,
+                standard_transformations,
+                implicit_multiplication_application,
+            )
+            transformations = standard_transformations + (implicit_multiplication_application,)
+
+            def safe_parse(s: str):
+                return parse_expr(s.strip() or "0", transformations=transformations)
+
         except ModuleNotFoundError:
             return self._solve_without_sympy(text, solve_for)
-        if "=" in text:
-            left, right = text.split("=", 1)
-            equation = sp.Eq(sp.sympify(left), sp.sympify(right))
-            symbol = sp.Symbol(solve_for) if solve_for else next(iter(equation.free_symbols), None)
-            if symbol is None:
-                return {"status": "failed", "result": "no free symbol found", "method": "sympy_solve"}
-            return {"status": "solved", "result": str(sp.solve(equation, symbol)), "method": "sympy_solve"}
-        value = sp.simplify(sp.sympify(text))
-        return {"status": "solved", "result": str(value), "method": "sympy_simplify"}
+
+        try:
+            if "=" in text:
+                left, right = text.split("=", 1)
+                right = right.strip() or "0"  # bare LHS= → treat as LHS=0
+                lhs = safe_parse(left)
+                rhs = safe_parse(right)
+                free = lhs.free_symbols | rhs.free_symbols
+                if not free:
+                    # No variables — evaluate LHS - RHS numerically
+                    val = sp.simplify(lhs - rhs)
+                    return {"status": "solved", "result": str(lhs), "method": "sympy_eval"}
+                symbol = sp.Symbol(solve_for) if solve_for else sorted(free, key=str)[0]
+                equation = sp.Eq(lhs, rhs)
+                solutions = sp.solve(equation, symbol)
+                return {"status": "solved", "result": str(solutions), "method": "sympy_solve"}
+            else:
+                value = sp.simplify(safe_parse(text))
+                return {"status": "solved", "result": str(value), "method": "sympy_simplify"}
+        except Exception:
+            # sympy failed — fall back to the regex-based linear solver
+            return self._solve_without_sympy(text, solve_for)
 
     def _solve_without_sympy(self, expression: str, solve_for: str | None = None) -> dict[str, str]:
         symbol = solve_for or "x"
-        if "=" not in expression:
-            if not re.fullmatch(r"[\d\s+\-*/().]+", expression):
-                return {"status": "failed", "result": "sympy unavailable and expression contains unsupported tokens", "method": "linear_fallback"}
-            try:
-                value = eval(expression, {"__builtins__": {}}, {})  # noqa: S307 - regex-gated arithmetic only.
-            except Exception:
-                return {"status": "failed", "result": "sympy unavailable and expression is not a supported linear equation", "method": "linear_fallback"}
-            return {"status": "solved", "result": str(value), "method": "linear_fallback"}
+        # Strip a trailing bare "=" that some expression extractors emit (e.g. "2+9=")
+        text = expression.rstrip("=").strip()
 
-        allowed = re.fullmatch(rf"[\d\s+\-*/().{re.escape(symbol)}=]+", expression)
+        if "=" not in text:
+            # Pure arithmetic — only digits, operators, parens, whitespace
+            if not re.fullmatch(r"[\d\s+\-*/().]+", text):
+                return {
+                    "status": "failed",
+                    "result": "sympy unavailable and expression contains unsupported tokens",
+                    "method": "linear_fallback",
+                }
+            try:
+                value = eval(text, {"__builtins__": {}}, {})  # noqa: S307 - regex-gated arithmetic only.
+                return {"status": "solved", "result": str(value), "method": "linear_fallback"}
+            except Exception:
+                return {
+                    "status": "failed",
+                    "result": "sympy unavailable and expression is not a supported arithmetic expression",
+                    "method": "linear_fallback",
+                }
+
+        # Equation — must match allowed characters
+        allowed = re.fullmatch(rf"[\d\s+\-*/().{re.escape(symbol)}=]+", text)
         if not allowed:
-            return {"status": "failed", "result": "sympy unavailable and equation contains unsupported tokens", "method": "linear_fallback"}
-        left, right = expression.split("=", 1)
+            return {
+                "status": "failed",
+                "result": "sympy unavailable and equation contains unsupported tokens",
+                "method": "linear_fallback",
+            }
+        left, right = text.split("=", 1)
+        right = right.strip() or "0"  # bare LHS=RHS where RHS is empty → treat as LHS=0
 
         def evaluate(side: str, value: float) -> float:
             scoped = side.replace(symbol, f"({value})")
@@ -104,7 +151,12 @@ class SymbolicMathSolver:
             b = evaluate(left, 0.0) - evaluate(right, 0.0)
             a = (evaluate(left, 1.0) - evaluate(right, 1.0)) - b
             if abs(a) < 1e-12:
-                return {"status": "failed", "result": "no linear solution found", "method": "linear_fallback"}
+                # No variable — both sides are constants, evaluate LHS directly
+                try:
+                    value = eval(left.strip(), {"__builtins__": {}}, {})
+                    return {"status": "solved", "result": str(value), "method": "linear_fallback"}
+                except Exception:
+                    return {"status": "failed", "result": "no linear solution found", "method": "linear_fallback"}
             root = -b / a
         except Exception:
             return {"status": "failed", "result": "sympy unavailable and fallback solve failed", "method": "linear_fallback"}

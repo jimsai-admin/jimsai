@@ -8,7 +8,7 @@ from .csse import ConstrainedSemanticSynthesisEngine
 from .encoder import DualRepresentationEncoder
 from .graph import CausalGraphEngine
 from .memory import FourLayerMemoryStore
-from .model_bridge import GroqBridge
+from .model_bridge import QwenBridge
 from .models import (
     AbstractionResult,
     ActivationDecision,
@@ -113,7 +113,7 @@ def _document_claim(subject: str, predicate: str, obj: str) -> str:
 class TransformerIntentInterface:
     """T1 bounded interface: classify intent, never execute or answer."""
 
-    def __init__(self, compiler: SemanticCompilerRuntime, bridge: GroqBridge) -> None:
+    def __init__(self, compiler: SemanticCompilerRuntime, bridge: QwenBridge) -> None:
         self.compiler = compiler
         self.bridge = bridge
 
@@ -308,7 +308,7 @@ class RealTimeLearningLayer:
 class ActiveCanvasLayer:
     """L3 active canvas: bounded synthesis over current request and local memory."""
 
-    def __init__(self, memory: FourLayerMemoryStore, bridge: GroqBridge) -> None:
+    def __init__(self, memory: FourLayerMemoryStore, bridge: QwenBridge) -> None:
         self.memory = memory
         self.bridge = bridge
 
@@ -392,7 +392,7 @@ class MCTSNode:
 class InventionEngineLayer:
     """L5 invention engine: create candidate plans, constrained by IR and current memory."""
 
-    def __init__(self, planner: SymbolicPlanner, bridge: GroqBridge) -> None:
+    def __init__(self, planner: SymbolicPlanner, bridge: QwenBridge) -> None:
         self.planner = planner
         self.bridge = bridge
 
@@ -1064,7 +1064,7 @@ class ReasoningBridgeLayer:
 class TransformerRenderInterface:
     """T2 bounded interface: render the VCO without adding new claims."""
 
-    def __init__(self, csse: ConstrainedSemanticSynthesisEngine, bridge: GroqBridge) -> None:
+    def __init__(self, csse: ConstrainedSemanticSynthesisEngine, bridge: QwenBridge) -> None:
         self.csse = csse
         self.bridge = bridge
 
