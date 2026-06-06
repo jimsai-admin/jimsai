@@ -1343,10 +1343,16 @@ class ExternalMultimodalEncoderAdapter:
             model_id = os.getenv("JIMS_EMBEDDING_MODEL", "intfloat/multilingual-e5-small")
             purpose = "query" if modality == Modality.TEXT else "document"
 
-        target_timeout = float(os.getenv("JIMS_MULTIMODAL_ENCODER_TIMEOUT", "30") or "30")
-        for attempt in range(2):
+        target_timeout = float(
+            os.getenv(
+                "JIMS_LIVE_EMBEDDING_TIMEOUT",
+                os.getenv("JIMS_MULTIMODAL_ENCODER_TIMEOUT", "6"),
+            )
+            or "6"
+        )
+        max_attempts = max(1, int(os.getenv("JIMS_LIVE_EMBEDDING_ATTEMPTS", "1") or "1"))
+        for attempt in range(max_attempts):
             try:
-                timeout = target_timeout if attempt == 0 else 45.0
                 response = httpx.post(
                     f"{base}/v1/embed",
                     headers=headers,
@@ -1355,12 +1361,12 @@ class ExternalMultimodalEncoderAdapter:
                         "model": model_id,
                         "purpose": purpose,
                     },
-                    timeout=timeout,
+                    timeout=target_timeout,
                 )
                 response.raise_for_status()
                 return self._extract_vector(response.json())
             except Exception:
-                if attempt == 1:
+                if attempt == max_attempts - 1:
                     logger.warning("Embedding service unavailable after retry, using hash fallback")
                     return []
                 continue
@@ -1491,6 +1497,7 @@ class ProductionRuntime:
         # will connect to external providers on first actual use, not at startup.
         # This cuts Lambda cold start from 60–150s to <5s.
         self._initialized = False
+        self._checked_adapters: set[str] = set()
         # Pre-populate statuses as "not yet checked" so readiness() always works
         for name in ("r2", "vectorize", "supabase_postgres", "neo4j_aura", "redis_celery", "multimodal_encoders"):
             self.statuses[name] = ProviderStatus(
@@ -1503,6 +1510,23 @@ class ProductionRuntime:
             return
         self._initialized = True
         self._initialize()
+
+    def _ensure_adapter(self, name: str, adapter: Any | None) -> None:
+        """Connect one provider without blocking hot paths on unrelated providers."""
+        if name in self._checked_adapters:
+            return
+        self._checked_adapters.add(name)
+        if adapter is None:
+            self.statuses[name] = ProviderStatus(name=name, configured=False, available=False, detail="disabled")
+            return
+        configured = bool(adapter.configured)
+        try:
+            detail = adapter.check()
+            self.statuses[name] = ProviderStatus(name=name, configured=configured, available=configured, detail=detail)
+        except Exception as exc:
+            self.statuses[name] = ProviderStatus(name=name, configured=configured, available=False, detail=str(exc))
+            if self.settings.strict_provider_startup:
+                raise
 
     @property
     def enabled(self) -> bool:
@@ -1527,17 +1551,7 @@ class ProductionRuntime:
             ("redis_celery", self.celery),
             ("multimodal_encoders", self.multimodal),
         ]:
-            if adapter is None:
-                self.statuses[name] = ProviderStatus(name=name, configured=False, available=False, detail="disabled")
-                continue
-            configured = bool(adapter.configured)
-            try:
-                detail = adapter.check()
-                self.statuses[name] = ProviderStatus(name=name, configured=configured, available=configured, detail=detail)
-            except Exception as exc:
-                self.statuses[name] = ProviderStatus(name=name, configured=configured, available=False, detail=str(exc))
-                if self.settings.strict_provider_startup:
-                    raise
+            self._ensure_adapter(name, adapter)
 
     def readiness(self) -> dict[str, str | bool]:
         # Trigger lazy init so readiness() always reflects actual state
@@ -1562,17 +1576,29 @@ class ProductionRuntime:
         raw_content: str,
         panel_items: list[TrainingPanelItem],
     ) -> None:
-        self._ensure_initialized()
         object_ref: str | None = None
+        self._ensure_adapter("r2", self.r2)
         if self.r2 and self.statuses["r2"].available:
             object_ref = self._attempt("r2", lambda: self.r2.put_text(f"training/{signature.id}.txt", raw_content))
+        self._ensure_adapter("supabase_postgres", self.postgres)
         if self.postgres and self.statuses["supabase_postgres"].available:
             self._attempt("supabase_postgres", lambda: self.postgres.save_signature(signature))
-            self._attempt("supabase_postgres", lambda: self.postgres.save_panel_items(panel_items))
+            if panel_items:
+                self._attempt("supabase_postgres", lambda: self.postgres.save_panel_items(panel_items))
+        self._ensure_adapter("neo4j_aura", self.neo4j)
         if self.neo4j and self.statuses["neo4j_aura"].available:
             self._attempt("neo4j_aura", lambda: self.neo4j.upsert_signature(signature))
+        self._ensure_adapter("vectorize", self.vectorize)
         if self.vectorize and self.statuses["vectorize"].available and signature.latent_embedding:
             self._attempt("vectorize", lambda: self.vectorize.insert_signature(signature, object_ref=object_ref))
+
+    def save_memory_signature(self, signature: MemorySignature) -> None:
+        self._ensure_adapter("supabase_postgres", self.postgres)
+        if self.postgres and self.statuses["supabase_postgres"].available:
+            self._attempt("supabase_postgres", lambda: self.postgres.save_signature(signature))
+        self._ensure_adapter("vectorize", self.vectorize)
+        if self.vectorize and self.statuses["vectorize"].available and signature.latent_embedding:
+            self._attempt("vectorize", lambda: self.vectorize.insert_signature(signature, object_ref=None))
 
     def save_panel_items(self, panel_items: list[TrainingPanelItem]) -> None:
         self._ensure_initialized()
@@ -1595,7 +1621,7 @@ class ProductionRuntime:
         confidence: float,
         sources: list[str],
     ) -> None:
-        self._ensure_initialized()
+        self._ensure_adapter("supabase_postgres", self.postgres)
         if self.postgres and self.statuses["supabase_postgres"].available:
             self._attempt(
                 "supabase_postgres",
@@ -1612,19 +1638,19 @@ class ProductionRuntime:
             )
 
     def list_chat_threads(self, user_id: str, workspace_id: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
-        self._ensure_initialized()
+        self._ensure_adapter("supabase_postgres", self.postgres)
         if self.postgres and self.statuses["supabase_postgres"].available:
             return self._attempt("supabase_postgres", lambda: self.postgres.list_chat_threads(user_id, workspace_id, limit)) or []
         return []
 
     def list_chat_messages(self, thread_id: str, user_id: str, limit: int = 200) -> list[dict[str, Any]]:
-        self._ensure_initialized()
+        self._ensure_adapter("supabase_postgres", self.postgres)
         if self.postgres and self.statuses["supabase_postgres"].available:
             return self._attempt("supabase_postgres", lambda: self.postgres.list_chat_messages(thread_id, user_id, limit)) or []
         return []
 
     def delete_chat_thread(self, thread_id: str, user_id: str) -> int:
-        self._ensure_initialized()
+        self._ensure_adapter("supabase_postgres", self.postgres)
         if self.postgres and self.statuses["supabase_postgres"].available:
             return self._attempt("supabase_postgres", lambda: self.postgres.delete_chat_thread(thread_id, user_id)) or 0
         return 0
@@ -1661,7 +1687,7 @@ class ProductionRuntime:
         return None
 
     def load_recent_signatures(self, limit: int = 500) -> list[MemorySignature]:
-        self._ensure_initialized()
+        self._ensure_adapter("supabase_postgres", self.postgres)
         if self.postgres and self.statuses["supabase_postgres"].available:
             return self._attempt("supabase_postgres", lambda: self.postgres.list_recent_signatures(limit)) or []
         return []
@@ -1674,9 +1700,10 @@ class ProductionRuntime:
         user_id: str | None = None,
         exclude_ids: set[str] | None = None,
     ) -> list[MemorySignature]:
-        self._ensure_initialized()
         if not latent_embedding:
             return []
+        self._ensure_adapter("vectorize", self.vectorize)
+        self._ensure_adapter("supabase_postgres", self.postgres)
         if not (
             self.vectorize
             and self.statuses["vectorize"].available
@@ -1704,7 +1731,7 @@ class ProductionRuntime:
         return None
 
     def load_session(self, user_id: str) -> dict[str, str]:
-        self._ensure_initialized()
+        self._ensure_adapter("redis_celery", self.celery)
         if self.celery and self.statuses["redis_celery"].available:
             data = self._attempt("redis_celery", lambda: self.celery.get_json(f"session:{user_id}"))
             if isinstance(data, dict):
@@ -1712,7 +1739,7 @@ class ProductionRuntime:
         return {}
 
     def save_session(self, user_id: str, session: dict[str, str]) -> None:
-        self._ensure_initialized()
+        self._ensure_adapter("redis_celery", self.celery)
         if self.celery and self.statuses["redis_celery"].available:
             self._attempt("redis_celery", lambda: self.celery.set_json(f"session:{user_id}", session))
 

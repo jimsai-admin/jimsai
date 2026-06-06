@@ -1,14 +1,11 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass
 
 from .encoder import hash_embedding, stable_id
 from .models import Confidence, Entity, MemorySignature, Relation, SignatureIntent, StructuredSignature
-
-
-PROJECT_SUBJECT = "FinalYearProject"
-BULLET_MARKERS = ("\u2022", "\uf0b7", "\u00e2\u20ac\u00a2", "-", "*")
 
 
 @dataclass(frozen=True)
@@ -33,6 +30,7 @@ def is_document_like(text: str) -> bool:
 
 def extract_document_facts(text: str) -> list[DocumentFact]:
     facts: list[DocumentFact] = []
+    subject = _document_subject(text)
 
     def add(subject: str, predicate: str, obj: str, raw_excerpt: str = "", confidence: float = 0.88) -> None:
         value = _clean_value(obj)
@@ -50,39 +48,28 @@ def extract_document_facts(text: str) -> list[DocumentFact]:
 
     title = _extract_title(text)
     if title:
-        add(PROJECT_SUBJECT, "has_title", title, title, 0.93)
+        add(subject, "has_title", title, title, 0.93)
 
-    case_study = _match_one(text, r"Case Study:\s*(.+)")
-    if case_study:
-        add(PROJECT_SUBJECT, "has_case_study", case_study, case_study, 0.93)
-
-    institution = _match_one(text, r"^(Adventist University of Central Africa)\s*$", flags=re.MULTILINE)
-    if institution:
-        add(PROJECT_SUBJECT, "has_institution", institution, institution, 0.93)
-
-    researcher = _match_one(text, r"Name of the Researcher:\s*(.+)")
-    if researcher:
-        add(PROJECT_SUBJECT, "has_author", researcher, researcher, 0.9)
-
-    student_id = _match_one(text, r"Student ID:\s*([0-9]+)")
-    if student_id:
-        add(PROJECT_SUBJECT, "has_student_id", student_id, student_id, 0.9)
+    for label, value in _extract_labeled_values(text):
+        predicate = _label_to_predicate(label)
+        if predicate:
+            add(subject, predicate, value, f"{label}: {value}", 0.9)
 
     for subject, meaning in _extract_abbreviations(text):
         add(subject, "means", meaning, f"{subject} {meaning}", 0.95)
 
     for objective in _extract_bullets_between(text, "Specific Objectives", "Scope of the Project"):
         if objective.lower().startswith("to "):
-            add(PROJECT_SUBJECT, "has_objective", objective, objective, 0.9)
+            add(subject, "has_objective", objective, objective, 0.9)
 
     for problem in _extract_bullets_between(text, "Statement of the Problem", "Choice and Motivation"):
-        add(PROJECT_SUBJECT, "has_problem", problem, problem, 0.86)
+        add(subject, "has_problem", problem, problem, 0.86)
 
     for module in _extract_module_lines(text):
-        add(PROJECT_SUBJECT, "has_module", module, module, 0.9)
+        add(subject, "has_module", module, module, 0.9)
 
     for technology in _extract_technologies(text):
-        add(PROJECT_SUBJECT, "uses_technology", technology, technology, 0.86)
+        add(subject, "uses_technology", technology, technology, 0.86)
 
     return _dedupe_facts(facts)
 
@@ -124,6 +111,45 @@ def _extract_title(text: str) -> str:
     return ""
 
 
+def _document_subject(text: str) -> str:
+    title = _extract_title(text)
+    if title:
+        return stable_id("doc", title)
+    first_content = next((line.strip() for line in text.splitlines() if len(line.strip()) >= 8), "")
+    return stable_id("doc", first_content or text[:120] or "document")
+
+
+def _extract_labeled_values(text: str) -> list[tuple[str, str]]:
+    values: list[tuple[str, str]] = []
+    for line in text.splitlines():
+        match = re.match(r"^\s*(?P<label>[^:\n]{2,80})\s*:\s*(?P<value>[^:\n]{1,240})\s*$", line)
+        if not match:
+            continue
+        label = _clean_value(match.group("label"))
+        value = _clean_value(match.group("value"))
+        if label and value:
+            values.append((label, value))
+    return values
+
+
+def _label_to_predicate(label: str) -> str:
+    normalized = re.sub(r"[^a-z0-9]+", "_", label.lower()).strip("_")
+    normalized = re.sub(r"^(name_of_the_|name_of_|the_)", "", normalized)
+    if not normalized:
+        return ""
+    if normalized in {"researcher", "author", "writer", "creator"}:
+        return "has_author"
+    if normalized in {"case_study", "case", "study_case"}:
+        return "has_case_study"
+    if normalized in {"student_id", "id", "identifier"}:
+        return "has_student_id"
+    if normalized in {"institution", "university", "school", "organization", "organisation"}:
+        return "has_institution"
+    if normalized == "title":
+        return "has_title"
+    return f"has_{normalized}"
+
+
 def _extract_abbreviations(text: str) -> list[tuple[str, str]]:
     block = _section(text, "LIST OF ABBREVIATIONS", "DEFINITION OF TERMINOLOGIES")
     rows: list[tuple[str, str]] = []
@@ -161,30 +187,14 @@ def _extract_module_lines(text: str) -> list[str]:
 def _extract_technologies(text: str) -> list[str]:
     block = _section(text, "Technologies and Tools Used", "Presentation of the New System")
     technologies: set[str] = set()
-    known = [
-        "HTML",
-        "CSS",
-        "JavaScript",
-        "Bootstrap",
-        "MySQL",
-        "PHP",
-        "Python",
-        "scikit-learn",
-        "NLTK",
-        "NumPy",
-        "Pandas",
-        "Visual Studio Code",
-        "VS Code",
-        "XAMPP",
-        "phpMyAdmin",
-        "Git",
-        "GitHub",
-        "Apache HTTP Server",
-        "NGINX",
-    ]
-    for name in known:
-        if re.search(rf"\b{re.escape(name)}\b", block, flags=re.IGNORECASE):
-            technologies.add(name)
+    for line in block.splitlines():
+        stripped = _clean_value(_strip_bullet(line))
+        if not stripped:
+            continue
+        for item in re.split(r",|;|\band\b", stripped, flags=re.IGNORECASE):
+            candidate = _clean_value(item)
+            if 1 < len(candidate) <= 80 and re.search(r"[A-Za-z0-9]", candidate):
+                technologies.add(candidate)
     return sorted(technologies)
 
 
@@ -209,15 +219,24 @@ def _clean_value(value: str) -> str:
 
 
 def _is_bullet(value: str) -> bool:
-    return value.startswith(BULLET_MARKERS)
+    stripped = value.lstrip()
+    if not stripped:
+        return False
+    if re.match(r"^(?:\d+|[A-Za-z])[\).\]]\s+", stripped):
+        return True
+    first = stripped[0]
+    category = unicodedata.category(first)
+    return category.startswith("P") or category.startswith("S")
 
 
 def _strip_bullet(value: str) -> str:
     stripped = value.strip()
-    for marker in BULLET_MARKERS:
-        if stripped.startswith(marker):
-            return stripped[len(marker) :].strip()
-    return stripped
+    stripped = re.sub(r"^(?:\d+|[A-Za-z])[\).\]]\s+", "", stripped)
+    if stripped:
+        first = stripped[0]
+        if unicodedata.category(first).startswith(("P", "S")):
+            return stripped[1:].strip()
+    return stripped.strip()
 
 
 def _dedupe_facts(facts: list[DocumentFact]) -> list[DocumentFact]:

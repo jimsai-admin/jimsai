@@ -271,6 +271,7 @@ class JimsAIPipeline:
         cache_key = self.result_cache.key(
             "query",
             {
+                "runtime_cache_version": os.getenv("JIMS_RUNTIME_CACHE_VERSION", "2026-06-06-latency-math-v3"),
                 "user_id": request.user_id,
                 "workspace_id": request.workspace_id,
                 "thread_id": request.thread_id or "default",
@@ -379,6 +380,17 @@ class JimsAIPipeline:
         input_signature, encoder_layer_result = self.encoder_layer.encode(request, ir)
         record(encoder_layer_result)
         record(self.learning_layer.learn(input_signature))
+        promoted_user_facts = self._promote_user_fact_memory(request, input_signature)
+        if promoted_user_facts:
+            record(
+                LayerResult(
+                    layer="V9_user_fact_promotion",
+                    activated=True,
+                    deterministic=True,
+                    summary="Promoted structured user facts from the prompt into durable profile memory.",
+                    data={"promoted": promoted_user_facts},
+                )
+            )
         hydrated_now = self._hydrate_persistent_retrieval(request, input_signature.id, input_signature.latent_embedding)
         record(
             LayerResult(
@@ -609,7 +621,7 @@ class JimsAIPipeline:
             f"Prompt: {request.query}\n"
             f"Capability: {capability_kind}\n"
             f"Answer: {response.response}\n"
-            f"Verified results: {content['verified_results']}"
+            "Verification: structured verified result stored in metadata."
         )
         signature = self.encoder.encode(
             text,
@@ -817,9 +829,53 @@ class JimsAIPipeline:
         if "=" in expression:
             symbols = sorted(set(re.findall(r"\b[a-z]\b", expression)))
             solve_for = symbols[0] if symbols else None
+            if solve_for is None:
+                sides = [part.strip() for part in expression.split("=", 1)]
+                if len(sides) == 2 and not sides[1]:
+                    expression = sides[0]
         if not re.fullmatch(r"[0-9a-z+\-*/().=]+", expression or ""):
             return "", None
         return expression, solve_for
+
+    def _promote_user_fact_memory(self, request: PipelineRequest, input_signature) -> int:
+        user_relations = [
+            relation
+            for relation in input_signature.structured.relations
+            if relation.subject.lower() == "user"
+            and (relation.predicate.startswith("has_") or relation.predicate.startswith("is_"))
+            and relation.object.strip()
+        ]
+        if not user_relations:
+            return 0
+        promoted = 0
+        for relation in user_relations:
+            fact_text = f"User profile fact: user {relation.predicate} {relation.object}."
+            signature = self.encoder.encode(
+                fact_text,
+                modality=Modality.TEXT,
+                intent_type="user_profile",
+                provenance="user_profile_statement",
+                workspace_id=request.workspace_id,
+                user_id=request.user_id,
+            )
+            signature.structured.relations = [relation]
+            signature.abstraction_tags = sorted(
+                set(signature.abstraction_tags)
+                | {"user", "profile", "user_profile_training", relation.predicate}
+            )
+            signature.raw_excerpt = fact_text
+            signature.confidence.score = max(signature.confidence.score, min(0.98, relation.confidence))
+            signature.confidence.source = "user_profile_statement"
+            signature.metadata["profile_relation_predicate"] = relation.predicate
+            signature.metadata["profile_relation_object"] = relation.object
+            self.memory.insert(signature)
+            self.graph.add_signature(signature)
+            try:
+                self.production.save_memory_signature(signature)
+            except Exception:
+                logger.debug("User profile fact persistence skipped", exc_info=True)
+            promoted += 1
+        return promoted
 
     def _apply_capability_gates(self, obj) -> None:
         if not obj.capability_plan:

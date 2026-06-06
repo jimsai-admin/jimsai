@@ -110,6 +110,8 @@ class ConstrainedSemanticSynthesisEngine:
             )
             if calc:
                 expr, result = calc.group(1).strip(), calc.group(2).strip()
+                expr = expr.rstrip("=").strip()
+                result = result.lstrip("=").strip()
                 lines.append(f"**{expr} = {result}**")
                 lines.append("")
                 lines.append(f"To work it out: `{expr}` evaluates to **{result}**.")
@@ -195,7 +197,11 @@ class ConstrainedSemanticSynthesisEngine:
     def _render_claims(
         self, steps: list, obj: VerifiedCognitiveObject, tier: int
     ) -> str:
-        claims = [self._clean_claim(s.claim) for s in steps if s.claim.strip()]
+        claims = [
+            self._clean_claim(s.claim)
+            for s in steps
+            if s.claim.strip() and not self._is_internal_claim(s.claim)
+        ]
         if not claims:
             return self._render_gap(obj)
 
@@ -385,6 +391,16 @@ class ConstrainedSemanticSynthesisEngine:
             if cleaned.startswith(prefix):
                 cleaned = cleaned[len(prefix):]
         return cleaned if cleaned.endswith((".", "?", "!")) else f"{cleaned}."
+
+    def _is_internal_claim(self, claim: str) -> bool:
+        lowered = claim.lower()
+        if "verified results:" in lowered:
+            return True
+        if re.search(r"\[\{['\"]kind['\"]:", claim):
+            return True
+        if re.search(r"['\"]solver_(status|result|method)['\"]", claim):
+            return True
+        return False
 
     def _should_show_simulation(self, obj: VerifiedCognitiveObject) -> bool:
         if not obj.simulation_results:

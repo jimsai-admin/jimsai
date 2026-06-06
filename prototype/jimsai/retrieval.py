@@ -8,53 +8,6 @@ from .memory import FourLayerMemoryStore
 from .models import RetrievalResult, SemanticIR
 
 
-DOCUMENT_WIDE_RELATIONS = {
-    "has_title",
-    "has_case_study",
-    "has_author",
-    "has_institution",
-    "has_student_id",
-    "has_objective",
-    "has_module",
-    "has_problem",
-    "uses_technology",
-    "has_name",
-    "has_role",
-    "is_building",
-}
-
-USER_PROFILE_PREDICATES = {"has_name", "has_role", "is_building"}
-USER_PROFILE_TOKENS = {"i", "me", "my", "mine", "myself", "name", "profile", "know", "remember"}
-QUERY_ONLY_PROVENANCES = {"local_extraction"}
-RETRIEVAL_STOP_TERMS = {
-    "about",
-    "after",
-    "before",
-    "caught",
-    "does",
-    "do",
-    "generate",
-    "know",
-    "plan",
-    "should",
-    "show",
-    "someone",
-    "that",
-    "the",
-    "what",
-    "when",
-    "where",
-    "which",
-    "while",
-    "with",
-    "would",
-}
-
-
-def _is_ascii_stop_term(term: str) -> bool:
-    return term.isascii() and term in RETRIEVAL_STOP_TERMS
-
-
 def cosine(left: list[float], right: list[float]) -> float:
     dot = sum(a * b for a, b in zip(left, right))
     lnorm = math.sqrt(sum(a * a for a in left)) or 1.0
@@ -66,6 +19,10 @@ def term_matches(left: str, right: str) -> bool:
     left = left.lower()
     right = right.lower()
     return left == right or left.startswith(f"{right}.") or right.startswith(f"{left}.")
+
+
+def _is_document_wide_relation(predicate: str) -> bool:
+    return predicate.startswith("has_") or predicate.startswith("uses_") or predicate.startswith("is_")
 
 
 class MultiIndexRetrievalEngine:
@@ -95,20 +52,18 @@ class MultiIndexRetrievalEngine:
         exclude_ids = exclude_ids or set()
         query_vec = hash_embedding(query)
         raw_query_terms = set(ir.tokens) | {str(entity).lower() for entity in ir.scope_constraints.get("entities", [])}
-        query_terms = {term for term in raw_query_terms if not _is_ascii_stop_term(term)}
-        if not query_terms:
-            query_terms = raw_query_terms
+        query_terms = raw_query_terms
         query_phrases = self._query_phrases(query)
         question_intent = ir.scope_constraints.get("question_intent", {})
         relation_filter = str(question_intent.get("relation") or "") if isinstance(question_intent, dict) else ""
-        user_profile_query = bool(ir.scope_constraints.get("profile_query")) or bool(raw_query_terms & USER_PROFILE_TOKENS)
-        has_entity_scope = bool(ir.scope_constraints.get("entities")) and relation_filter not in DOCUMENT_WIDE_RELATIONS
-        effective_limit = 24 if relation_filter in DOCUMENT_WIDE_RELATIONS or relation_filter == "means" else limit
+        user_profile_query = bool(ir.scope_constraints.get("profile_query"))
+        has_entity_scope = bool(ir.scope_constraints.get("entities")) and not _is_document_wide_relation(relation_filter)
+        effective_limit = 24 if _is_document_wide_relation(relation_filter) or relation_filter == "means" else limit
         results: dict[str, RetrievalResult] = {}
         for sig in self.memory.visible_signatures(workspace_id=workspace_id, user_id=user_id):
             if sig.id in exclude_ids:
                 continue
-            if sig.provenance in QUERY_ONLY_PROVENANCES:
+            if sig.provenance == "local_extraction":
                 continue
             reasons: list[str] = []
             matched_terms: set[str] = set()
@@ -168,11 +123,30 @@ class MultiIndexRetrievalEngine:
                     score += 0.55
                     reasons.append("relation_index")
             if user_profile_query and sig.user_id == user_id:
-                profile_relations = {relation.predicate for relation in sig.structured.relations} & USER_PROFILE_PREDICATES
+                profile_relations = {
+                    relation.predicate
+                    for relation in sig.structured.relations
+                    if relation.subject.lower() == "user"
+                    and (relation.predicate.startswith("has_") or relation.predicate.startswith("is_"))
+                }
                 profile_tags = {"user", "profile", "user_profile_training"} & set(sig.abstraction_tags)
                 if profile_relations or profile_tags:
                     score += 0.6
                     reasons.append("user_profile_memory")
+            if sig.user_id == user_id:
+                user_relation_score = 0.0
+                for relation in sig.structured.relations:
+                    if relation.subject.lower() != "user":
+                        continue
+                    relation_terms = set(re.findall(r"[a-z0-9]+", relation.predicate.lower()))
+                    relation_terms.update(re.findall(r"[a-z0-9]+", relation.object.lower()))
+                    overlap = query_terms & relation_terms
+                    if overlap:
+                        matched_terms.update(overlap)
+                        user_relation_score = max(user_relation_score, min(0.5, 0.18 * len(overlap)))
+                if user_relation_score:
+                    score += user_relation_score
+                    reasons.append("user_relation_index")
             semantic = max(cosine(query_vec, sig.latent_embedding), 0.0)
             has_structured_or_lexical_evidence = bool(reasons or matched_terms)
             latent_source = str(sig.metadata.get("latent_embedding_source") or "hash_projection")
@@ -235,7 +209,7 @@ class MultiIndexRetrievalEngine:
         tokens = [
             token
             for token in re.findall(r"[a-z0-9_+\-.#]+", query.lower())
-            if len(token) >= 3 and not _is_ascii_stop_term(token)
+            if len(token) >= 3
         ]
         phrases: set[str] = set()
         for size in (2, 3):
@@ -277,6 +251,8 @@ class MultiIndexRetrievalEngine:
             return True
         if user_profile_query and "user_profile_memory" in reasons:
             return True
+        if "user_relation_index" in reasons:
+            return True
         if "phrase_index" in reasons or "causal_index" in reasons:
             return True
         if "semantic_index" in reasons:
@@ -285,6 +261,6 @@ class MultiIndexRetrievalEngine:
             return bool(matched_terms)
         if len(matched_terms) >= 2:
             return True
-        if relation_filter in DOCUMENT_WIDE_RELATIONS and "relation_index" in reasons:
+        if _is_document_wide_relation(relation_filter) and "relation_index" in reasons:
             return True
         return False

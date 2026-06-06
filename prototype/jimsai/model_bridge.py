@@ -467,6 +467,10 @@ class QwenBridge:
         except (TypeError, ValueError):
             confidence = 0.0
         target = str(deterministic_ir.get("target_ir") or "").upper()
+        scope = deterministic_ir.get("scope_constraints") if isinstance(deterministic_ir, dict) else {}
+        capability_hint = str((scope or {}).get("v9_capability_hint") or "").lower() if isinstance(scope, dict) else ""
+        if capability_hint in {"math_science", "coding"} and confidence >= self.t1_skip_confidence:
+            return True
         # Always run T1 for ambiguous or complex routes
         if target in {"OP_ESCAPE_TO_SANDBOX", "RUN_CANVAS", "RUN_INVENTION"}:
             return False

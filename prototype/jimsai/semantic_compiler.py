@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import os
 import re
 import unicodedata
 from typing import Any
@@ -9,17 +10,8 @@ from .models import ExecutionMode, Hypothesis, IntentDomain, SemanticIR
 from .intent_classifier import get_classifier
 
 
-# Language-universal document relations (not language-specific)
-DOCUMENT_WIDE_RELATIONS = {
-    "has_title",
-    "has_case_study",
-    "has_author",
-    "has_institution",
-    "has_objective",
-    "has_module",
-    "has_problem",
-    "uses_technology",
-}
+def _is_document_wide_relation(predicate: str) -> bool:
+    return predicate.startswith("has_") or predicate.startswith("uses_") or predicate.startswith("is_")
 
 # Capability token sets used by _v9_capability_override
 # NOTE: These are kept for backward compatibility with scope hint generation.
@@ -249,7 +241,12 @@ class _FallbackClassifier:
         if self.api_token:
             headers["Authorization"] = f"Bearer {self.api_token}"
         try:
-            response = httpx.post(url, json=payload, headers=headers, timeout=5.0)
+            response = httpx.post(
+                url,
+                json=payload,
+                headers=headers,
+                timeout=float(os.getenv("JIMS_INTENT_EMBEDDING_TIMEOUT", "4") or "4"),
+            )
             if response.status_code == 200:
                 data = response.json()
                 emb = data.get("data", [[]])[0].get("embedding", [])
@@ -267,10 +264,49 @@ class _FallbackClassifier:
             except ImportError:
                 return [0.0] * 768
 
+    def _fetch_embeddings(self, texts: list[str], model_id: str = "intfloat/multilingual-e5-small") -> list[list[float]]:
+        import httpx
+        if not texts:
+            return []
+        url = f"{self.api_url}/v1/embed"
+        headers = {}
+        if self.api_token:
+            headers["Authorization"] = f"Bearer {self.api_token}"
+        try:
+            response = httpx.post(
+                url,
+                json={"input": texts, "model": model_id},
+                headers=headers,
+                timeout=float(os.getenv("JIMS_INTENT_EMBEDDING_TIMEOUT", "6") or "6"),
+            )
+            if response.status_code == 200:
+                data = response.json()
+                vectors = data.get("vectors") or data.get("embeddings")
+                if isinstance(vectors, list) and len(vectors) == len(texts):
+                    return vectors
+                rows = data.get("data")
+                if isinstance(rows, list) and len(rows) == len(texts):
+                    extracted = [row.get("embedding", []) if isinstance(row, dict) else [] for row in rows]
+                    if all(extracted):
+                        return extracted
+        except Exception:
+            pass
+        try:
+            from .encoder import hash_embedding
+            return [hash_embedding(text, 768) for text in texts]
+        except ImportError:
+            try:
+                from .encoder.dual_encoder import hash_embedding
+                return [hash_embedding(text, 768) for text in texts]
+            except ImportError:
+                return [[0.0] * 768 for _ in texts]
+
     def _get_prototype_embeddings(self):
         if not self._prototype_embeddings:
-            for ir_target, description in self.ir_prototypes.items():
-                emb = self._fetch_embedding("passage: " + description)
+            targets = list(self.ir_prototypes.keys())
+            texts = ["passage: " + self.ir_prototypes[target] for target in targets]
+            vectors = self._fetch_embeddings(texts)
+            for ir_target, emb in zip(targets, vectors):
                 self._prototype_embeddings[ir_target] = emb
         return self._prototype_embeddings
 
@@ -352,12 +388,20 @@ class SemanticCompilerRuntime:
 
     @property
     def classifier(self) -> Any:
-        """Lazy initialize classifier, with fallback if sentence-transformers not installed."""
+        """Lazy initialize classifier.
+
+        Production backends default to the external HF embedding service so they
+        do not load sentence-transformers locally during cold start or first query.
+        """
         if self._classifier is None:
-            try:
-                self._classifier = get_classifier()
-            except (ImportError, Exception):
+            use_local = os.getenv("JIMS_USE_LOCAL_SENTENCE_TRANSFORMERS", "false").lower() in {"1", "true", "yes", "on"}
+            if not use_local:
                 self._classifier = _FallbackClassifier()
+            else:
+                try:
+                    self._classifier = get_classifier()
+                except (ImportError, Exception):
+                    self._classifier = _FallbackClassifier()
         return self._classifier
 
     def _scope_from_tokens(self, tokens: list[str], raw_input: str) -> dict[str, Any]:
@@ -423,6 +467,8 @@ class SemanticCompilerRuntime:
     def _v9_capability_override(self, tokens: list[str], raw_input: str) -> tuple[str, float, str] | None:
         token_set = {token.strip(".,:;!?").lower() for token in tokens}
         raw_lower = raw_input.lower()
+        if len(re.findall(r"\d+(?:\.\d+)?", raw_input)) >= 2 and re.search(r"[+\-*/=]", raw_input):
+            return "GENERAL_FACT", 0.92, "math_science"
         if "def " in raw_input or "class " in raw_input or "import " in raw_input or "return " in raw_input or "function " in raw_input or "```python" in raw_lower:
             return "CODE_GENERATE", 0.99, "coding"
         has_generation_action = bool(token_set & GENERATION_ACTION_TOKENS)
@@ -458,12 +504,19 @@ class SemanticCompilerRuntime:
         canonical_query = " ".join(_canonical_token(w) for w in _basic_tokens(raw_input))
         
         # Use embedding-based intent classification (primary - HIGH PRIORITY)
-        target_ir, confidence = self.classifier.classify_intent(canonical_query or raw_input)
+        scope = self._scope_from_tokens(tokens, normalized_input)
+        v9_override = self._v9_capability_override(tokens, normalized_input)
+        if v9_override and v9_override[1] >= 0.9:
+            target_ir, confidence, capability_hint = v9_override
+            scope["v9_capability_hint"] = capability_hint
+            structural_fast_path = True
+        else:
+            target_ir, confidence = self.classifier.classify_intent(canonical_query or raw_input)
+            structural_fast_path = False
         
         # Keep hypotheses for backward compatibility (empty list — lexical scoring removed)
         hypotheses: list = []
         
-        scope = self._scope_from_tokens(tokens, normalized_input)
         raw_lower = normalized_input.lower()
         causal_question = raw_lower.startswith("why ") and scope.get("entities")
         
@@ -480,7 +533,7 @@ class SemanticCompilerRuntime:
                 confidence = max(confidence, 0.22)
         
         # === PROFILE QUERY DETECTION: Always route to WORKSPACE_QUERY ===
-        is_profile = self.classifier.is_profile_query(canonical_query or raw_input, threshold=0.85)
+        is_profile = False if structural_fast_path else self.classifier.is_profile_query(canonical_query or raw_input, threshold=0.85)
         if is_profile:
             scope["profile_query"] = True
             target_ir = "WORKSPACE_QUERY"
@@ -527,7 +580,7 @@ class SemanticCompilerRuntime:
         context_boosted = False
         question_intent = scope.get("question_intent")
         relation = question_intent.get("relation") if isinstance(question_intent, dict) else None
-        if "entities" not in scope and session.get("ACTIVE_OBJECT") and relation not in DOCUMENT_WIDE_RELATIONS:
+        if "entities" not in scope and session.get("ACTIVE_OBJECT") and not _is_document_wide_relation(relation):
             scope["entities"] = [session["ACTIVE_OBJECT"]]
             context_inherited = True
         

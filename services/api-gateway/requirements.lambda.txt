@@ -13,3 +13,4 @@ psycopg[binary]>=3.2
 redis>=5.0
 numpy>=1.26
 sympy>=1.12
+duckduckgo-search>=6.0

@@ -62,7 +62,7 @@ DOCUMENT_FACT_PREDICATES = {
     "has_role",
     "is_building",
 }
-USER_PROFILE_QUERY_TOKENS = {"i", "me", "my", "mine", "myself", "name", "profile", "know", "remember", "building"}
+USER_PROFILE_QUERY_TOKENS = {"i", "me", "my", "mine", "myself", "name", "profile", "know", "remember"}
 IMPORTANT_SHORT_QUERY_TERMS = {"ai", "ui", "ux", "db", "t1", "t2", "r2"}
 
 
@@ -108,6 +108,12 @@ def _document_claim(subject: str, predicate: str, obj: str) -> str:
         return f"You are {obj}."
     if predicate == "is_building":
         return f"You are building {obj}."
+    if subject.lower() == "user" and predicate.startswith("has_"):
+        label = predicate[4:].replace("_", " ")
+        if label.endswith(" first name"):
+            owner = label[: -len(" first name")].strip()
+            return f"Your {owner}'s first name is {obj}."
+        return f"Your {label} is {obj}."
     return f"{subject} {predicate} {obj}."
 
 
@@ -955,25 +961,37 @@ class ReasoningBridgeLayer:
             if steps:
                 return steps[:24]
 
-        if wants_profile:
-            profile_predicates = {"has_name", "has_role", "is_building"}
-            if "name" in ir.tokens:
-                profile_predicates = {"has_name"}
-            elif "building" in ir.tokens:
-                profile_predicates = {"is_building"}
-            for result in retrieved:
-                sig = result.signature
-                for relation in sig.structured.relations:
-                    if relation.subject.lower() != "user" or relation.predicate not in profile_predicates:
-                        continue
-                    add(
-                        _document_claim(relation.subject, relation.predicate, relation.object),
-                        min(relation.confidence, result.score),
-                        sig.id,
-                        relation.predicate.upper(),
-                    )
-            if steps:
-                return steps[:8]
+        dynamic_user_steps: list[tuple[float, ReasoningStep]] = []
+        query_token_set = set(ir.tokens)
+        for result in retrieved:
+            sig = result.signature
+            for relation in sig.structured.relations:
+                if relation.subject.lower() != "user":
+                    continue
+                is_user_relation = relation.predicate.startswith("has_") or relation.predicate.startswith("is_")
+                if not is_user_relation:
+                    continue
+                predicate_terms = set(relation.predicate.replace("has_", "").replace("is_", "").split("_"))
+                object_terms = set(re.findall(r"[a-z0-9]+", relation.object.lower()))
+                overlap_terms = (predicate_terms | object_terms) & query_token_set
+                relation_score = len(overlap_terms) + (0.35 * result.score) + (0.25 * relation.confidence)
+                if relation_score < 0.55:
+                    continue
+                step = ReasoningStep(
+                    claim=_document_claim(relation.subject, relation.predicate, relation.object),
+                    confidence=round(min(0.99, relation.confidence, result.score), 4),
+                    sources=[sig.id],
+                    relation=relation.predicate.upper(),
+                )
+                dynamic_user_steps.append((relation_score, step))
+        ranked_user_steps = sorted(dynamic_user_steps, key=lambda item: (-item[0], -item[1].confidence))
+        top_user_score = ranked_user_steps[0][0] if ranked_user_steps else 0.0
+        for _score, step in ranked_user_steps:
+            if top_user_score and _score < top_user_score - 0.75:
+                continue
+            add(step.claim, step.confidence, step.sources[0] if step.sources else "", step.relation)
+        if steps and dynamic_user_steps:
+            return steps[:8]
 
         if wants_causal:
             self._add_causal_path_steps(retrieved, entity_keys, direction or "outgoing", add)

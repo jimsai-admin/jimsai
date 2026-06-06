@@ -366,6 +366,16 @@ def extract_sentence_relations(text: str) -> list[tuple[str, str, str, float]]:
         flags=re.IGNORECASE,
     ):
         facts.append(("user", "has_name", match.group("object"), 0.96))
+    for match in re.finditer(
+        r"\bmy\s+(?P<property>[a-z][a-z0-9_\-\s']{1,48}?)\s+(?:is|are)\s+(?P<object>[A-Z0-9][^.;,\n]{0,140})",
+        text,
+        flags=re.IGNORECASE,
+    ):
+        prop = re.sub(r"\s+", "_", match.group("property").strip().lower().replace("'s", ""))
+        prop = re.sub(r"[^a-z0-9_]+", "_", prop).strip("_")
+        obj_value = clean_ref(match.group("object"))
+        if prop and obj_value and prop not in {"name"}:
+            facts.append(("user", f"has_{prop}", obj_value, 0.9))
     for match in re.finditer(r"\bi\s+am\s+(?:a|an)\s+(?P<object>[a-z][a-z0-9_\-\s]{2,80}?)(?:[.;,]|$)", text, flags=re.IGNORECASE):
         role = clean_ref(match.group("object"))
         if role:
