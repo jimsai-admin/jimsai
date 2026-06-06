@@ -1,0 +1,99 @@
+# fly.toml — JimsAI API Gateway on Fly.io
+# Docs: https://fly.io/docs/reference/configuration/
+#
+# Deploy:  fly deploy --config infrastructure/fly/fly.toml
+# Secrets: fly secrets set KEY=value --app jimsai-api
+
+app = "jimsai-api"
+primary_region = "iad"          # Washington DC — closest to us-east-1 where HF Space runs
+
+# Dockerfile is auto-detected from the same directory as fly.toml (infrastructure/fly/Dockerfile)
+
+[build]
+  dockerfile = "infrastructure/fly/Dockerfile"
+
+[env]
+  PORT                              = "8080"
+  PYTHONUNBUFFERED                  = "1"
+  PYTHONDONTWRITEBYTECODE           = "1"
+  PYTHONPATH                        = "/app"
+  JIMS_STORAGE_BACKEND              = "production"
+  JIMS_STRICT_PROVIDER_STARTUP      = "false"
+  JIMS_AUTH_PROVIDER                = "supabase"
+  JIMS_AUTH_REQUIRED                = "true"
+  JIMS_LLM_PROVIDER                 = "local"
+  JIMS_ENABLE_LOCAL_QWEN            = "true"
+  JIMS_ALLOW_EXTERNAL_GROQ          = "false"
+  JIMS_ENABLE_GROQ_T1               = "false"
+  JIMS_ENABLE_GROQ_T2               = "false"
+  JIMS_ENABLE_GROQ_CANVAS           = "false"
+  JIMS_ENABLE_GROQ_INVENTION        = "false"
+  JIMS_ENABLE_MULTIMODAL_ENCODERS   = "true"
+  JIMS_MULTIMODAL_ENCODER_MODE      = "external"
+  JIMS_MULTIMODAL_ENCODER_URL       = "https://jimstechai-jimsai-embedding-service.hf.space"
+  JIMS_EMBEDDING_SERVICE_URL        = "https://jimstechai-jimsai-embedding-service.hf.space"
+  JIMS_QWEN_SERVICE_URL             = "https://jimstechai-jimsai-embedding-service.hf.space"
+  JIMS_LOCAL_INFERENCE_URL          = "https://jimstechai-jimsai-embedding-service.hf.space"
+  JIMS_LOCAL_INFERENCE_MODEL        = "qwen3-1.7b-instruct"
+  JIMS_LOCAL_INFERENCE_CHAT_PATH    = "/v1/chat/completions"
+  JIMS_LOCAL_RENDER_MODEL           = "qwen3-4b-instruct"
+  JIMS_LOCAL_RENDER_CHAT_PATH       = "/v1/chat/render"
+  JIMS_LOCAL_INFERENCE_TIMEOUT      = "120"
+  JIMS_LOCAL_RENDER_TIMEOUT         = "180"
+  JIMS_MULTIMODAL_ENCODER_TIMEOUT   = "45"
+  JIMS_ENABLE_SEMANTIC_CAPABILITY_ROUTER   = "true"
+  JIMS_ENABLE_ZERO_SHOT_CAPABILITY_ROUTER  = "true"
+  JIMS_ENABLE_LLM_CAPABILITY_ROUTER        = "true"
+  JIMS_CAPABILITY_EMBEDDING_SERVICE_URL    = "https://jimstechai-jimsai-embedding-service.hf.space"
+  JIMS_CAPABILITY_CLASSIFIER_URL           = "https://jimstechai-jimsai-embedding-service.hf.space"
+  JIMS_T1_SKIP_CONFIDENCE           = "0.60"
+  JIMS_T2_SKIP_CONFIDENCE           = "0.95"
+  JIMS_ADAPTIVE_TRANSFORMER_THINNING = "true"
+  JIMS_TYPO_CORRECTION_ENABLED      = "true"
+  JIMS_CAUSAL_TRAVERSAL_DEPTH       = "4"
+  JIMS_ENABLE_RESOLUTION_LEARNING   = "true"
+  JIMS_RESOLUTION_LEARNING_MIN_CONFIDENCE = "0.90"
+  CF_VECTORIZE_DIMENSIONS           = "768"
+  LOG_LEVEL                         = "INFO"
+
+# These are set via `fly secrets set` — never put real values here:
+#   SUPABASE_URL, SUPABASE_SERVICE_KEY, SUPABASE_ANON_KEY
+#   JIMS_EMBEDDING_SERVICE_TOKEN, JIMS_MULTIMODAL_ENCODER_API_KEY
+#   JIMS_LOCAL_INFERENCE_API_KEY, JIMS_QWEN_SERVICE_TOKEN
+#   JIMS_CAPABILITY_EMBEDDING_SERVICE_TOKEN, JIMS_CAPABILITY_CLASSIFIER_TOKEN
+#   CF_ACCOUNT_ID, CF_VECTORIZE_INDEX, CF_VECTORIZE_API_TOKEN
+#   CF_R2_BUCKET, CF_R2_ACCESS_KEY, CF_R2_SECRET_KEY
+#   NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD, NEO4J_DATABASE
+#   REDIS_URL, KAGGLE_USERNAME, KAGGLE_API_TOKEN, KAGGLE_DATASET_OWNER
+
+[[services]]
+  internal_port = 8080
+  protocol      = "tcp"
+  auto_stop_machines  = false   # keep machine running — prevents cold-start timeouts
+  auto_start_machines = true
+
+  [[services.ports]]
+    port     = 80
+    handlers = ["http"]
+
+  [[services.ports]]
+    port     = 443
+    handlers = ["tls", "http"]
+
+  [services.concurrency]
+    type       = "requests"
+    soft_limit = 50
+    hard_limit = 100
+
+  [[services.http_checks]]
+    interval       = 30000    # ms — check every 30s
+    timeout        = 10000    # ms — /health itself is fast
+    grace_period   = "120s"   # allow 2 min for cold start + HF Space connection
+    method         = "GET"
+    path           = "/health"
+    protocol       = "http"
+    tls_skip_verify = false
+
+[[vm]]
+  memory = "1gb"
+  cpus   = 1

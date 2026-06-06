@@ -1,0 +1,41 @@
+# requirements.fly.txt — JimsAI API Gateway on Fly.io
+# Explicit deps for the prototype + api-gateway.
+# sentence-transformers / torch / GPU packages intentionally excluded —
+# all embeddings and model inference go to the HF Space.
+
+# ── FastAPI web layer ────────────────────────────────────────────────────────
+fastapi>=0.111
+uvicorn[standard]>=0.30
+pydantic>=2.7
+pydantic-settings>=2.3
+python-multipart>=0.0.9
+starlette>=0.37
+
+# ── Async & HTTP ─────────────────────────────────────────────────────────────
+httpx>=0.27
+aiohttp>=3.9
+
+# ── Data / math ──────────────────────────────────────────────────────────────
+numpy>=1.26
+sympy>=1.12
+
+# ── Database / storage ───────────────────────────────────────────────────────
+psycopg[binary]>=3.2
+redis>=5.0
+neo4j>=5.28
+boto3>=1.35
+supabase>=2.4
+
+# ── Task queue ───────────────────────────────────────────────────────────────
+celery[redis]>=5.5
+
+# ── Observability ─────────────────────────────────────────────────────────────
+prometheus-client>=0.20
+psutil>=5.9
+
+# ── Web search ───────────────────────────────────────────────────────────────
+duckduckgo-search>=6.0
+
+# ── Utilities ────────────────────────────────────────────────────────────────
+python-dotenv>=1.0
+typing-extensions>=4.12
