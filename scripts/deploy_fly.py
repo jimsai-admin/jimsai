@@ -70,8 +70,15 @@ def load_env(path: Path) -> dict[str, str]:
     return values
 
 
+def _display_arg(arg: str) -> str:
+    if "=" in arg and not arg.startswith("--"):
+        key, _value = arg.split("=", 1)
+        return f"{key}=***"
+    return arg
+
+
 def run(cmd: list[str], **kwargs) -> int:
-    print(f"\n  $ {' '.join(cmd)}")
+    print(f"\n  $ {' '.join(_display_arg(arg) for arg in cmd)}")
     result = subprocess.run(cmd, **kwargs)
     return result.returncode
 
