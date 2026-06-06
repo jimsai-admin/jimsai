@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 import math
@@ -21,6 +21,24 @@ def env_bool(name: str, default: bool = False) -> bool:
     if value is None:
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def env_float(name: str, default: float) -> float:
+    value = os.getenv(name)
+    if value is None or value.strip() == "":
+        return default
+    try:
+        return float(value)
+    except ValueError:
+        return default
+
+
+def provider_http_timeout() -> float:
+    return env_float("JIMS_PROVIDER_HTTP_TIMEOUT", 6.0)
+
+
+def provider_check_timeout() -> float:
+    return env_float("JIMS_PROVIDER_CHECK_TIMEOUT", 4.0)
 
 
 def env_flag(name: str, default: bool) -> bool:
@@ -245,7 +263,7 @@ class CloudflareVectorizeIndex:
         response = httpx.get(
             url,
             headers={"Authorization": f"Bearer {self.settings.vectorize_api_token}"},
-            timeout=30,
+            timeout=provider_check_timeout(),
         )
         response.raise_for_status()
         return "connected to Cloudflare Vectorize index"
@@ -265,7 +283,7 @@ class CloudflareVectorizeIndex:
                 "Content-Type": "application/x-ndjson",
             },
             content=ndjson.encode("utf-8"),
-            timeout=30,
+            timeout=provider_http_timeout(),
         )
         response.raise_for_status()
         data = response.json()
@@ -300,7 +318,7 @@ class CloudflareVectorizeIndex:
                 "Content-Type": "application/json",
             },
             json={"ids": [signature_id]},
-            timeout=30,
+            timeout=provider_http_timeout(),
         )
         response.raise_for_status()
         data = response.json()
@@ -333,7 +351,7 @@ class CloudflareVectorizeIndex:
                 "returnValues": return_values,
                 "returnMetadata": return_metadata,
             },
-            timeout=30,
+            timeout=provider_http_timeout(),
         )
         response.raise_for_status()
         data = response.json()
@@ -396,7 +414,7 @@ class SupabasePostgresStore:
             self._rest_url("signatures"),
             headers=self._rest_headers(),
             params={"select": "id", "limit": "1"},
-            timeout=20,
+            timeout=provider_check_timeout(),
         )
         response.raise_for_status()
         return "Supabase REST tables reachable"
@@ -842,7 +860,7 @@ class SupabasePostgresStore:
             self._rest_url("signatures"),
             headers=self._rest_headers("resolution=merge-duplicates,return=minimal"),
             json=payload,
-            timeout=30,
+            timeout=provider_http_timeout(),
         )
         response.raise_for_status()
 
@@ -851,7 +869,7 @@ class SupabasePostgresStore:
             self._rest_url("signatures"),
             headers=self._rest_headers(),
             params={"id": f"eq.{signature_id}"},
-            timeout=30,
+            timeout=provider_http_timeout(),
         )
         response.raise_for_status()
 
@@ -867,7 +885,7 @@ class SupabasePostgresStore:
             self._rest_url("training_panel_items"),
             headers=self._rest_headers("count=exact"),
             params={"or": f"({','.join(filters)})"},
-            timeout=30,
+            timeout=provider_http_timeout(),
         )
         response.raise_for_status()
         content_range = response.headers.get("content-range", "")
@@ -891,7 +909,7 @@ class SupabasePostgresStore:
                 "or": f"(payload->>rule.eq.{rule},title.eq.{rule})",
                 "limit": "100",
             },
-            timeout=30,
+            timeout=provider_http_timeout(),
         )
         response.raise_for_status()
         rows = response.json()
@@ -902,7 +920,7 @@ class SupabasePostgresStore:
                     self._rest_url("training_panel_items"),
                     headers=self._rest_headers(),
                     params={"id": f"eq.{row['id']}"},
-                    timeout=30,
+                    timeout=provider_http_timeout(),
                 )
                 delete_response.raise_for_status()
                 deleted += 1
@@ -928,7 +946,7 @@ class SupabasePostgresStore:
                     "subtitle": f"{state} / confidence {confidence:.2f} / {provenance}",
                     "payload": payload,
                 },
-                timeout=30,
+                timeout=provider_http_timeout(),
             )
             patch_response.raise_for_status()
             updated += 1
@@ -951,7 +969,7 @@ class SupabasePostgresStore:
             self._rest_url("training_panel_items"),
             headers=self._rest_headers("resolution=merge-duplicates,return=minimal"),
             json=payload,
-            timeout=30,
+            timeout=provider_http_timeout(),
         )
         response.raise_for_status()
 
@@ -960,14 +978,14 @@ class SupabasePostgresStore:
             self._rest_url("chat_threads"),
             headers=self._rest_headers("resolution=merge-duplicates,return=minimal"),
             json=thread,
-            timeout=30,
+            timeout=provider_http_timeout(),
         )
         thread_response.raise_for_status()
         message_response = httpx.post(
             self._rest_url("chat_messages"),
             headers=self._rest_headers("resolution=merge-duplicates,return=minimal"),
             json=messages,
-            timeout=30,
+            timeout=provider_http_timeout(),
         )
         message_response.raise_for_status()
 
@@ -991,7 +1009,7 @@ class SupabasePostgresStore:
                 self._rest_url("user_feedback"),
                 headers=self._rest_headers("resolution=merge-duplicates,return=minimal"),
                 json=row,
-                timeout=30,
+                timeout=provider_http_timeout(),
             )
             response.raise_for_status()
             return
@@ -1036,7 +1054,7 @@ class SupabasePostgresStore:
             self._rest_url("chat_threads"),
             headers=self._rest_headers(),
             params=params,
-            timeout=30,
+            timeout=provider_http_timeout(),
         )
         response.raise_for_status()
         return response.json()
@@ -1052,7 +1070,7 @@ class SupabasePostgresStore:
                 "order": "created_at.asc,id.asc",
                 "limit": str(limit),
             },
-            timeout=30,
+            timeout=provider_http_timeout(),
         )
         response.raise_for_status()
         return response.json()
@@ -1062,14 +1080,14 @@ class SupabasePostgresStore:
             self._rest_url("chat_messages"),
             headers=self._rest_headers("count=exact"),
             params={"thread_id": f"eq.{thread_id}", "user_id": f"eq.{user_id}"},
-            timeout=30,
+            timeout=provider_http_timeout(),
         )
         message_response.raise_for_status()
         thread_response = httpx.delete(
             self._rest_url("chat_threads"),
             headers=self._rest_headers(),
             params={"id": f"eq.{thread_id}", "user_id": f"eq.{user_id}"},
-            timeout=30,
+            timeout=provider_http_timeout(),
         )
         thread_response.raise_for_status()
         return _total_from_content_range(message_response.headers.get("content-range", ""), 0)
@@ -1087,7 +1105,7 @@ class SupabasePostgresStore:
                 "limit": str(page_size + 1),
                 "offset": str(offset),
             },
-            timeout=30,
+            timeout=provider_http_timeout(),
         )
         response.raise_for_status()
         rows = response.json()
@@ -1122,7 +1140,7 @@ class SupabasePostgresStore:
                 "order": "created_at.desc,id.desc",
                 "limit": str(limit),
             },
-            timeout=30,
+            timeout=provider_http_timeout(),
         )
         response.raise_for_status()
         signatures: list[MemorySignature] = []
@@ -1140,7 +1158,7 @@ class SupabasePostgresStore:
                 "select": "payload",
                 "id": f"in.({','.join(ids)})",
             },
-            timeout=30,
+            timeout=provider_http_timeout(),
         )
         response.raise_for_status()
         by_id: dict[str, MemorySignature] = {}
@@ -1266,7 +1284,7 @@ class RedisCeleryQueue:
         if self._redis is None:
             import redis
 
-            self._redis = redis.Redis.from_url(self.settings.redis_url, socket_connect_timeout=10, socket_timeout=10)
+            self._redis = redis.Redis.from_url(self.settings.redis_url, socket_connect_timeout=provider_check_timeout(), socket_timeout=provider_http_timeout())
         return self._redis
 
     def get_json(self, key: str) -> dict[str, Any] | None:
@@ -1315,11 +1333,11 @@ class ExternalMultimodalEncoderAdapter:
         """Embed content using the HF Space /v1/embed endpoint.
 
         Model selection per modality:
-          - CODE  → microsoft/codebert-base       (768-dim, code-aware CLS pooling)
-          - DATA  → jinaai/jina-embeddings-v3      (when JIMS_JINA_EMBEDDINGS_ENABLED=true)
+          - CODE  â†’ microsoft/codebert-base       (768-dim, code-aware CLS pooling)
+          - DATA  â†’ jinaai/jina-embeddings-v3      (when JIMS_JINA_EMBEDDINGS_ENABLED=true)
                     Jina v3 is linked on the HF Space but off by default.
                     Enable only when the Space confirms it's serving jina-embeddings-v3.
-          - other → intfloat/multilingual-e5-small (768-dim, multilingual semantic)
+          - other â†’ intfloat/multilingual-e5-small (768-dim, multilingual semantic)
         """
         if not self.configured:
             return []
@@ -1327,11 +1345,11 @@ class ExternalMultimodalEncoderAdapter:
         headers = self._headers()
 
         # Select embedding model based on modality:
-        #   CODE  → microsoft/codebert-base  (768-dim, code-aware)
-        #   DATA  → jinaai/jina-embeddings-v3 (when JIMS_JINA_EMBEDDINGS_ENABLED=true)
+        #   CODE  â†’ microsoft/codebert-base  (768-dim, code-aware)
+        #   DATA  â†’ jinaai/jina-embeddings-v3 (when JIMS_JINA_EMBEDDINGS_ENABLED=true)
         #           Jina v3 is linked on the HF Space but off by default.
         #           Enable only when the Space confirms it's serving jina-embeddings-v3.
-        #   other → intfloat/multilingual-e5-small  (768-dim, multilingual semantic)
+        #   other â†’ intfloat/multilingual-e5-small  (768-dim, multilingual semantic)
         jina_enabled = os.getenv("JIMS_JINA_EMBEDDINGS_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
         if modality == Modality.CODE:
             model_id = "microsoft/codebert-base"
@@ -1495,7 +1513,7 @@ class ProductionRuntime:
         self.multimodal = self._build_multimodal_adapter()
         # Lazy initialization: _initialized = False means _ensure_initialized()
         # will connect to external providers on first actual use, not at startup.
-        # This cuts Lambda cold start from 60–150s to <5s.
+        # This cuts Lambda cold start from 60â€“150s to <5s.
         self._initialized = False
         self._checked_adapters: set[str] = set()
         # Pre-populate statuses as "not yet checked" so readiness() always works
@@ -1768,3 +1786,4 @@ class ProductionRuntime:
                 detail=str(exc),
             )
             return None
+
