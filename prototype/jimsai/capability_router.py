@@ -47,17 +47,16 @@ class CapabilityRouter:
         self.embedding_url = (
             os.getenv("JIMS_CAPABILITY_EMBEDDING_SERVICE_URL", "")
             or os.getenv("JIMS_EMBEDDING_SERVICE_URL", "")
-            or os.getenv("JIMS_QWEN_SERVICE_URL", "")
         ).strip().rstrip("/")
         self.embedding_token = (
             os.getenv("JIMS_CAPABILITY_EMBEDDING_SERVICE_TOKEN", "")
             or os.getenv("JIMS_EMBEDDING_SERVICE_TOKEN", "")
-            or os.getenv("JIMS_RENDER_AGENT_TOKEN", "")
+            or os.getenv("JIMS_MODAL_API_KEY", "")
         ).strip()
         self.embedding_timeout = float(os.getenv("JIMS_CAPABILITY_EMBEDDING_TIMEOUT", "8") or "8")
         self.classifier_enabled = os.getenv("JIMS_ENABLE_ZERO_SHOT_CAPABILITY_ROUTER", "true").lower() in {"1", "true", "yes", "on"}
         self.classifier_url = (
-            os.getenv("JIMS_CAPABILITY_CLASSIFIER_URL", "")
+            os.getenv("JIMS_CLASSIFICATION_SERVICE_URL", "")
             or self.embedding_url
         ).strip().rstrip("/")
         self.classifier_token = (
@@ -453,9 +452,9 @@ class CapabilityRouter:
         try:
             async with httpx.AsyncClient(timeout=self.classifier_timeout) as client:
                 response = await client.post(
-                    f"{self.classifier_url}/v1/classify/capability",
+                    f"{self.classifier_url}/classify",
                     headers=headers,
-                    json={"text": query, "candidate_kinds": [kind.value for kind in CapabilityKind]},
+                    json={"text": query, "candidate_labels": [kind.value for kind in CapabilityKind]},
                 )
                 response.raise_for_status()
             payload = response.json()

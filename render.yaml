@@ -23,10 +23,10 @@ services:
       - key: JIMS_KAGGLE_MAX_PANEL_ITEMS
         value: "500"
       - key: JIMS_EMBEDDING_SERVICE_URL
-        value: https://jimstechai-jimsai-embedding-service.hf.space
+        value: https://placeholder--jimsai-embedding-service.modal.run
       - key: JIMS_EMBEDDING_SERVICE_TOKEN
         sync: false
-      - key: JIMS_RENDER_AGENT_TOKEN
+      - key: JIMS_MODAL_API_KEY
         sync: false
       - key: REDIS_URL
         sync: false

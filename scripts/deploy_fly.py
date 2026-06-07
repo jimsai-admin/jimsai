@@ -54,7 +54,7 @@ FLY_SECRET_KEYS = [
     "KAGGLE_API_TOKEN",
     "KAGGLE_DATASET_OWNER",
     # Optional extras
-    "JIMS_RENDER_AGENT_TOKEN",
+    "JIMS_MODAL_API_KEY",
     "CORS_ORIGINS",
 ]
 

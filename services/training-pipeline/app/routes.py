@@ -82,7 +82,7 @@ class KagglePackageRequest(BaseModel):
 
 
 def require_agent_token(authorization: str | None) -> None:
-    expected = os.getenv("JIMS_RENDER_AGENT_TOKEN", "").strip()
+    expected = os.getenv("JIMS_MODAL_API_KEY", "").strip()
     if not expected:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="agent token not configured")
     if authorization != f"Bearer {expected}":

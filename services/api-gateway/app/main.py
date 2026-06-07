@@ -3,8 +3,6 @@ from __future__ import annotations
 import asyncio
 import os
 from contextlib import asynccontextmanager
-
-import httpx
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse
@@ -17,36 +15,7 @@ from .telemetry import configure_logger, trace_middleware
 logger = configure_logger(settings.service_name, settings.log_level)
 
 
-async def _wake_hf_space() -> None:
-    """Fire-and-forget background task: ping HF Space /health until it responds.
-    This prevents the first real user request from blocking on cold-start.
-    """
-    url = os.getenv("JIMS_EMBEDDING_SERVICE_URL", "").rstrip("/")
-    if not url:
-        return
-    health_url = f"{url}/health"
-    for attempt in range(1, 16):          # up to ~4 minutes total
-        try:
-            async with httpx.AsyncClient(timeout=20) as client:
-                r = await client.get(health_url)
-                if r.status_code == 200:
-                    logger.info("HF Space awake after %d ping(s): %s", attempt, r.json().get("status"))
-                    return
-                logger.debug("HF Space ping %d → HTTP %d", attempt, r.status_code)
-        except Exception as exc:
-            logger.debug("HF Space ping %d failed: %s", attempt, exc)
-        await asyncio.sleep(15)
-    logger.warning("HF Space did not respond within warm-up window — embeddings will use hash fallback until it wakes")
-
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    # Kick off HF Space warm-up in the background — don't block startup
-    asyncio.create_task(_wake_hf_space())
-    yield
-
-
-app = FastAPI(title="JIMS-AI api-gateway", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="JIMS-AI api-gateway", version="0.1.0")
 configured_cors_origins = [origin.strip() for origin in settings.cors_origins.split(",") if origin.strip()]
 lambda_function_url_cors = bool(os.getenv("AWS_LAMBDA_FUNCTION_NAME"))
 if configured_cors_origins and not lambda_function_url_cors:

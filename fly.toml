@@ -5,7 +5,7 @@
 # Secrets: fly secrets set KEY=value --app jimsai-api
 
 app = "jimsai-api"
-primary_region = "iad"          # Washington DC — closest to us-east-1 where HF Space runs
+primary_region = "iad"          # Washington DC — closest to us-east-1
 
 # Dockerfile is auto-detected from the same directory as fly.toml (infrastructure/fly/Dockerfile)
 
@@ -30,14 +30,12 @@ primary_region = "iad"          # Washington DC — closest to us-east-1 where H
   JIMS_ENABLE_GROQ_INVENTION        = "false"
   JIMS_ENABLE_MULTIMODAL_ENCODERS   = "true"
   JIMS_MULTIMODAL_ENCODER_MODE      = "external"
-  JIMS_MULTIMODAL_ENCODER_URL       = "https://jimstechai-jimsai-embedding-service.hf.space"
-  JIMS_EMBEDDING_SERVICE_URL        = "https://jimstechai-jimsai-embedding-service.hf.space"
-  JIMS_QWEN_SERVICE_URL             = "https://jimstechai-jimsai-embedding-service.hf.space"
-  JIMS_LOCAL_INFERENCE_URL          = "https://jimstechai-jimsai-embedding-service.hf.space"
+  JIMS_MULTIMODAL_ENCODER_URL       = "https://placeholder--jimsai-embedding-service.modal.run"
+  JIMS_EMBEDDING_SERVICE_URL        = "https://placeholder--jimsai-embedding-service.modal.run"
   JIMS_LOCAL_INFERENCE_MODEL        = "qwen3-1.7b-instruct"
-  JIMS_LOCAL_INFERENCE_CHAT_PATH    = "/v1/chat/completions"
+  JIMS_LOCAL_INFERENCE_CHAT_PATH    = "/generate"
   JIMS_LOCAL_RENDER_MODEL           = "qwen3-4b-instruct"
-  JIMS_LOCAL_RENDER_CHAT_PATH       = "/v1/chat/render"
+  JIMS_LOCAL_RENDER_CHAT_PATH       = "/generate"
   JIMS_LOCAL_INFERENCE_TIMEOUT      = "120"
   JIMS_LOCAL_RENDER_TIMEOUT         = "180"
   JIMS_MULTIMODAL_ENCODER_TIMEOUT   = "45"
@@ -51,8 +49,8 @@ primary_region = "iad"          # Washington DC — closest to us-east-1 where H
   JIMS_ENABLE_SEMANTIC_CAPABILITY_ROUTER   = "true"
   JIMS_ENABLE_ZERO_SHOT_CAPABILITY_ROUTER  = "true"
   JIMS_ENABLE_LLM_CAPABILITY_ROUTER        = "true"
-  JIMS_CAPABILITY_EMBEDDING_SERVICE_URL    = "https://jimstechai-jimsai-embedding-service.hf.space"
-  JIMS_CAPABILITY_CLASSIFIER_URL           = "https://jimstechai-jimsai-embedding-service.hf.space"
+  JIMS_CAPABILITY_EMBEDDING_SERVICE_URL    = "https://placeholder--jimsai-embedding-service.modal.run"
+  JIMS_CLASSIFICATION_SERVICE_URL          = "https://placeholder--jimsai-classification-service.modal.run"
   JIMS_T1_SKIP_CONFIDENCE           = "0.60"
   JIMS_T2_SKIP_CONFIDENCE           = "0.95"
   JIMS_ADAPTIVE_TRANSFORMER_THINNING = "true"

@@ -113,7 +113,7 @@ class ProductionSettings:
             vectorize_index=os.getenv("CF_VECTORIZE_INDEX", ""),
             vectorize_dimensions=int(os.getenv("CF_VECTORIZE_DIMENSIONS", "768") or "768"),
             embedding_service_url=os.getenv("JIMS_EMBEDDING_SERVICE_URL", "").strip().rstrip("/"),
-            embedding_service_token=os.getenv("JIMS_EMBEDDING_SERVICE_TOKEN", "").strip() or os.getenv("JIMS_RENDER_AGENT_TOKEN", "").strip(),
+            embedding_service_token=os.getenv("JIMS_EMBEDDING_SERVICE_TOKEN", "").strip() or os.getenv("JIMS_MODAL_API_KEY", "").strip(),
             multimodal_encoder_mode=os.getenv("JIMS_MULTIMODAL_ENCODER_MODE", "").strip().lower(),
             multimodal_encoder_url=os.getenv("JIMS_MULTIMODAL_ENCODER_URL", "").strip().rstrip("/"),
             multimodal_encoder_api_key=os.getenv("JIMS_MULTIMODAL_ENCODER_API_KEY", ""),
@@ -1361,12 +1361,15 @@ class ExternalMultimodalEncoderAdapter:
             model_id = os.getenv("JIMS_EMBEDDING_MODEL", "intfloat/multilingual-e5-small")
             purpose = "query" if modality == Modality.TEXT else "document"
 
-        target_timeout = float(
+        target_timeout = int(
             os.getenv(
-                "JIMS_LIVE_EMBEDDING_TIMEOUT",
-                os.getenv("JIMS_MULTIMODAL_ENCODER_TIMEOUT", "6"),
+                "JIMS_EMBEDDING_TIMEOUT",
+                os.getenv(
+                    "JIMS_LIVE_EMBEDDING_TIMEOUT",
+                    os.getenv("JIMS_MULTIMODAL_ENCODER_TIMEOUT", "8"),
+                ),
             )
-            or "6"
+            or "8"
         )
         max_attempts = 3  # Always try 3 times before declaring failure
         for attempt in range(max_attempts):
