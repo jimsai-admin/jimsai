@@ -470,19 +470,43 @@ class InventionEngineLayer:
     async def run_mcts(self, goal: str, initial_plan: str, iterations: int = 5) -> dict[str, Any]:
         from .execution_runtime import DeterministicSandbox
         sandbox = DeterministicSandbox()
-        
+
         root = MCTSNode(initial_plan)
-        
+
         candidates = await self.bridge.invention_candidates(
-            goal, 
+            goal,
             {"plan": initial_plan, "scope": {}, "stage": "initial"}
         )
         if candidates and "candidate_steps" in candidates:
             for step in candidates["candidate_steps"]:
                 root.children.append(MCTSNode(str(step), parent=root))
-                
+
         if not root.children:
             root.children.append(MCTSNode(initial_plan + "\n# Step 1: Analyze problem\n# Step 2: Implement solution", parent=root))
+
+        # Early-exit: if the first Qwen call already produced a real code candidate
+        # (long string with code tokens), skip the MCTS loop entirely to avoid
+        # N×120s HF Space round-trips.  MCTS iterations add value for multi-step
+        # reasoning tasks but are expensive when a single LLM call suffices.
+        CODE_TOKENS = ("def ", "class ", "import ", "function ", "const ", "let ",
+                       "var ", "fn ", "pub ", "SELECT ", "CREATE ", "async ", "return ")
+        first_real_code = next(
+            (c.code_or_step for c in root.children
+             if len(c.code_or_step) > 100 or any(t in c.code_or_step for t in CODE_TOKENS)),
+            None,
+        )
+        if first_real_code:
+            # Score and return immediately — no further Qwen calls needed
+            root.visits = 1
+            best_child = root.children[0]
+            best_child.visits = 1
+            best_child.value = 1.0
+            return {
+                "best_path": [first_real_code],
+                "traces": [{"node": first_real_code, "visits": 1, "value": 1.0, "error": ""}],
+                "node_scores": {first_real_code: 1.0},
+                "metrics": {"total_iterations": 0, "early_exit": True},
+            }
 
         for _ in range(iterations):
             node = root
@@ -505,7 +529,7 @@ class InventionEngineLayer:
             passed = True
             error_msg = ""
             score = 0.5
-            
+
             if "def " in node.code_or_step or "import " in node.code_or_step or "class " in node.code_or_step or "print(" in node.code_or_step:
                 exec_res = sandbox.run_python(node.code_or_step, "", 1500)
                 if exec_res.get("status") != "passed":
@@ -533,7 +557,7 @@ class InventionEngineLayer:
             if not passed and error_msg:
                 reflection_prompt = f"The candidate code failed with error:\n{error_msg}\nPlease generate a corrected version of the code."
                 corrected = await self.bridge.invention_candidates(
-                    goal, 
+                    goal,
                     {"failed_code": node.code_or_step, "error": error_msg, "prompt": reflection_prompt}
                 )
                 if corrected and "candidate_steps" in corrected:
@@ -541,7 +565,7 @@ class InventionEngineLayer:
                         node.children.append(MCTSNode(str(step), parent=node))
             elif node.visits > 0 and len(node.children) == 0:
                 deeper = await self.bridge.invention_candidates(
-                    goal, 
+                    goal,
                     {"context": node.code_or_step, "stage": "deeper"}
                 )
                 if deeper and "candidate_steps" in deeper:

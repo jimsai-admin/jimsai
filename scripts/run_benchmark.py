@@ -213,6 +213,24 @@ PROMPTS = [
 
     # ── TIER 4: EDGE CASES ───────────────────────────────────────────────────
     {
+        "id": "web_current_events",
+        "tier": "web",
+        "prompt": "What is the latest version of Python and when was it released?",
+        "note": "Web search — should route to world_knowledge, search DDG, return factual answer with source",
+    },
+    {
+        "id": "web_factual_lookup",
+        "tier": "web",
+        "prompt": "What is the population of Nigeria as of the latest available data?",
+        "note": "Web factual lookup — world_knowledge route, DDG search, gap if no result",
+    },
+    {
+        "id": "web_tech_news",
+        "tier": "web",
+        "prompt": "What are the main features of the latest LTS release of Node.js?",
+        "note": "Tech web lookup — world_knowledge route, should find release notes",
+    },
+    {
         "id": "edge_ambiguous",
         "tier": "edge_case",
         "prompt": "Do the thing with the stuff from before.",
@@ -519,7 +537,7 @@ async def run_benchmark(base_url: str) -> None:
         "  " + "-" * 60,
     ]
 
-    tier_order = ["simple", "moderate", "complex", "edge_case"]
+    tier_order = ["simple", "moderate", "complex", "web", "edge_case"]
     for tier in tier_order:
         if tier not in tier_stats:
             continue

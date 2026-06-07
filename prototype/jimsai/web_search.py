@@ -73,7 +73,33 @@ class WebAugmentedRetrieval:
     async def _perform_search(self, query: str) -> list[WebSource]:
         fetched_at = datetime.now().isoformat()
 
-        # Try duckduckgo_search package first (richer results)
+        # Try ddgs package first (renamed from duckduckgo_search in v8+)
+        try:
+            from ddgs import DDGS  # type: ignore[import]
+            loop = asyncio.get_event_loop()
+            results = await loop.run_in_executor(
+                None,
+                lambda: list(DDGS().text(query, max_results=self.max_results)),
+            )
+            sources = [
+                WebSource(
+                    url=r.get("href", ""),
+                    title=r.get("title", ""),
+                    snippet=r.get("body", ""),
+                    fetched_at=fetched_at,
+                    confidence=0.85,
+                )
+                for r in results
+                if r.get("href")
+            ]
+            logger.info("ddgs found %d results for: %s", len(sources), query)
+            return sources[: self.max_results]
+        except ImportError:
+            pass  # fall through to legacy package name
+        except Exception as exc:
+            logger.warning("ddgs failed: %s — trying legacy duckduckgo_search", exc)
+
+        # Try legacy duckduckgo_search package name (v7 and below)
         try:
             from duckduckgo_search import DDGS  # type: ignore[import]
             loop = asyncio.get_event_loop()

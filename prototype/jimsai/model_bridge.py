@@ -50,6 +50,23 @@ class QwenBridge:
     """
 
     def __init__(self) -> None:
+        # ── Groq configuration (T1 + T2 inference) ───────────────────────────
+        # Groq serves OpenAI-compatible /v1/chat/completions — no code changes
+        # needed in callers; only the URL, key, and model names differ.
+        # Groq is always warm (no cold-start), making it more reliable than the
+        # HF Space for latency-sensitive T1/T2 calls.
+        self.groq_api_key = os.getenv("GROQ_API_KEY", "").strip()
+        self.groq_base_url = "https://api.groq.com/openai"
+        # T1: fast small model for intent/routing/math extraction
+        self.groq_t1_model = os.getenv("GROQ_T1_MODEL", os.getenv("GROQ_INTENT_MODEL", "llama-3.1-8b-instant")).strip()
+        # T2: larger model for render/code generation/canvas/invention
+        self.groq_t2_model = os.getenv("GROQ_T2_MODEL", os.getenv("GROQ_RENDER_MODEL", "llama-3.3-70b-versatile")).strip()
+        self.groq_enabled = bool(
+            self.groq_api_key
+            and os.getenv("JIMS_ALLOW_EXTERNAL_GROQ", "false").lower() in {"1", "true", "yes", "on"}
+        )
+
+        # ── HF Space / local inference (fallback if Groq disabled) ───────────
         self.local_first = (
             os.getenv("JIMS_LLM_PROVIDER", "").strip().lower() in {"local", "qwen", "qwen3", "huggingface"}
             or os.getenv("JIMS_ENABLE_LOCAL_QWEN", "false").lower() in {"1", "true", "yes", "on"}
@@ -65,12 +82,12 @@ class QwenBridge:
             or os.getenv("JIMS_EMBEDDING_SERVICE_TOKEN", "")
             or os.getenv("JIMS_RENDER_AGENT_TOKEN", "")
         )
-        # T1 model: Qwen3-1.7B for intent/routing/math extraction (fast, small JSON output)
+        # T1 model name for HF Space path
         self.local_model = os.getenv(
             "JIMS_LOCAL_INFERENCE_MODEL",
             os.getenv("JIMS_QWEN_MODEL", "qwen3-1.7b-instruct"),
         )
-        # T2 model: Qwen3-4B for render/canvas/invention/ingest (larger, richer output)
+        # T2 model name for HF Space path
         self.local_render_model = os.getenv(
             "JIMS_LOCAL_RENDER_MODEL",
             os.getenv("JIMS_RENDER_MODEL_NAME", "qwen3-4b-instruct"),
@@ -84,8 +101,6 @@ class QwenBridge:
             or "/v1/chat/render"
         )
 
-        # Single unified availability flag: Qwen is available iff local_first + local_url
-        # (replaces the old per-feature enabled_t1/t2/canvas/invention/ingest flags)
         self.adaptive_thinning = os.getenv(
             "JIMS_ADAPTIVE_TRANSFORMER_THINNING", "true"
         ).lower() in {"1", "true", "yes", "on"}
@@ -98,8 +113,8 @@ class QwenBridge:
 
     @property
     def qwen_enabled(self) -> bool:
-        """True when the Qwen HF Space endpoint is configured and local-first mode is on."""
-        return bool(self.local_first and self.local_url)
+        """True when any LLM backend is configured — Groq (preferred) or HF Space."""
+        return self.groq_enabled or bool(self.local_first and self.local_url)
 
     @property
     def available(self) -> bool:
@@ -108,13 +123,19 @@ class QwenBridge:
 
     def describe(self) -> dict[str, str]:
         """Return current model configuration for dashboard / observability."""
+        backend = "groq" if self.groq_enabled else ("hf_space" if (self.local_first and self.local_url) else "none")
+        t1 = self.groq_t1_model if self.groq_enabled else self.local_model
+        t2 = self.groq_t2_model if self.groq_enabled else self.local_render_model
+        t1_ep = f"{self.groq_base_url}/v1/chat/completions" if self.groq_enabled else f"{self.local_url}{self.local_chat_path}"
+        t2_ep = f"{self.groq_base_url}/v1/chat/completions" if self.groq_enabled else f"{self.local_url}{self.local_render_path}"
         return {
-            "t1_model": self.local_model,
-            "t2_model": self.local_render_model,
-            "t1_endpoint": f"{self.local_url}{self.local_chat_path}",
-            "t2_endpoint": f"{self.local_url}{self.local_render_path}",
-            "endpoint": self.local_url,
+            "backend": backend,
+            "t1_model": t1,
+            "t2_model": t2,
+            "t1_endpoint": t1_ep,
+            "t2_endpoint": t2_ep,
             "qwen_enabled": str(self.qwen_enabled),
+            "groq_enabled": str(self.groq_enabled),
         }
 
     async def rewrite_for_clarity(self, raw_input: str) -> str | None:
@@ -144,17 +165,26 @@ class QwenBridge:
     async def _chat_json(
         self, _model_hint: str, system: str, user: str, max_tokens: int = 800
     ) -> dict[str, Any] | None:
-        """Route to T1 Qwen (intent model) via /v1/chat/completions."""
+        """Route to T1 model: Groq (preferred, always warm) or HF Space fallback."""
         if not self.qwen_enabled:
             return None
+        if self.groq_enabled:
+            return await self._groq_chat_json(
+                self.groq_t1_model, system, user, max_tokens=max_tokens
+            )
         return await self._local_chat_json(system, user, max_tokens=max_tokens)
 
     async def _render_chat_json(
         self, system: str, user: str, max_tokens: int = 800
     ) -> dict[str, Any] | None:
-        """Route to T2 Qwen (render model) via /v1/chat/render."""
+        """Route to T2 model: Groq (preferred, always warm) or HF Space fallback."""
         if not self.qwen_enabled:
             return None
+        if self.groq_enabled:
+            return await self._groq_chat_json(
+                self.groq_t2_model, system, user, max_tokens=max_tokens,
+                timeout=float(os.getenv("JIMS_LOCAL_RENDER_TIMEOUT", "60") or "60"),
+            )
         return await self._local_chat_json(
             system,
             user,
@@ -169,6 +199,44 @@ class QwenBridge:
                 or "90"
             ),
         )
+
+    async def _groq_chat_json(
+        self,
+        model: str,
+        system: str,
+        user: str,
+        max_tokens: int = 800,
+        timeout: float = 30.0,
+    ) -> dict[str, Any] | None:
+        """Call Groq's OpenAI-compatible /v1/chat/completions endpoint."""
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.groq_api_key}",
+        }
+        payload = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "temperature": 0,
+            "max_tokens": max_tokens,
+            "response_format": {"type": "json_object"},
+        }
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                response = await client.post(
+                    f"{self.groq_base_url}/v1/chat/completions",
+                    headers=headers,
+                    json=payload,
+                )
+                response.raise_for_status()
+            content = response.json()["choices"][0]["message"]["content"]
+            return json.loads(content)
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning("Groq call failed (model=%s): %s", model, exc)
+            return None
 
     async def _local_chat_json(
         self,
@@ -330,18 +398,79 @@ class QwenBridge:
     async def invention_candidates(
         self, goal: str, context: dict[str, Any]
     ) -> dict[str, Any] | None:
-        """Generate bounded invention candidate steps, constrained by supplied context."""
+        """Generate runnable code candidates for any programming language or design task.
+
+        The system prompt deliberately avoids hardcoding any language name — the
+        model infers language from the goal/context and produces actual implementation
+        code.  This covers all programming languages, query languages, markup, config
+        formats, and system-design tasks without any per-language special-casing.
+        """
         if not self.qwen_enabled:
             return None
-        system = (
-            "You are a bounded invention candidate generator for JIMS-AI. "
-            "Return JSON candidates constrained by provided memory/context. "
-            "Do not make factual claims beyond the supplied context."
-        )
+
+        # Determine what kind of generation is needed from the context.
+        # 'failed_code' in context means a sandbox error occurred — we need a fix.
+        # 'context' (deeper stage) means we need to expand an existing solution.
+        # Default: produce a complete working implementation for the goal.
+        stage = str(context.get("stage") or "initial")
+        failed_code = str(context.get("failed_code") or "").strip()
+        error_msg = str(context.get("error") or "").strip()
+
+        if failed_code and error_msg:
+            # Correction pass: fix the broken code
+            system = (
+                "You are a code correction engine. "
+                "The user tried to run code but it failed. "
+                "Fix the code so it runs correctly. "
+                "Return JSON with key 'candidate_steps' containing a list with one element: "
+                "the complete corrected code as a single string. "
+                "The code must be complete and runnable. "
+                "Do not add explanations outside the JSON."
+            )
+            user_content = json.dumps({
+                "goal": goal,
+                "broken_code": failed_code,
+                "error": error_msg,
+            }, sort_keys=True)
+        elif stage == "deeper":
+            # Expansion pass: improve or extend an existing solution
+            system = (
+                "You are a code improvement engine. "
+                "You are given an existing implementation and must improve, extend, or complete it. "
+                "Return JSON with key 'candidate_steps' containing a list with one element: "
+                "the complete improved code as a single string. "
+                "The code must be complete and runnable. "
+                "Do not add explanations outside the JSON."
+            )
+            user_content = json.dumps({
+                "goal": goal,
+                "existing_code": str(context.get("context") or ""),
+            }, sort_keys=True)
+        else:
+            # Initial generation: produce a full working implementation
+            # The language and framework are inferred entirely from the goal —
+            # no language is hardcoded here, so Python, JavaScript, TypeScript,
+            # Rust, SQL, Go, Bash, YAML, Terraform, etc. all work the same way.
+            system = (
+                "You are a code generation engine that supports all programming languages. "
+                "Given a coding goal, write a complete, working implementation. "
+                "Infer the programming language from the goal. "
+                "Include all necessary imports, type hints where idiomatic, "
+                "docstrings, and error handling. "
+                "Return JSON with key 'candidate_steps' containing a list with one element: "
+                "the complete implementation as a single string. "
+                "The code must be self-contained and runnable. "
+                "Do not add explanations outside the JSON."
+            )
+            user_content = json.dumps({
+                "goal": goal,
+                "context": {k: v for k, v in context.items() if k not in ("stage",)},
+            }, sort_keys=True)
+
         return await self._render_chat_json(
             system,
-            json.dumps({"goal": goal, "context": context}),
-            max_tokens=1000,
+            user_content,
+            max_tokens=2000,
         )
 
     async def extract_ingestion_memory(
@@ -398,7 +527,14 @@ class QwenBridge:
             "Do not expose internal layer names, raw trace IDs, or robotic phrases like "
             "'Here's what I can verify from memory' unless the user asks for internals. "
             "Do not add claims, facts, sources, code, or conclusions not present in the object. "
-            "If a gap is present, preserve it explicitly. Return JSON only with key response."
+            "If a gap is present, preserve it explicitly. "
+            "IMPORTANT — Code generation rules: "
+            "If any reasoning_chain step has relation='CODE_GENERATION', treat its claim as "
+            "the complete implementation. Present it in a fenced code block with the correct "
+            "language tag inferred from the code content (python, javascript, typescript, sql, "
+            "rust, go, bash, yaml, etc.). Add a brief one-sentence description before the block "
+            "and a short note after if there are gaps or caveats. Never rewrite or truncate the code. "
+            "Return JSON only with key response."
         )
         user = json.dumps(
             {
@@ -416,7 +552,7 @@ class QwenBridge:
             },
             sort_keys=True,
         )
-        data = await self._render_chat_json(system, user, max_tokens=1200)
+        data = await self._render_chat_json(system, user, max_tokens=2400)
         if not data:
             return None
         rendered = data.get("response")

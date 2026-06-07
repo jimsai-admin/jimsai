@@ -58,9 +58,9 @@ async def startup_warm_classifier() -> None:
     per-query (cold) to startup (once). After this runs, classify_intent()
     uses cached embeddings and adds ~0ms overhead per query.
 
-    Also verifies that the embedding service is returning real vectors so
-    degraded retrieval (hash-only fallback) is surfaced loudly at startup
-    rather than silently failing on every query.
+    The embedding service health check runs in the background so it never
+    delays server readiness — the HF Space can take 60-90s to cold-start
+    and blocking startup for that long is unacceptable.
     """
     import asyncio
     import logging
@@ -77,37 +77,39 @@ async def startup_warm_classifier() -> None:
         # Non-fatal: first query will be slow but system still works
         _logger.warning("Startup classifier warm failed (non-fatal): %s", exc)
 
-    # ── Embedding service health check ─────────────────────────────────────
-    # If the embedding service isn't returning real vectors, every retrieval
-    # query will degrade to hash-only fallback and quality will be poor.
-    # Log clearly at startup so the issue is immediately visible.
-    try:
-        from .jimsai.models import Modality as _Modality
-        adapter = getattr(pipeline.production, "multimodal", None)
-        if adapter is not None and hasattr(adapter, "encode"):
-            test_vector = await asyncio.get_event_loop().run_in_executor(
-                None, adapter.encode, "embedding service health check", _Modality.TEXT
-            )
-            if test_vector:
-                _logger.info(
-                    "Embedding service verified: returning real vectors (dim=%d). "
-                    "Semantic-first retrieval is active.",
-                    len(test_vector),
+    # ── Embedding service health check (background — does NOT block startup) ─
+    # Run in a background task so the server accepts traffic immediately.
+    # The HF Space may take 60-90s to cold-start on a free tier, but queries
+    # still work (hash-projection fallback) while it warms up.
+    async def _check_embedding_service() -> None:
+        try:
+            from .jimsai.models import Modality as _Modality
+            adapter = getattr(pipeline.production, "multimodal", None)
+            if adapter is not None and hasattr(adapter, "encode"):
+                loop = asyncio.get_event_loop()
+                test_vector = await loop.run_in_executor(
+                    None, adapter.encode, "embedding service health check", _Modality.TEXT
                 )
+                if test_vector:
+                    _logger.info(
+                        "Embedding service verified: real vectors available (dim=%d). "
+                        "Semantic-first retrieval is active.",
+                        len(test_vector),
+                    )
+                else:
+                    _logger.warning(
+                        "Embedding service not yet returning vectors — retrieval using hash fallback. "
+                        "Run POST /v1/autonomous/reembed-hash once the service wakes up."
+                    )
             else:
-                _logger.error(
-                    "EMBEDDING SERVICE NOT RETURNING VECTORS — all retrieval will degrade to "
-                    "hash-projection fallback until the service recovers. "
-                    "Check JIMS_EMBEDDING_SERVICE_URL and JIMS_EMBEDDING_SERVICE_TOKEN. "
-                    "Run POST /v1/autonomous/reembed-hash after the service comes back up."
+                _logger.warning(
+                    "No multimodal encoder adapter configured — semantic retrieval disabled. "
+                    "Set JIMS_EMBEDDING_SERVICE_URL to enable real-vector retrieval."
                 )
-        else:
-            _logger.warning(
-                "No multimodal encoder adapter configured — semantic retrieval disabled. "
-                "Set JIMS_EMBEDDING_SERVICE_URL to enable real-vector retrieval."
-            )
-    except Exception as exc:
-        _logger.error("Embedding service health check failed at startup: %s", exc)
+        except Exception as exc:
+            _logger.warning("Embedding service health check failed (non-fatal): %s", exc)
+
+    asyncio.create_task(_check_embedding_service())
 
 
 class PasswordAuthRequest(BaseModel):

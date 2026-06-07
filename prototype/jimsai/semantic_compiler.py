@@ -522,7 +522,28 @@ class SemanticCompilerRuntime:
         # Use embedding-based intent classification (primary - HIGH PRIORITY)
         scope = self._scope_from_tokens(tokens, normalized_input)
         v9_override = self._v9_capability_override(tokens, normalized_input)
-        if v9_override and v9_override[1] >= 0.9:
+
+        # === PROFILE WRITE FAST PATH: "My name is X", "Please remember", etc. ===
+        # This runs BEFORE the embedding classifier because hash-based embeddings
+        # mis-classify these as EMOTIONAL_CATCH (the word "please" scores near the
+        # emotional prototype).  Structural patterns are more reliable than hash
+        # projections for this specific class of query.
+        _PROFILE_WRITE_RE = re.compile(
+            r"\bmy\s+name\s+is\b"
+            r"|\bplease\s+remember\b"
+            r"|\bi\s+am\s+(?:a|an)\s+\w"
+            r"|\bi\s+work\s+at\b"
+            r"|\bi\s+am\s+building\b"
+            r"|\bremember\s+(?:that\s+)?(?:my|i\s+am)\b",
+            re.IGNORECASE,
+        )
+        if _PROFILE_WRITE_RE.search(raw_input):
+            target_ir = "WORKSPACE_QUERY"
+            scope["profile_write"] = True
+            scope["profile_query"] = True
+            confidence = 0.88
+            structural_fast_path = True
+        elif v9_override and v9_override[1] >= 0.9:
             target_ir, confidence, capability_hint = v9_override
             scope["v9_capability_hint"] = capability_hint
             structural_fast_path = True
@@ -549,7 +570,10 @@ class SemanticCompilerRuntime:
                 confidence = max(confidence, 0.22)
         
         # === PROFILE QUERY DETECTION: Always route to WORKSPACE_QUERY ===
-        is_profile = False if structural_fast_path else self.classifier.is_profile_query(canonical_query or raw_input, threshold=0.85)
+        # Threshold lowered from 0.85 to 0.55: the 0.85 target was calibrated for
+        # real e5-small embeddings.  When hash projections are active (embedding
+        # service unavailable), the cosine scores are lower and 0.85 is never hit.
+        is_profile = False if structural_fast_path else self.classifier.is_profile_query(canonical_query or raw_input, threshold=0.55)
         if is_profile:
             scope["profile_query"] = True
             target_ir = "WORKSPACE_QUERY"
