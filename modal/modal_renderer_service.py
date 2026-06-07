@@ -51,6 +51,10 @@ image = (
         "python-dotenv>=1.0", "torch>=2.3",
     ])
     .pip_install(["llama-cpp-python>=0.2.90"])
+    .add_local_dir(
+        str(Path(__file__).parent / "shared"),
+        remote_path="/root/shared",
+    )
 )
 
 # ---------------------------------------------------------------------------

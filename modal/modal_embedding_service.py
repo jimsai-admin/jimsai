@@ -64,6 +64,9 @@ image = modal.Image.debian_slim(python_version="3.11").pip_install(
         "pydantic>=2.7",
         "python-dotenv>=1.0",
     ]
+).add_local_dir(
+    str(Path(__file__).parent / "shared"),
+    remote_path="/root/shared",
 )
 
 # ---------------------------------------------------------------------------
