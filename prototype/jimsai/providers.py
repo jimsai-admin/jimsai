@@ -2,7 +2,6 @@
 Production Provider Adapters - Real Cloud Services
 
 Provides adapters for production cloud providers:
-- Groq: T1/T2 inference
 - Supabase: PostgreSQL event store + vector storage
 - Vectorize: Embedding vectors for semantic search
 - Neo4j: Knowledge graph for entity relationships
@@ -10,7 +9,7 @@ Provides adapters for production cloud providers:
 - Kaggle: Model training orchestration
 
 All providers are cloud-based and workspace-isolated.
-This is the BASE MODEL - personalization comes from user workspace interactions.
+LLM inference is handled exclusively by Modal AI services (model_bridge.py).
 """
 
 import logging
@@ -35,15 +34,6 @@ class ProviderConfig:
     endpoint: Optional[str] = None
     timeout_seconds: int = 30
     retry_attempts: int = 3
-
-
-@dataclass
-class GroqConfig(ProviderConfig):
-    """Groq API configuration for T1/T2 models"""
-    endpoint: str = "https://api.groq.com/v1"
-    model_t1: str = "mixtral-8x7b-32768"  # Intent parsing
-    model_t2: str = "llama2-70b-4096"      # Fluency rendering
-    temperature: float = 0.7
 
 
 @dataclass
@@ -103,11 +93,6 @@ class ProviderRegistry:
     
     def _load_from_env(self):
         """Load provider configurations from environment variables"""
-        self.providers['groq'] = GroqConfig(
-            api_key=os.getenv('GROQ_API_KEY'),
-            enabled=os.getenv('GROQ_ENABLED', 'true').lower() == 'true'
-        )
-        
         self.providers['supabase'] = SupabaseConfig(
             url=os.getenv('SUPABASE_URL'),
             api_key=os.getenv('SUPABASE_KEY'),
@@ -177,111 +162,6 @@ class ProviderAdapter(ABC):
     @abstractmethod
     async def close(self):
         """Clean up resources"""
-        pass
-
-
-class GroqAdapter(ProviderAdapter):
-    """Groq API adapter for T1 (intent parsing) and T2 (fluency rendering)"""
-    
-    def __init__(self, config: GroqConfig, workspace_id: str):
-        super().__init__(config, workspace_id)
-        self.config = config
-        # Initialize real Groq client
-        try:
-            from groq import Groq
-            self.client = Groq(api_key=config.api_key)
-            logger.info(f"✓ Groq adapter initialized for workspace: {workspace_id}")
-        except ImportError:
-            logger.warning("Groq SDK not installed")
-            self.client = None
-        except Exception as e:
-            logger.error(f"Failed to initialize Groq: {e}")
-            self.client = None
-    
-    async def parse_intent(self, query: str) -> Dict[str, Any]:
-        """Parse query intent using T1 model"""
-        if not self.enabled:
-            return {"error": "Groq provider disabled"}
-        
-        if not self.client:
-            return {"error": "Groq client not initialized"}
-        
-        try:
-            # Call real Groq T1 model
-            message = self.client.chat.completions.create(
-                model=self.config.model_t1,
-                messages=[
-                    {"role": "system", "content": "You are an intent parser. Classify the query intent as one of: world_knowledge, coding, math_science, creative_text, memory_chat, medical, legal, general. Return only the intent name."},
-                    {"role": "user", "content": query}
-                ],
-                max_tokens=20,
-                temperature=0.3,
-            )
-            intent = message.choices[0].message.content.strip().lower()
-            
-            # Determine confidence based on model
-            confidence = 0.85
-            if any(x in intent for x in ["world", "knowledge", "coding", "math", "creative", "memory"]):
-                confidence = 0.92
-            
-            return {
-                "intent": intent,
-                "confidence": confidence,
-                "reasoning": f"Parsed: {query[:50]}...",
-                "provider": "groq_t1",
-                "workspace_id": self.workspace_id,
-            }
-        except Exception as e:
-            logger.error(f"Groq T1 error: {e}")
-            return {
-                "error": str(e),
-                "intent": "general",
-                "confidence": 0.5,
-            }
-    
-    async def render_fluency(self, semantic_ir: Dict, style: str = "default") -> str:
-        """Render fluent response using T2 model"""
-        if not self.enabled:
-            return "Error: Groq provider disabled"
-        
-        if not self.client:
-            return "Error: Groq client not initialized"
-        
-        try:
-            # Call real Groq T2 model
-            message = self.client.chat.completions.create(
-                model=self.config.model_t2,
-                messages=[
-                    {"role": "system", "content": f"You are a helpful assistant. Respond in {style} style."},
-                    {"role": "user", "content": semantic_ir.get("query", "Help me understand")}
-                ],
-                max_tokens=500,
-                temperature=self.config.temperature,
-            )
-            response = message.choices[0].message.content
-            return response
-        except Exception as e:
-            logger.error(f"Groq T2 error: {e}")
-            return f"Error rendering response: {e}"
-    
-    async def health_check(self) -> bool:
-        """Check Groq API health"""
-        if not self.enabled or not self.client:
-            return False
-        try:
-            # Make a lightweight API call
-            message = self.client.chat.completions.create(
-                model=self.config.model_t1,
-                messages=[{"role": "user", "content": "ok"}],
-                max_tokens=1,
-            )
-            return True
-        except Exception as e:
-            logger.error(f"Groq health check failed: {e}")
-            return False
-    
-    async def close(self):
-        """Clean up Groq resources"""
         pass
 
 
@@ -705,12 +585,6 @@ class ProductionProviderOrchestrator:
     
     def _initialize_providers(self):
         """Initialize all enabled providers"""
-        if self.registry.is_enabled('groq'):
-            self.providers['groq'] = GroqAdapter(
-                self.registry.get_config('groq'),
-                self.workspace_id
-            )
-        
         if self.registry.is_enabled('supabase'):
             self.providers['supabase'] = SupabaseAdapter(
                 self.registry.get_config('supabase'),

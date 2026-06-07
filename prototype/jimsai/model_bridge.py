@@ -5,6 +5,7 @@ import os
 import re
 from typing import Any
 
+from .env_config import get_env
 from .models import VerifiedCognitiveObject
 
 import httpx
@@ -42,68 +43,35 @@ class QwenBridge:
     ────────────────────────────────────────────────────────────────────────────
     """
 
+class QwenBridge:
+    """Bounded Modal AI bridge for T1/T2/Canvas/Invention/Ingest interfaces.
+
+    All LLM calls route to Modal-hosted services exclusively:
+      - Intent_Service  (Qwen3-1.7B): T1 intent/routing via JIMS_INTENT_SERVICE_URL
+      - Renderer_Service (Qwen3-4B):  T2 render/canvas/invention via JIMS_RENDERER_SERVICE_URL
+      - Reasoning_Service (Qwen3-8B): deep reasoning via JIMS_REASONING_SERVICE_URL
+
+    Auth: JIMS_MODAL_API_KEY — shared Bearer token for all Modal services.
+    """
+
     def __init__(self) -> None:
-        # ── Groq configuration (T1 + T2 inference) ───────────────────────────
-        # Groq serves OpenAI-compatible /v1/chat/completions — no code changes
-        # needed in callers; only the URL, key, and model names differ.
-        # Groq is always warm (no cold-start), making it more reliable than the
-        # HF Space for latency-sensitive T1/T2 calls.
-        self.groq_api_key = os.getenv("GROQ_API_KEY", "").strip()
-        self.groq_base_url = "https://api.groq.com/openai"
-        # T1: fast small model for intent/routing/math extraction
-        self.groq_t1_model = os.getenv("GROQ_T1_MODEL", os.getenv("GROQ_INTENT_MODEL", "llama-3.1-8b-instant")).strip()
-        # T2: larger model for render/code generation/canvas/invention
-        self.groq_t2_model = os.getenv("GROQ_T2_MODEL", os.getenv("GROQ_RENDER_MODEL", "llama-3.3-70b-versatile")).strip()
-        self.groq_enabled = bool(
-            self.groq_api_key
-            and os.getenv("JIMS_ALLOW_EXTERNAL_GROQ", "false").lower() in {"1", "true", "yes", "on"}
-        )
+        # ── Modal service URLs ────────────────────────────────────────────────
+        self.local_url = get_env("JIMS_INTENT_SERVICE_URL").rstrip("/")
+        self.render_url = get_env("JIMS_RENDERER_SERVICE_URL").rstrip("/")
+        self.local_api_key = get_env("JIMS_MODAL_API_KEY")
 
-        # ── HF Space / local inference / Modal service (fallback if Groq disabled) ─
-        self.local_first = (
-            os.getenv("JIMS_LLM_PROVIDER", "").strip().lower() in {"local", "qwen", "qwen3", "huggingface"}
-            or os.getenv("JIMS_ENABLE_LOCAL_QWEN", "false").lower() in {"1", "true", "yes", "on"}
-        )
-        # T1 path: Modal Intent_Service URL
-        self.local_url = (
-            os.getenv("JIMS_INTENT_SERVICE_URL", "")
-            or (os.getenv("JIMS_EMBEDDING_SERVICE_URL", "") if self.local_first else "")
-        ).strip().rstrip("/")
-        # T2 render path: Modal Renderer_Service URL
-        self.render_url = (
-            os.getenv("JIMS_RENDERER_SERVICE_URL", "")
-        ).strip().rstrip("/")
-        # Auth key: Modal API key for all inter-service calls
-        self.local_api_key = (
-            os.getenv("JIMS_MODAL_API_KEY", "")
-            or os.getenv("JIMS_LOCAL_INFERENCE_API_KEY", "")
-            or os.getenv("JIMS_QWEN_SERVICE_TOKEN", "")
-            or os.getenv("JIMS_EMBEDDING_SERVICE_TOKEN", "")
-        )
-        # T1 model name
-        self.local_model = os.getenv(
-            "JIMS_LOCAL_INFERENCE_MODEL",
-            os.getenv("JIMS_QWEN_MODEL", "qwen3-1.7b-instruct"),
-        )
-        # T2 model name
-        self.local_render_model = os.getenv(
-            "JIMS_LOCAL_RENDER_MODEL",
-            os.getenv("JIMS_RENDER_MODEL_NAME", "qwen3-4b-instruct"),
-        )
-        self.local_chat_path = (
-            os.getenv("JIMS_LOCAL_INFERENCE_CHAT_PATH", "/generate").strip()
-            or "/generate"
-        )
-        self.local_render_path = (
-            os.getenv("JIMS_LOCAL_RENDER_CHAT_PATH", "/v1/chat/render").strip()
-            or "/v1/chat/render"
-        )
+        # Model name tags (used in request payloads)
+        self.local_model = get_env("JIMS_LOCAL_INFERENCE_MODEL", "qwen3-1.7b-instruct")
+        self.local_render_model = get_env("JIMS_LOCAL_RENDER_MODEL", "qwen3-4b-instruct")
 
-        self.adaptive_thinning = os.getenv(
-            "JIMS_ADAPTIVE_TRANSFORMER_THINNING", "true"
-        ).lower() in {"1", "true", "yes", "on"}
-        self.t1_skip_confidence = float(os.getenv("JIMS_T1_SKIP_CONFIDENCE", "0.60") or "0.60")
-        self.t2_skip_confidence = float(os.getenv("JIMS_T2_SKIP_CONFIDENCE", "0.95") or "0.95")
+        # Endpoint paths on the Modal services
+        self.local_chat_path = get_env("JIMS_LOCAL_INFERENCE_CHAT_PATH", "/generate") or "/generate"
+        self.local_render_path = get_env("JIMS_LOCAL_RENDER_CHAT_PATH", "/generate") or "/generate"
+
+        # LLM thinning — skip T1/T2 overlay when deterministic confidence is high
+        self.adaptive_thinning = get_env("JIMS_ADAPTIVE_TRANSFORMER_THINNING", "true").lower() in {"1", "true", "yes", "on"}
+        self.t1_skip_confidence = float(get_env("JIMS_T1_SKIP_CONFIDENCE", "0.60") or "0.60")
+        self.t2_skip_confidence = float(get_env("JIMS_T2_SKIP_CONFIDENCE", "0.95") or "0.95")
         self.last_t1_skip_reason = ""
         self.last_t2_skip_reason = ""
 
@@ -111,8 +79,8 @@ class QwenBridge:
 
     @property
     def qwen_enabled(self) -> bool:
-        """True when any LLM backend is configured — Groq (preferred) or HF Space."""
-        return self.groq_enabled or bool(self.local_first and self.local_url)
+        """True when Modal services are configured (both Intent and Renderer URLs set)."""
+        return bool(self.local_url and self.render_url and self.local_api_key)
 
     @property
     def available(self) -> bool:
@@ -121,20 +89,13 @@ class QwenBridge:
 
     def describe(self) -> dict[str, str]:
         """Return current model configuration for dashboard / observability."""
-        backend = "groq" if self.groq_enabled else ("modal" if (self.local_first and self.local_url) else "none")
-        t1 = self.groq_t1_model if self.groq_enabled else self.local_model
-        t2 = self.groq_t2_model if self.groq_enabled else self.local_render_model
-        t1_ep = f"{self.groq_base_url}/v1/chat/completions" if self.groq_enabled else f"{self.local_url}{self.local_chat_path}"
-        render_base = self.render_url or self.local_url
-        t2_ep = f"{self.groq_base_url}/v1/chat/completions" if self.groq_enabled else f"{render_base}{self.local_render_path}"
         return {
-            "backend": backend,
-            "t1_model": t1,
-            "t2_model": t2,
-            "t1_endpoint": t1_ep,
-            "t2_endpoint": t2_ep,
+            "backend": "modal" if self.qwen_enabled else "none",
+            "t1_model": self.local_model,
+            "t2_model": self.local_render_model,
+            "t1_endpoint": f"{self.local_url}{self.local_chat_path}",
+            "t2_endpoint": f"{self.render_url}{self.local_render_path}",
             "qwen_enabled": str(self.qwen_enabled),
-            "groq_enabled": str(self.groq_enabled),
         }
 
     async def rewrite_for_clarity(self, raw_input: str) -> str | None:
@@ -164,96 +125,36 @@ class QwenBridge:
     async def _chat_json(
         self, _model_hint: str, system: str, user: str, max_tokens: int = 800
     ) -> dict[str, Any] | None:
-        """Route to T1 model: Groq (preferred, always warm) or HF Space fallback."""
+        """Route to T1 Modal Intent_Service."""
         if not self.qwen_enabled:
             return None
-        if self.groq_enabled:
-            return await self._groq_chat_json(
-                self.groq_t1_model, system, user, max_tokens=max_tokens
-            )
         return await self._local_chat_json(system, user, max_tokens=max_tokens)
 
     async def _render_chat_json(
         self, system: str, user: str, max_tokens: int = 800
     ) -> dict[str, Any] | None:
-        """Route to T2 model: Groq (preferred, always warm) or Modal Renderer fallback."""
+        """Route to T2 Modal Renderer_Service."""
         if not self.qwen_enabled:
             return None
-        if self.groq_enabled:
-            return await self._groq_chat_json(
-                self.groq_t2_model, system, user, max_tokens=max_tokens,
-                timeout=float(os.getenv("JIMS_LOCAL_RENDER_TIMEOUT", "60") or "60"),
-            )
-        # Use render_url (Modal Renderer_Service) for T2 path
-        render_base = self.render_url or self.local_url
-        headers = {"Content-Type": "application/json"}
-        if self.local_api_key:
-            headers["Authorization"] = f"Bearer {self.local_api_key}"
+        headers = {"Content-Type": "application/json", "Authorization": f"Bearer {self.local_api_key}"}
         payload = {
             "model": self.local_render_model,
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
+            "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
             "temperature": 0,
             "max_tokens": max_tokens,
             "response_format": {"type": "json_object"},
         }
         try:
-            request_timeout = float(
-                os.getenv("JIMS_GENERATION_TIMEOUT",
-                          os.getenv("JIMS_LOCAL_RENDER_TIMEOUT",
-                                    os.getenv("JIMS_LOCAL_INFERENCE_TIMEOUT", "120")))
-                or "120"
-            )
-            async with httpx.AsyncClient(timeout=request_timeout) as client:
-                response = await client.post(
-                    f"{render_base}{self.local_render_path}",
-                    headers=headers,
-                    json=payload,
-                )
-                response.raise_for_status()
-            content = response.json()["choices"][0]["message"]["content"]
-            return json.loads(content)
-        except Exception:
-            return None
-
-    async def _groq_chat_json(
-        self,
-        model: str,
-        system: str,
-        user: str,
-        max_tokens: int = 800,
-        timeout: float = 30.0,
-    ) -> dict[str, Any] | None:
-        """Call Groq's OpenAI-compatible /v1/chat/completions endpoint."""
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.groq_api_key}",
-        }
-        payload = {
-            "model": model,
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-            "temperature": 0,
-            "max_tokens": max_tokens,
-            "response_format": {"type": "json_object"},
-        }
-        try:
+            timeout = float(os.getenv("JIMS_GENERATION_TIMEOUT", "120") or "120")
             async with httpx.AsyncClient(timeout=timeout) as client:
                 response = await client.post(
-                    f"{self.groq_base_url}/v1/chat/completions",
+                    f"{self.render_url}{self.local_render_path}",
                     headers=headers,
                     json=payload,
                 )
                 response.raise_for_status()
-            content = response.json()["choices"][0]["message"]["content"]
-            return json.loads(content)
-        except Exception as exc:
-            import logging
-            logging.getLogger(__name__).warning("Groq call failed (model=%s): %s", model, exc)
+            return json.loads(response.json()["choices"][0]["message"]["content"])
+        except Exception:
             return None
 
     async def _local_chat_json(
@@ -680,7 +581,3 @@ class QwenBridge:
         return obj.confidence >= self.t2_skip_confidence
 
 
-# ---------------------------------------------------------------------------
-# Backward-compatibility alias — remove once all callers are updated
-# ---------------------------------------------------------------------------
-GroqBridge = QwenBridge

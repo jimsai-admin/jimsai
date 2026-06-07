@@ -12,7 +12,7 @@ from .encoder import DualRepresentationEncoder, stable_id
 from .event_store import AuditEventStore, VerifiedResultCache
 from .execution_runtime import DeterministicSandbox, SymbolicMathSolver
 from .graph import CausalGraphEngine
-from .kaggle_orchestrator import KaggleGPUOrchestrator
+from .modal_training_orchestrator import ModalTrainingOrchestrator
 from .memory import FourLayerMemoryStore
 from .model_bridge import QwenBridge
 from .models import (
@@ -101,7 +101,7 @@ class JimsAIPipeline:
     def __init__(self) -> None:
         self.production = ProductionRuntime()
         # Lazy fields — instantiated on first access via @property
-        self._kaggle: KaggleGPUOrchestrator | None = None
+        self._training: ModalTrainingOrchestrator | None = None
         self._compiler: SemanticCompilerRuntime | None = None
         self.encoder = DualRepresentationEncoder(multimodal_adapter=self.production.multimodal)
         self.memory = FourLayerMemoryStore()
@@ -139,7 +139,7 @@ class JimsAIPipeline:
         self.ambiguity_queue: list[dict[str, object]] = []
         self.canvas_sessions: dict[str, CanvasRunResponse] = {}
         self.invention_sessions: dict[str, InventionRunResponse] = {}
-        self.kaggle_runs: list[KaggleTrainingResponse] = []
+        self.training_runs: list[KaggleTrainingResponse] = []
         self.active_training_artifacts: dict[str, str] = {}
         self.retrieval_misses = 0
         self.cloud_authoritative = self.production.settings.cloud_authoritative
@@ -160,11 +160,11 @@ class JimsAIPipeline:
         return self._compiler
 
     @property
-    def kaggle(self) -> KaggleGPUOrchestrator:
-        """Lazy: KaggleGPUOrchestrator is only needed for training runs."""
-        if self._kaggle is None:
-            self._kaggle = KaggleGPUOrchestrator()
-        return self._kaggle
+    def training_orchestrator(self) -> ModalTrainingOrchestrator:
+        """Lazy: ModalTrainingOrchestrator is only needed for training runs."""
+        if self._training is None:
+            self._training = ModalTrainingOrchestrator()
+        return self._training
 
     def _hydrate_memory(self) -> int:
         if self.cloud_authoritative:
@@ -1745,7 +1745,7 @@ class JimsAIPipeline:
             "feedback_events": len(self.feedback_events),
             "canvas_sessions": len(self.canvas_sessions),
             "invention_sessions": len(self.invention_sessions),
-            "kaggle_runs": len(self.kaggle_runs),
+            "training_runs": len(self.training_runs),
             "active_training_artifacts": len(self.active_training_artifacts),
             "hydrated_signatures": self.hydrated_signatures,
             "retrieval_misses": self.retrieval_misses,
@@ -1766,7 +1766,7 @@ class JimsAIPipeline:
             "v9_capability_router": True,
             "human_review_ui": True,
             "edge_case_tests": True,
-            "kaggle_gpu_orchestrator": self.kaggle.configured,
+            "modal_training_orchestrator": self.training_orchestrator.configured,
             "auto_training_detection": True,
             "adaptive_transformer_thinning": self.bridge.adaptive_thinning,
         }
@@ -2313,7 +2313,7 @@ class JimsAIPipeline:
             "feedback_events": len(self.feedback_events),
             "canvas_sessions": len(self.canvas_sessions),
             "invention_sessions": len(self.invention_sessions),
-            "kaggle_runs": len(self.kaggle_runs),
+            "kaggle_runs": len(self.training_runs),
             "active_training_artifacts": len(self.active_training_artifacts),
             "hydrated_signatures": self.hydrated_signatures,
             "retrieval_misses": self.retrieval_misses,
@@ -2375,17 +2375,17 @@ class JimsAIPipeline:
             retrieval_misses=self.retrieval_misses,
         )
 
-    async def schedule_kaggle_training(self, request: KaggleTrainingRequest) -> KaggleTrainingResponse:
-        saga_id = stable_id("saga", f"training:{request.user_id}:{request.task_type}:{len(self.kaggle_runs)}")
+    async def schedule_modal_training(self, request: KaggleTrainingRequest) -> KaggleTrainingResponse:
+        saga_id = stable_id("saga", f"training:{request.user_id}:{request.task_type}:{len(self.training_runs)}")
         self.event_store.append("saga_started", saga_id, {"kind": "training", "request": request.model_dump(mode="json")}, user_id=request.user_id)
-        training_history = self._training_history_for_kaggle(request.workspace_id)
-        world_model_candidates = self._world_model_candidates_for_kaggle(request.workspace_id)
-        response = self.kaggle.submit_training_run(
+        training_history = self._training_history_for_modal(request.workspace_id)
+        world_model_candidates = self._world_model_candidates_for_modal(request.workspace_id)
+        response = self.training_orchestrator.submit_training_run(
             request,
             training_history=training_history,
             world_model_candidates=world_model_candidates,
         )
-        self.kaggle_runs.append(response)
+        self.training_runs.append(response)
         self._write_result_signature(
             "training",
             "queued" if response.status in {"prepared", "submitted", "running"} else "failed",
@@ -2397,10 +2397,10 @@ class JimsAIPipeline:
             workspace_id=request.workspace_id,
         )
         self.event_store.append("saga_step_completed", saga_id, {"step": "training_submitted", "run": response.model_dump(mode="json")}, user_id=request.user_id)
-        self.production.save_panel_items([self._kaggle_run_item(response)])
+        self.production.save_panel_items([self._training_run_item(response)])
         return response
 
-    def _training_history_for_kaggle(self, workspace_id: str | None) -> list[TrainingIngestResponse]:
+    def _training_history_for_modal(self, workspace_id: str | None) -> list[TrainingIngestResponse]:
         history = [
             item
             for item in self.training_history
@@ -2420,7 +2420,7 @@ class JimsAIPipeline:
             by_signature_id.setdefault(item.signature.id, item)
         return sorted(by_signature_id.values(), key=lambda item: item.signature.created_at, reverse=True)
 
-    def _world_model_candidates_for_kaggle(self, workspace_id: str | None) -> list[WorldModelCandidate]:
+    def _world_model_candidates_for_modal(self, workspace_id: str | None) -> list[WorldModelCandidate]:
         candidates = list(self.world_model_candidates)
         by_key = {(item.provenance, item.rule): item for item in candidates}
         max_items = int(os.getenv("JIMS_KAGGLE_MAX_PANEL_ITEMS", "500") or "500")
@@ -2456,12 +2456,12 @@ class JimsAIPipeline:
             cursor = page.next_cursor
         return items[:max_items]
 
-    async def sync_kaggle_training(self, run_id: str) -> KaggleTrainingResponse | None:
-        for index, run in enumerate(self.kaggle_runs):
+    async def sync_modal_training(self, run_id: str) -> KaggleTrainingResponse | None:
+        for index, run in enumerate(self.training_runs):
             if run.run_id != run_id:
                 continue
-            synced = self.kaggle.sync_outputs(run)
-            self.kaggle_runs[index] = synced
+            synced = self.training_orchestrator.sync_outputs(run)
+            self.training_runs[index] = synced
             if synced.status == "completed" and synced.local_path:
                 self.active_training_artifacts[synced.task_type] = synced.local_path
             event_type = "saga_completed" if synced.status == "completed" else "saga_step_completed"
@@ -2480,7 +2480,7 @@ class JimsAIPipeline:
                 provenance=[run_id],
                 data={"run": synced.model_dump(mode="json")},
             )
-            self.production.save_panel_items([self._kaggle_run_item(synced)])
+            self.production.save_panel_items([self._training_run_item(synced)])
             return synced
         return None
 
@@ -2514,7 +2514,7 @@ class JimsAIPipeline:
         elif panel == "sessions":
             items = [self._session_item(session) for session in self.canvas_sessions.values()]
             items.extend(self._session_item(session) for session in self.invention_sessions.values())
-            items.extend(self._kaggle_run_item(run) for run in self.kaggle_runs)
+            items.extend(self._training_run_item(run) for run in self.training_runs)
         elif panel == "feedback":
             provider_item = TrainingPanelItem(
                 id="feedback:provider-readiness",
@@ -2621,13 +2621,13 @@ class JimsAIPipeline:
             created_at=utc_now(),
         )
 
-    def _kaggle_run_item(self, run: KaggleTrainingResponse) -> TrainingPanelItem:
+    def _training_run_item(self, run: KaggleTrainingResponse) -> TrainingPanelItem:
         return TrainingPanelItem(
             id=f"sessions:{run.run_id}",
             panel="sessions",
-            kind="kaggle_training_run",
+            kind="modal_training_run",
             title=f"{run.task_type} / {run.status}",
-            subtitle=run.kernel_ref or run.local_path or "kaggle package",
+            subtitle=run.local_path or run.run_id,
             data=run.model_dump(mode="json"),
             created_at=run.submitted_at,
         )

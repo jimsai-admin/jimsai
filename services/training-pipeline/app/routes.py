@@ -9,7 +9,7 @@ import httpx
 from fastapi import APIRouter, Body, Header, HTTPException, status
 from pydantic import BaseModel, Field
 
-from prototype.jimsai.models import KaggleTrainingRequest, TrainingIngestRequest, TrainingPanelItem
+from prototype.jimsai.models import KaggleTrainingRequest, ModalTrainingRequest, TrainingIngestRequest, TrainingPanelItem
 from prototype.jimsai.pipeline import JimsAIPipeline
 from prototype.jimsai.autonomous_training_agent import AutonomousAgentConfig, AutonomousTrainingAgent
 
@@ -28,7 +28,8 @@ SERVICE_CONTRACT = {
         "/v1/autonomous/plan",
         "/v1/autonomous/reembed-hash",
         "/v1/autonomous/report",
-        "/v1/autonomous/kaggle/package",
+        "/v1/autonomous/modal/training/package",
+        "/v1/autonomous/modal/training/run",
         "/v1/contract",
     ],
 }
@@ -62,7 +63,7 @@ class AutonomousGenericRequest(BaseModel):
     payload: dict = Field(default_factory=dict)
 
 
-class KagglePackageRequest(BaseModel):
+class ModalTrainingPackageRequest(BaseModel):
     user_id: str = "render:autonomous-agent"
     workspace_id: str | None = None
     task_type: Literal["encoder_finetune", "reranker_finetune", "world_model_extractor", "sppe_refiner", "sppe_renderer_finetune"] = "encoder_finetune"
@@ -70,8 +71,8 @@ class KagglePackageRequest(BaseModel):
     notes: str = "autonomous package"
     gpu: bool = True
 
-    def to_training_request(self) -> KaggleTrainingRequest:
-        return KaggleTrainingRequest(
+    def to_training_request(self) -> ModalTrainingRequest:
+        return ModalTrainingRequest(
             user_id=self.user_id,
             workspace_id=self.workspace_id,
             task_type=self.task_type,
@@ -79,6 +80,10 @@ class KagglePackageRequest(BaseModel):
             notes=self.notes,
             gpu=self.gpu,
         )
+
+
+# Backward-compat alias
+KagglePackageRequest = ModalTrainingPackageRequest
 
 
 def require_agent_token(authorization: str | None) -> None:
@@ -253,14 +258,17 @@ async def autonomous_ingest_batch(request: BatchIngestRequest = Body(default_fac
     return {"accepted": True, "run": run, "ingested": len(results), "results": results}
 
 
+@router.post("/v1/autonomous/modal/training/run")
+@router.post("/v1/autonomous/modal/training/package")
+# Backward-compat: old Kaggle routes still accepted
 @router.post("/v1/autonomous/kaggle/run")
 @router.post("/v1/autonomous/kaggle/package")
-async def autonomous_kaggle_run(request: KagglePackageRequest = Body(default_factory=KagglePackageRequest), authorization: str | None = Header(default=None)):
-    """Package persisted SPPE/signature history for Kaggle GPU training."""
+async def autonomous_modal_training_run(request: ModalTrainingPackageRequest = Body(default_factory=ModalTrainingPackageRequest), authorization: str | None = Header(default=None)):
+    """Package persisted SPPE/signature history for Modal GPU training."""
     require_agent_token(authorization)
     active_pipeline = get_pipeline()
     training_request = request.to_training_request()
-    response = await active_pipeline.schedule_kaggle_training(training_request)
+    response = await active_pipeline.schedule_modal_training(training_request)
     batch = {
         "id": response.run_id,
         "workspace_id": training_request.workspace_id or "default",
@@ -273,8 +281,8 @@ async def autonomous_kaggle_run(request: KagglePackageRequest = Body(default_fac
         "updated_at": utc_now_iso(),
     }
     save_run_state("training_batches", batch)
-    save_panel_item(active_pipeline, autonomous_item("training_batch", f"Kaggle package {response.status}", batch, panel="artifacts"))
-    record_autonomous_run(active_pipeline, "kaggle-package", "completed", {"run_id": response.run_id, "status": response.status})
+    save_panel_item(active_pipeline, autonomous_item("training_batch", f"Modal training {response.status}", batch, panel="artifacts"))
+    record_autonomous_run(active_pipeline, "modal-training-package", "completed", {"run_id": response.run_id, "status": response.status})
     return response
 
 

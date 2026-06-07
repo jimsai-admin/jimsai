@@ -602,7 +602,7 @@ class TrainingPanelPage(BaseModel):
     total: int = 0
 
 
-class KaggleTrainingRequest(BaseModel):
+class ModalTrainingRequest(BaseModel):
     user_id: str
     workspace_id: str | None = None
     task_type: Literal["encoder_finetune", "reranker_finetune", "world_model_extractor", "sppe_refiner", "sppe_renderer_finetune"] = "encoder_finetune"
@@ -611,7 +611,11 @@ class KaggleTrainingRequest(BaseModel):
     gpu: bool = True
 
 
-class KaggleTrainingResponse(BaseModel):
+# Backward-compat alias
+KaggleTrainingRequest = ModalTrainingRequest
+
+
+class ModalTrainingResponse(BaseModel):
     run_id: str
     status: Literal["prepared", "submitted", "running", "completed", "failed"]
     task_type: str
@@ -619,6 +623,10 @@ class KaggleTrainingResponse(BaseModel):
     local_path: str | None = None
     detail: str = ""
     submitted_at: datetime = Field(default_factory=utc_now)
+
+
+# Backward-compat alias
+KaggleTrainingResponse = ModalTrainingResponse
 
 
 class ProviderStatus(BaseModel):

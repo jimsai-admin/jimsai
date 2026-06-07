@@ -6,6 +6,7 @@ from typing import Any
 
 import httpx
 
+from .env_config import get_env
 from .models import (
     ActivationDecision,
     CapabilityExecutionResult,
@@ -43,27 +44,22 @@ class CapabilityRouter:
 
     def __init__(self, bridge: Any | None = None) -> None:
         self.bridge = bridge
-        self.semantic_enabled = os.getenv("JIMS_ENABLE_SEMANTIC_CAPABILITY_ROUTER", "true").lower() in {"1", "true", "yes", "on"}
-        self.embedding_url = (
-            os.getenv("JIMS_CAPABILITY_EMBEDDING_SERVICE_URL", "")
-            or os.getenv("JIMS_EMBEDDING_SERVICE_URL", "")
-        ).strip().rstrip("/")
+        self.semantic_enabled = get_env("JIMS_ENABLE_SEMANTIC_CAPABILITY_ROUTER", "true").lower() in {"1", "true", "yes", "on"}
+        # Always use the main Modal Embedding Service for capability scoring
+        self.embedding_url = get_env("JIMS_EMBEDDING_SERVICE_URL").rstrip("/")
         self.embedding_token = (
-            os.getenv("JIMS_CAPABILITY_EMBEDDING_SERVICE_TOKEN", "")
-            or os.getenv("JIMS_EMBEDDING_SERVICE_TOKEN", "")
-            or os.getenv("JIMS_MODAL_API_KEY", "")
-        ).strip()
-        self.embedding_timeout = float(os.getenv("JIMS_CAPABILITY_EMBEDDING_TIMEOUT", "8") or "8")
-        self.classifier_enabled = os.getenv("JIMS_ENABLE_ZERO_SHOT_CAPABILITY_ROUTER", "true").lower() in {"1", "true", "yes", "on"}
-        self.classifier_url = (
-            os.getenv("JIMS_CLASSIFICATION_SERVICE_URL", "")
-            or self.embedding_url
-        ).strip().rstrip("/")
+            get_env("JIMS_MODAL_API_KEY")
+            or get_env("JIMS_EMBEDDING_SERVICE_TOKEN")
+        )
+        self.embedding_timeout = float(get_env("JIMS_CAPABILITY_EMBEDDING_TIMEOUT", "8") or "8")
+        self.classifier_enabled = get_env("JIMS_ENABLE_ZERO_SHOT_CAPABILITY_ROUTER", "true").lower() in {"1", "true", "yes", "on"}
+        # Always use the Modal Classification Service
+        self.classifier_url = get_env("JIMS_CLASSIFICATION_SERVICE_URL").rstrip("/")
         self.classifier_token = (
-            os.getenv("JIMS_CAPABILITY_CLASSIFIER_TOKEN", "")
-            or self.embedding_token
-        ).strip()
-        self.classifier_timeout = float(os.getenv("JIMS_CAPABILITY_CLASSIFIER_TIMEOUT", "20") or "20")
+            get_env("JIMS_MODAL_API_KEY")
+            or get_env("JIMS_CAPABILITY_CLASSIFIER_TOKEN")
+        )
+        self.classifier_timeout = float(get_env("JIMS_CAPABILITY_CLASSIFIER_TIMEOUT", "20") or "20")
 
     async def route(self, request: PipelineRequest, ir: SemanticIR, activation: ActivationDecision) -> tuple[CapabilityPlan, LayerResult]:
         query = request.query.lower()
@@ -525,9 +521,9 @@ class CapabilityAdapterRegistry:
             "code_docs_detail": "internal_sandbox" if not os.getenv("JIMS_CODE_DOCS_PROVIDER") else os.getenv("JIMS_CODE_DOCS_PROVIDER"),
             "math_solver_available": True,
             "math_solver_detail": "internal_symbolic_solver",
-            "image_generation_available": bool(os.getenv("JIMS_IMAGE_GENERATION_URL") or os.getenv("OPENAI_API_KEY") or os.getenv("REPLICATE_API_TOKEN")),
-            "audio_generation_available": bool(os.getenv("JIMS_AUDIO_GENERATION_URL") or os.getenv("OPENAI_API_KEY")),
-            "video_generation_available": bool(os.getenv("JIMS_VIDEO_GENERATION_URL") or os.getenv("RUNWAY_API_KEY") or os.getenv("REPLICATE_API_TOKEN")),
+            "image_generation_available": bool(os.getenv("JIMS_IMAGE_GENERATION_URL")),
+            "audio_generation_available": bool(os.getenv("JIMS_AUDIO_GENERATION_URL")),
+            "video_generation_available": bool(os.getenv("JIMS_VIDEO_GENERATION_URL")),
             "agent_executor_available": os.getenv("JIMS_AGENT_EXECUTOR_ENABLED", "false").lower() == "true",
             "agent_requires_approval": os.getenv("JIMS_AGENT_REQUIRE_APPROVAL", "true").lower() != "false",
         }

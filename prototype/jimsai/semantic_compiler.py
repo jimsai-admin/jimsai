@@ -7,7 +7,6 @@ import unicodedata
 from typing import Any
 
 from .models import ExecutionMode, Hypothesis, IntentDomain, SemanticIR
-from .intent_classifier import get_classifier
 
 
 def _is_document_wide_relation(predicate: str) -> bool:
@@ -188,18 +187,15 @@ def _canonical_token(token: str) -> str:
 
 
 class _FallbackClassifier:
-    """Used when sentence-transformers is not available (e.g. Lambda)."""
+    """Used when sentence-transformers is not available (e.g. Lambda).
+    Always routes through the Modal Embedding Service — no local models.
+    """
     def __init__(self):
         import os
-        self.api_url = (
-            os.getenv("JIMS_EMBEDDING_SERVICE_URL", "")
-            or os.getenv("JIMS_CAPABILITY_EMBEDDING_SERVICE_URL", "")
-            or "https://huggingface.co/spaces/jimsai/embeddings"
-        ).strip().rstrip("/")
+        self.api_url = os.getenv("JIMS_EMBEDDING_SERVICE_URL", "").strip().rstrip("/")
         self.api_token = (
-            os.getenv("JIMS_EMBEDDING_SERVICE_TOKEN", "")
-            or os.getenv("JIMS_CAPABILITY_EMBEDDING_SERVICE_TOKEN", "")
-            or ""
+            os.getenv("JIMS_MODAL_API_KEY", "")
+            or os.getenv("JIMS_EMBEDDING_SERVICE_TOKEN", "")
         ).strip()
         
         self.ir_prototypes = {
@@ -388,20 +384,9 @@ class SemanticCompilerRuntime:
 
     @property
     def classifier(self) -> Any:
-        """Lazy initialize classifier.
-
-        Production backends default to the external HF embedding service so they
-        do not load sentence-transformers locally during cold start or first query.
-        """
+        """Lazy initialize classifier — always uses Modal Embedding Service externally."""
         if self._classifier is None:
-            use_local = os.getenv("JIMS_USE_LOCAL_SENTENCE_TRANSFORMERS", "false").lower() in {"1", "true", "yes", "on"}
-            if not use_local:
-                self._classifier = _FallbackClassifier()
-            else:
-                try:
-                    self._classifier = get_classifier()
-                except (ImportError, Exception):
-                    self._classifier = _FallbackClassifier()
+            self._classifier = _FallbackClassifier()
         return self._classifier
 
     def _scope_from_tokens(self, tokens: list[str], raw_input: str) -> dict[str, Any]:

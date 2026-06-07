@@ -16,6 +16,7 @@ from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 
 from .jimsai.auth import AuthSettings, require_scope, supabase_auth_configured, supabase_password_auth, supabase_refresh_auth
+from .jimsai.env_config import get_config
 from .jimsai.models import (
     CanvasRunRequest,
     FeedbackRequest,
@@ -65,6 +66,13 @@ async def startup_warm_classifier() -> None:
     import asyncio
     import logging
     _logger = logging.getLogger("jimsai.startup")
+    # Validate all required env vars on startup — raises RuntimeError if any missing
+    try:
+        get_config()
+    except RuntimeError as exc:
+        _logger.error("Required environment variable missing at startup: %s", exc)
+        # Re-raise so the process exits cleanly rather than silently serving bad requests
+        raise
     try:
         # Access the compiler's classifier to trigger lazy init
         classifier = pipeline.compiler.classifier

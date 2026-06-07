@@ -26,8 +26,8 @@ class AuthSettings:
     @classmethod
     def from_env(cls) -> "AuthSettings":
         return cls(
-            required=env_bool("JIMS_AUTH_REQUIRED", True),
-            provider=os.getenv("JIMS_AUTH_PROVIDER", "supabase").strip().lower(),
+            required=True,          # always required
+            provider="supabase",    # always supabase
             supabase_url=os.getenv("SUPABASE_URL", ""),
             supabase_anon_key=os.getenv("SUPABASE_ANON_KEY") or os.getenv("SUPABASE_SERVICE_KEY", ""),
             supabase_default_scopes=os.getenv(

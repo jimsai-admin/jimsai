@@ -1,5 +1,8 @@
 ﻿from __future__ import annotations
 
+# Use env_config.get_config() for fail-fast startup validation of required env vars.
+# provider_adapters.py is loaded lazily and relies on its own .configured property checks.
+
 import json
 import math
 import os
@@ -63,9 +66,7 @@ def redis_url_from_env() -> str:
 
 @dataclass(frozen=True)
 class ProductionSettings:
-    storage_backend: str
     strict_provider_startup: bool
-    postgres_url: str
     supabase_url: str
     supabase_service_key: str
     supabase_anon_key: str
@@ -85,16 +86,11 @@ class ProductionSettings:
     vectorize_dimensions: int
     embedding_service_url: str
     embedding_service_token: str
-    multimodal_encoder_mode: str
-    multimodal_encoder_url: str
-    multimodal_encoder_api_key: str
 
     @classmethod
     def from_env(cls) -> "ProductionSettings":
         return cls(
-            storage_backend=os.getenv("JIMS_STORAGE_BACKEND", "memory").strip().lower(),
             strict_provider_startup=env_bool("JIMS_STRICT_PROVIDER_STARTUP", False),
-            postgres_url=os.getenv("POSTGRES_URL", ""),
             supabase_url=os.getenv("SUPABASE_URL", ""),
             supabase_service_key=os.getenv("SUPABASE_SERVICE_KEY", ""),
             supabase_anon_key=os.getenv("SUPABASE_ANON_KEY", ""),
@@ -114,55 +110,46 @@ class ProductionSettings:
             vectorize_dimensions=int(os.getenv("CF_VECTORIZE_DIMENSIONS", "768") or "768"),
             embedding_service_url=os.getenv("JIMS_EMBEDDING_SERVICE_URL", "").strip().rstrip("/"),
             embedding_service_token=os.getenv("JIMS_EMBEDDING_SERVICE_TOKEN", "").strip() or os.getenv("JIMS_MODAL_API_KEY", "").strip(),
-            multimodal_encoder_mode=os.getenv("JIMS_MULTIMODAL_ENCODER_MODE", "").strip().lower(),
-            multimodal_encoder_url=os.getenv("JIMS_MULTIMODAL_ENCODER_URL", "").strip().rstrip("/"),
-            multimodal_encoder_api_key=os.getenv("JIMS_MULTIMODAL_ENCODER_API_KEY", ""),
         )
 
     @property
     def production_mode(self) -> bool:
-        return self.storage_backend in {"production", "postgres", "supabase", "external"}
+        return True  # always production
 
     @property
     def enable_postgres(self) -> bool:
-        return env_flag("JIMS_ENABLE_POSTGRES", self.storage_backend in {"production", "postgres", "supabase"})
+        return env_flag("JIMS_ENABLE_POSTGRES", False)
 
     @property
     def enable_r2(self) -> bool:
-        return env_flag("JIMS_ENABLE_R2", self.storage_backend == "production")
+        return env_flag("JIMS_ENABLE_R2", True)
 
     @property
     def enable_vectorize(self) -> bool:
-        return env_flag("JIMS_ENABLE_VECTORIZE", self.storage_backend == "production")
+        return env_flag("JIMS_ENABLE_VECTORIZE", True)
 
     @property
     def enable_neo4j(self) -> bool:
         if self.graph_provider != "neo4j_aura":
             return False
-        return env_flag("JIMS_ENABLE_NEO4J", self.storage_backend == "production")
+        return env_flag("JIMS_ENABLE_NEO4J", True)
 
     @property
     def enable_celery(self) -> bool:
-        return env_flag("JIMS_ENABLE_CELERY", self.storage_backend == "production")
+        return env_flag("JIMS_ENABLE_CELERY", True)
 
     @property
     def cloud_authoritative(self) -> bool:
-        return env_flag("JIMS_CLOUD_AUTHORITATIVE", self.storage_backend == "production")
-
-    @property
-    def effective_multimodal_encoder_mode(self) -> str:
-        if self.multimodal_encoder_mode in {"external", "kaggle_batch", "disabled"}:
-            return self.multimodal_encoder_mode
-        if self.embedding_service_url:
-            return "external"
-        if self.multimodal_encoder_url:
-            return "external"
-        return "disabled"
+        return True  # always cloud-authoritative
 
     @property
     def enable_multimodal_encoders(self) -> bool:
-        mode = self.effective_multimodal_encoder_mode
-        return mode != "disabled" and env_flag("JIMS_ENABLE_MULTIMODAL_ENCODERS", mode != "disabled")
+        # Multimodal encoding routes through the Modal Embedding Service
+        return bool(self.embedding_service_url)
+
+    @property
+    def effective_multimodal_encoder_mode(self) -> str:
+        return "external" if self.embedding_service_url else "disabled"
 
 
 def _clean_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
@@ -1309,18 +1296,18 @@ class ExternalMultimodalEncoderAdapter:
         return bool(self._base_url())
 
     def _base_url(self) -> str:
-        return (self.settings.embedding_service_url or self.settings.multimodal_encoder_url).strip().rstrip("/")
+        return self.settings.embedding_service_url.strip().rstrip("/")
 
     def _headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
-        token = self.settings.embedding_service_token or self.settings.multimodal_encoder_api_key
+        token = self.settings.embedding_service_token
         if token:
             headers["Authorization"] = f"Bearer {token}"
         return headers
 
     def check(self) -> str:
         if not self.configured:
-            return "missing JIMS_EMBEDDING_SERVICE_URL or JIMS_MULTIMODAL_ENCODER_URL"
+            return "missing JIMS_EMBEDDING_SERVICE_URL"
         response = httpx.get(
             f"{self._base_url()}/health",
             headers=self._headers(),
