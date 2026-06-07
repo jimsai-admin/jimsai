@@ -216,9 +216,11 @@ class JimsAIPipeline:
 
     def _lexical_query_terms(self, query: str) -> set[str]:
         stop_terms = {"what", "how", "why", "the", "and", "for", "with", "about", "should"}
+        # Use \w (Unicode-aware) instead of [a-z0-9] so Yoruba, Arabic, French etc.
+        # characters (ọ, ẹ, à, è, ñ, ü, ...) are preserved as valid term characters.
         terms = {
             term
-            for term in re.findall(r"[a-z0-9_\-.]+", query.lower())
+            for term in re.findall(r"[\w\-.]+", query.lower(), flags=re.UNICODE)
             if len(term) >= 3 and term not in stop_terms
         }
         expanded = set(terms)
@@ -268,6 +270,36 @@ class JimsAIPipeline:
 
     async def run(self, request: PipelineRequest) -> PipelineResponse:
         self._reset_request_cache()
+
+        # Safety gate — check before any processing
+        safety_refusal = self._safety_check(request.query)
+        if safety_refusal:
+            self.event_store.append(
+                "safety_refusal",
+                request.user_id,
+                {"query_length": len(request.query), "user_id": request.user_id},
+                user_id=request.user_id,
+            )
+            # Return a minimal valid PipelineResponse
+            from .models import SemanticIR, ExecutionMode, IntentDomain
+            refusal_ir = SemanticIR(
+                target_ir="OP_ESCAPE_TO_SANDBOX",
+                system_action="OP_ESCAPE_TO_SANDBOX",
+                confidence=0.0,
+                execution_mode=ExecutionMode.AIR_GAPPED_CONTAINER,
+                intent_domain=IntentDomain.UNKNOWN,
+            )
+            return PipelineResponse(
+                response=safety_refusal,
+                ir=refusal_ir,
+                reasoning_chain=[],
+                confidence=0.0,
+                gaps=["Request declined on safety grounds."],
+                sources=[],
+                simulation_results=[],
+                trace=[],
+            )
+
         cache_key = self.result_cache.key(
             "query",
             {
@@ -799,7 +831,57 @@ class JimsAIPipeline:
         return expression, solve_for
 
     def _extract_solver_expression(self, query: str) -> tuple[str, str | None]:
-        lowered = query.lower()
+        # Translate natural language arithmetic operators to symbols
+        # before the token-extraction step. This handles queries like
+        # "847 multiplied by 63" or "what is 2 plus 2?".
+        word_ops = [
+            (r"\bmultiplied\s+by\b", "*"),
+            (r"\btimes\b", "*"),
+            (r"\bdivided\s+by\b", "/"),
+            (r"\bover\b", "/"),
+            (r"\bplus\b", "+"),
+            (r"\badded\s+to\b", "+"),
+            (r"\bminus\b", "-"),
+            (r"\bsubtracted\s+from\b", "-"),
+            (r"\bto\s+the\s+power\s+of\b", "**"),
+            (r"\bsquared\b", "**2"),
+            (r"\bcubed\b", "**3"),
+        ]
+        normalized_query = query
+        for pattern, symbol in word_ops:
+            normalized_query = re.sub(pattern, symbol, normalized_query, flags=re.IGNORECASE)
+
+        # Strip physics unit labels BEFORE tokenisation so they don't produce
+        # false operator matches. Patterns like "9.81 m/s²", "km/h", "kN/m²",
+        # "m/s^2" look like division expressions but are just annotated constants.
+        # Remove: number + optional-space + unit (letters/digits + optional /,^,²,³)
+        # Examples removed: "9.81 m/s²" → "9.81", "50 kN" → "50", "6 metres" → "6"
+        unit_label_pattern = r"(\d+(?:\.\d+)?)\s*(?:[a-zA-Z°²³µΩ][a-zA-Z0-9°²³µΩ]*(?:[/^][a-zA-Z0-9²³]+)?)"
+        # Only strip unit labels that appear inside natural language context (have
+        # surrounding spaces/punctuation), not inside pure equations.
+        # Strategy: if the query contains '=' it is likely an equation — leave it.
+        # Otherwise strip units to prevent false operator extraction.
+        if "=" not in normalized_query:
+            normalized_query = re.sub(unit_label_pattern, r"\1", normalized_query)
+
+        # Detect and remove "given constant" assignments — patterns like "g = 9.81",
+        # "R = 8.314", "Earth's radius = 6371" that appear in word problems as
+        # supplied values, NOT as equations to solve.
+        # These are identified by: single-letter variable (or common constant name)
+        # followed by = followed by a pure number, with word-boundary context.
+        # We remove them so the solver doesn't try to "solve" g=9.81.
+        given_constant_pattern = r"\b([A-Za-z](?:_[A-Za-z0-9]+)?)\s*=\s*(\d+(?:\.\d+)?)\b"
+        # Only strip given-value assignments when the query is a word problem
+        # (contains "use", "given", "assume", "where", "let") not a pure equation.
+        word_problem_markers = re.search(
+            r"\b(use|given|assume|where|let|take|with|radius|surface|mass|charge|constant)\b",
+            normalized_query,
+            re.IGNORECASE,
+        )
+        if word_problem_markers:
+            normalized_query = re.sub(given_constant_pattern, r"\2", normalized_query)
+
+        lowered = normalized_query.lower()
         normalized = lowered
         normalized = normalized.replace("=", " = ")
         tokens = re.findall(r"\d+(?:\.\d+)?|[a-z]+|[+\-*/().=]", normalized)
@@ -834,6 +916,16 @@ class JimsAIPipeline:
                 if len(sides) == 2 and not sides[1]:
                     expression = sides[0]
         if not re.fullmatch(r"[0-9a-z+\-*/().=]+", expression or ""):
+            return "", None
+        # Guard: require at least 2 distinct numeric tokens to avoid false positives
+        # like "-99" extracted from "XK-99 processor"
+        numeric_tokens = re.findall(r"\d+", expression)
+        if len(numeric_tokens) < 2 and "=" not in expression:
+            return "", None
+        # Guard: reject expressions that are just a constant divided by a single
+        # letter — these are unit fragments like "9.81/s" extracted from "9.81 m/s²"
+        # after unit stripping is incomplete. Pattern: digits / single-letter (no rhs number)
+        if re.fullmatch(r"\d+(?:\.\d+)?[*/][a-z]", expression):
             return "", None
         return expression, solve_for
 
@@ -876,6 +968,22 @@ class JimsAIPipeline:
                 logger.debug("User profile fact persistence skipped", exc_info=True)
             promoted += 1
         return promoted
+
+    _SAFETY_PATTERNS = [
+        re.compile(r"\b(make|build|create|construct|assemble|synthesize)\b.{0,40}\b(bomb|explosive|weapon|poison|nerve\s+agent|bioweapon|ied)\b", re.IGNORECASE),
+        re.compile(r"\b(how\s+to|instructions?\s+for|steps?\s+to)\b.{0,40}\b(bomb|explosive|weapon|poison|kill\s+people|make\s+meth|synthesize\s+drugs)\b", re.IGNORECASE),
+    ]
+
+    def _safety_check(self, query: str) -> str | None:
+        """Return a refusal string if the query matches a harmful pattern, else None."""
+        for pattern in self._SAFETY_PATTERNS:
+            if pattern.search(query):
+                return (
+                    "I can't help with that. If you're working on a legitimate safety, "
+                    "research, or fictional context, please describe the actual goal "
+                    "and I'll do my best to assist within safe boundaries."
+                )
+        return None
 
     def _apply_capability_gates(self, obj) -> None:
         if not obj.capability_plan:

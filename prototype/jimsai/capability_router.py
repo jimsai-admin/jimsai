@@ -111,6 +111,16 @@ class CapabilityRouter:
         kind = ranked[0][0] if ranked else CapabilityKind.MEMORY_CHAT
         top_score = ranked[0][1] if ranked else 0.0
         second_score = ranked[1][1] if len(ranked) > 1 else 0.0
+
+        # IR override: when the semantic compiler has high confidence that the
+        # request is code generation (CODE_GENERATE), trust that signal over the
+        # capability router's score — it has more query context. This prevents
+        # "Write a Python async task queue" from landing on agentic_task when
+        # the IR correctly identified it as CODE_GENERATE.
+        if ir.target_ir == "CODE_GENERATE" and kind != CapabilityKind.CODING:
+            kind = CapabilityKind.CODING
+            top_score = max(top_score, scores.get(CapabilityKind.CODING, 0.35))
+
         confidence = self._confidence(top_score, second_score)
         reason = self._reason_for(kind, signals)
         secondary = [candidate for candidate, score in ranked[1:4] if score >= 0.44 and top_score - score <= 0.28]
@@ -311,7 +321,15 @@ class CapabilityRouter:
         if self._matches(tokens, {"book", "send", "click", "schedule", "automate", "deploy", "rollback"}) and self._matches(
             tokens, {"agent", "task", "browser", "email", "site", "production", "calendar"}
         ):
-            scores[CapabilityKind.AGENTIC_TASK] += 0.72
+            # Guard: don't score agentic when strong code signals are present.
+            # "Write a Python async task queue" matches "task" but is clearly coding.
+            strong_code = (
+                self._matches(tokens, {"python", "javascript", "typescript", "async", "asyncio", "function", "method", "class", "queue"})
+                or re.search(r"```|def\s+\w+|class\s+\w+|import\s+\w+", query)
+                or self._matches(tokens, {"code", "write", "implement", "build"}) and self._matches(tokens, {"function", "class", "queue", "api", "test", "tests"})
+            )
+            if not strong_code:
+                scores[CapabilityKind.AGENTIC_TASK] += 0.72
         if generation and self._matches(tokens, {"story", "poem", "script", "email", "proposal", "copy", "tone", "rewrite"}):
             scores[CapabilityKind.CREATIVE_TEXT] += 0.82
         if activation.route in {"invention", "canvas"}:
@@ -330,7 +348,13 @@ class CapabilityRouter:
 
     def _looks_like_numeric_math(self, query: str) -> bool:
         numeric_count = len(re.findall(r"\d+(?:\.\d+)?", query))
-        return numeric_count >= 2 and bool(re.search(r"[+\-*/=]", query))
+        has_symbolic_op = bool(re.search(r"[+\-*/=]", query))
+        word_ops = (
+            r"\b(multiplied\s+by|times|divided\s+by|over|plus|added\s+to|minus|"
+            r"subtracted\s+from|to\s+the\s+power\s+of|squared|cubed)\b"
+        )
+        has_word_op = bool(re.search(word_ops, query, re.IGNORECASE))
+        return numeric_count >= 1 and (has_symbolic_op or has_word_op)
 
     def _confidence(self, top_score: float, second_score: float) -> float:
         if top_score <= 0:
@@ -498,7 +522,8 @@ class CapabilityAdapterRegistry:
         return {
             "web_search_available": True,  # DuckDuckGo needs no API key — always available as fallback
             "web_search_provider": "brave" if os.getenv("BRAVE_SEARCH_API_KEY") else ("custom" if os.getenv("JIMS_WEB_SEARCH_API_KEY") else "duckduckgo"),
-            "code_docs_available": bool(os.getenv("JIMS_CODE_DOCS_PROVIDER")),
+            "code_docs_available": True,  # Internal sandbox + invention engine always available
+            "code_docs_detail": "internal_sandbox" if not os.getenv("JIMS_CODE_DOCS_PROVIDER") else os.getenv("JIMS_CODE_DOCS_PROVIDER"),
             "math_solver_available": True,
             "math_solver_detail": "internal_symbolic_solver",
             "image_generation_available": bool(os.getenv("JIMS_IMAGE_GENERATION_URL") or os.getenv("OPENAI_API_KEY") or os.getenv("REPLICATE_API_TOKEN")),
@@ -531,6 +556,23 @@ class CapabilityAdapterRegistry:
                     status="available",
                     confidence=plan.confidence,
                     summary="Arithmetic and supported equations execute through the verified internal solver.",
+                    data={"verification_requirements": plan.verification_requirements},
+                )
+            ]
+        if plan.kind == CapabilityKind.CODING:
+            # The internal sandbox + invention engine (MCTS) is always available.
+            # External code_docs/test_runner adapters are optional enhancements.
+            return [
+                CapabilityExecutionResult(
+                    kind=plan.kind,
+                    adapter="internal_sandbox_invention_engine",
+                    status="available",
+                    confidence=plan.confidence,
+                    summary=(
+                        "Code generation and verification execute through the internal "
+                        "sandbox (DeterministicSandbox) and invention engine (MCTS). "
+                        "External code_docs/test_runner adapters are optional enhancements."
+                    ),
                     data={"verification_requirements": plan.verification_requirements},
                 )
             ]

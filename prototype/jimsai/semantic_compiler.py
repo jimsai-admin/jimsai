@@ -467,7 +467,15 @@ class SemanticCompilerRuntime:
     def _v9_capability_override(self, tokens: list[str], raw_input: str) -> tuple[str, float, str] | None:
         token_set = {token.strip(".,:;!?").lower() for token in tokens}
         raw_lower = raw_input.lower()
-        if len(re.findall(r"\d+(?:\.\d+)?", raw_input)) >= 2 and re.search(r"[+\-*/=]", raw_input):
+        # Detect word-form arithmetic (e.g. "847 multiplied by 63") in addition to symbolic operators
+        _word_ops_pattern = (
+            r"\b(multiplied\s+by|times|divided\s+by|over|plus|added\s+to|minus|"
+            r"subtracted\s+from|to\s+the\s+power\s+of|squared|cubed)\b"
+        )
+        _has_word_op = bool(re.search(_word_ops_pattern, raw_input, re.IGNORECASE))
+        _has_symbolic_op = bool(re.search(r"[+\-*/=]", raw_input))
+        _num_count = len(re.findall(r"\d+(?:\.\d+)?", raw_input))
+        if _num_count >= 1 and (_has_symbolic_op or _has_word_op):
             return "GENERAL_FACT", 0.92, "math_science"
         if "def " in raw_input or "class " in raw_input or "import " in raw_input or "return " in raw_input or "function " in raw_input or "```python" in raw_lower:
             return "CODE_GENERATE", 0.99, "coding"
@@ -488,7 +496,15 @@ class SemanticCompilerRuntime:
         if creative_match or re.search(r"\b(rewrite|draft|compose)\b", raw_lower):
             return "WORKSPACE_QUERY", 0.24, "creative_text"
         if token_set & AGENTIC_CAPABILITY_TOKENS:
-            return "WORKSPACE_QUERY", 0.28, "agentic_task"
+            # Guard: don't route to agentic_task when strong code signals are present.
+            # "Write a Python async task queue" has "task" but is clearly a code request.
+            strong_code_signal = bool(
+                (token_set & CODE_CAPABILITY_TOKENS) and (has_generation_action or bool(token_set & {"bug", "debug", "refactor", "test", "tests"}))
+                or "def " in raw_input or "class " in raw_input or "async " in raw_input
+                or bool(token_set & {"python", "javascript", "typescript", "async", "asyncio", "queue", "function", "method", "class"})
+            )
+            if not strong_code_signal:
+                return "WORKSPACE_QUERY", 0.28, "agentic_task"
         if len(token_set & ARCHITECTURE_TOKENS) >= 2:
             return "WORKSPACE_QUERY", 0.28, "system_architecture"
         if len(token_set & PUBLIC_MEMORY_QUERY_TOKENS) >= 2:
@@ -559,14 +575,16 @@ class SemanticCompilerRuntime:
         if has_non_ascii or any(w in normalized_input.lower().split() for w in low_resource_words):
             local_threshold = 0.30
         if target_ir == "OP_ESCAPE_TO_SANDBOX" or confidence < local_threshold:
-            # Fix 3: Context-less follow-up carry-forward — don't sandbox when session has active intent
-            # This handles "what about the error?" type queries with no clear standalone meaning
+            # Context-less follow-up carry-forward — don't sandbox when session has active intent.
+            # This handles "what about the error?" type queries and cross-language follow-ups.
+            # Non-ASCII queries benefit from session rescue too — the lowered local_threshold (0.30)
+            # already guards against truly unintelligible input; blocking session rescue for
+            # non-ASCII incorrectly prevents Yoruba/Arabic/etc. users from inheriting context.
             active_session_intent = session.get("ACTIVE_INTENT")
             if (
                 active_session_intent
                 and active_session_intent != "OP_ESCAPE_TO_SANDBOX"
                 and confidence >= 0.20  # Only rescue if some signal present (not pure noise)
-                and not has_non_ascii  # Don't override low-resource language threshold reduction
             ):
                 target_ir = active_session_intent
                 confidence = max(confidence, 0.35)

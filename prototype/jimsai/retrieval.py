@@ -84,7 +84,12 @@ class MultiIndexRetrievalEngine:
                 term
                 for tag in tag_names
                 for term in query_terms
-                if term_matches(tag, term) or term in tag or tag in term
+                # Use the same term_matches convention as entity matching:
+                # exact match or one is a dot-prefixed extension of the other.
+                # Substring matching (term in tag) is deliberately removed — it
+                # was causing "code" to match "encoding", "processor" to match
+                # "proc", producing cross-query retrieval contamination.
+                if term_matches(tag, term)
             }
             if tag_matches:
                 matched_terms.update(tag_matches)
@@ -177,6 +182,21 @@ class MultiIndexRetrievalEngine:
                 elif coverage < 0.25 and reasons:
                     score *= 0.55
                     reasons.append("low_query_coverage_penalty")
+
+            # Cross-query contamination guard: signatures whose raw_excerpt is
+            # itself a prior query prompt (provenance="local_extraction" is already
+            # filtered above, but resolved-prompt-memory and ingested prompts can
+            # still slip through). If the excerpt looks like a raw user prompt
+            # (starts with "Prompt:" or "prompt:") and no strong structural match
+            # exists, apply a heavy penalty so prior queries don't surface as answers.
+            if (
+                raw_excerpt.startswith("prompt:")
+                and not any(r in reasons for r in ("entity_index", "relation_index", "user_profile_memory", "user_relation_index", "causal_index"))
+                and "phrase_index" not in reasons
+            ):
+                score *= 0.15
+                reasons.append("prompt_excerpt_penalty")
+
             if score >= 0.12 and self._passes_evidence_gate(
                 query_terms=query_terms,
                 matched_terms=matched_terms,

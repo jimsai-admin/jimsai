@@ -50,6 +50,30 @@ app.add_middleware(
 pipeline = JimsAIPipeline()
 
 
+@app.on_event("startup")
+async def startup_warm_classifier() -> None:
+    """Pre-warm the intent classifier prototype embeddings at startup.
+
+    Moves the 2 HF Space batch calls for prototype embeddings from
+    per-query (cold) to startup (once). After this runs, classify_intent()
+    uses cached embeddings and adds ~0ms overhead per query.
+    """
+    import asyncio
+    import logging
+    _logger = logging.getLogger("jimsai.startup")
+    try:
+        # Access the compiler's classifier to trigger lazy init
+        classifier = pipeline.compiler.classifier
+        # Run the two blocking HF Space calls in a thread pool to avoid blocking the event loop
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, classifier._get_prototype_embeddings)
+        await loop.run_in_executor(None, classifier._get_profile_embedding)
+        _logger.info("Intent classifier prototype embeddings pre-warmed successfully.")
+    except Exception as exc:
+        # Non-fatal: first query will be slow but system still works
+        _logger.warning("Startup classifier warm failed (non-fatal): %s", exc)
+
+
 class PasswordAuthRequest(BaseModel):
     email: str
     password: str
