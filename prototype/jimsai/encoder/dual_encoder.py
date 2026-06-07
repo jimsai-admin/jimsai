@@ -173,6 +173,10 @@ class DualRepresentationEncoder:
             signature.metadata["latent_embedding_source"] = "external_service"
             signature.metadata["reembedding_required"] = False
         elif self.multimodal_adapter and modality in {Modality.TEXT, Modality.CODE, Modality.DATA}:
+            # Keep hash as structural fingerprint only — lower confidence so this
+            # signature doesn't compete with real-embedded ones in retrieval.
+            signature.confidence.score = min(signature.confidence.score, 0.55)
+            signature.confidence.source = "dual_encoder_hash_fallback"
             signature.metadata["latent_embedding_source"] = "hash_projection"
             signature.metadata["reembedding_required"] = True
             signature.metadata["reembedding_reason"] = "external_embedding_service_unavailable_or_returned_no_vector"

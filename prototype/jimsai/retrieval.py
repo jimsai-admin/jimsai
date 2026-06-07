@@ -153,14 +153,42 @@ class MultiIndexRetrievalEngine:
                     score += user_relation_score
                     reasons.append("user_relation_index")
             semantic = max(cosine(query_vec, sig.latent_embedding), 0.0)
-            has_structured_or_lexical_evidence = bool(reasons or matched_terms)
             latent_source = str(sig.metadata.get("latent_embedding_source") or "hash_projection")
-            if semantic > 0 and latent_source == "external_service":
-                score += 0.35 * semantic
+
+            # ── Semantic-first retrieval architecture ────────────────────────
+            # Real embeddings (external_service) are the PRIMARY signal.
+            # Lexical signals VERIFY the semantic match — they don't replace it.
+            # Hash projections are structurally unreliable: hard-cap their
+            # contribution and block unverified candidates entirely.
+            if latent_source == "external_service":
+                if semantic < 0.30:
+                    # Hard gate: below semantic threshold, skip this signature
+                    # entirely to prevent cross-query contamination.
+                    continue
+                # Semantic majority — lexical boosts verify/amplify the match
+                score = semantic * 0.65
                 reasons.append("semantic_index")
-            elif semantic > 0 and has_structured_or_lexical_evidence:
-                score += 0.08 * semantic
-                reasons.append("semantic_tiebreaker")
+                if entity_matches:
+                    score += 0.15
+                if phrase_matches:
+                    score += 0.15
+                if user_profile_query and sig.user_id == user_id:
+                    score += 0.20
+            else:
+                # Hash fallback path: lexical must fire, semantic is a weak tiebreaker,
+                # and total score is hard-capped to prevent hash retrieval from
+                # outcompeting real-embedded signatures in mixed-corpus queries.
+                has_structured_or_lexical_evidence = bool(reasons or matched_terms)
+                if not has_structured_or_lexical_evidence:
+                    # No lexical match at all → skip entirely, never hallucinate
+                    continue
+                # Lexical score is already accumulated in `score` above.
+                # Demote and cap it.
+                score = score * 0.40
+                score = min(score, 0.45)
+                if semantic > 0:
+                    score += 0.04 * semantic  # weak tiebreaker only
+                    reasons.append("semantic_tiebreaker")
             if sig.structured.causal_chain:
                 causal_terms = {c.cause.lower() for c in sig.structured.causal_chain} | {c.effect.lower() for c in sig.structured.causal_chain}
                 causal_matches = {
@@ -206,7 +234,8 @@ class MultiIndexRetrievalEngine:
             ):
                 results[sig.id] = RetrievalResult(signature=sig, score=round(score, 4), reasons=reasons or ["importance_index"])
         ranked = sorted(results.values(), key=lambda r: (-r.score, r.signature.id))
-        final = ranked[:effective_limit]
+        deduped = self._deduplicate_by_predicate(ranked, user_id)
+        final = deduped[:effective_limit]
         for result in final:
             result.signature.importance.retrieval_count += 1
             result.signature.importance.current_score = min(1.0, result.signature.importance.current_score + 0.01)
@@ -267,6 +296,9 @@ class MultiIndexRetrievalEngine:
     ) -> bool:
         if not reasons:
             return False
+        # Semantic index already passed the hard gate (cosine ≥ 0.30), always admit.
+        if "semantic_index" in reasons:
+            return True
         if relation_filter and "relation_index" in reasons:
             return True
         if user_profile_query and "user_profile_memory" in reasons:
@@ -275,8 +307,6 @@ class MultiIndexRetrievalEngine:
             return True
         if "phrase_index" in reasons or "causal_index" in reasons:
             return True
-        if "semantic_index" in reasons:
-            return True
         if len(query_terms) <= 2:
             return bool(matched_terms)
         if len(matched_terms) >= 2:
@@ -284,3 +314,67 @@ class MultiIndexRetrievalEngine:
         if _is_document_wide_relation(relation_filter) and "relation_index" in reasons:
             return True
         return False
+
+    def _deduplicate_by_predicate(
+        self,
+        results: list[RetrievalResult],
+        user_id: str | None,
+    ) -> list[RetrievalResult]:
+        """For user profile facts, keep only the highest-scoring result per
+        (user_id, subject, predicate) triple.
+
+        This handles contradictions — e.g. three "has_name" memories — without
+        needing to know which specific predicates to watch for.  It works for
+        any predicate in any language because it operates on the structured
+        relation graph, not on raw text.
+
+        Non-user-profile signatures pass through untouched.
+        """
+        if not user_id:
+            return results
+
+        # Map (user_id, subject, predicate) → best score seen so far
+        seen: dict[tuple[str, str, str], float] = {}
+        deduped: list[RetrievalResult] = []
+
+        for result in results:
+            sig = result.signature
+
+            # Only deduplicate signatures that belong to this user and contain
+            # user-profile relations (subject == "user").
+            if sig.user_id != user_id:
+                deduped.append(result)
+                continue
+
+            profile_keys = [
+                (sig.user_id, rel.subject.lower(), rel.predicate)
+                for rel in sig.structured.relations
+                if rel.subject.lower() == "user"
+            ]
+
+            if not profile_keys:
+                deduped.append(result)
+                continue
+
+            # For each predicate key, check whether this result beats the best
+            # score seen so far.  If it does for any key, include this result
+            # and evict any previously included result for that key.
+            should_include = False
+            for key in profile_keys:
+                if key not in seen or result.score > seen[key]:
+                    seen[key] = result.score
+                    should_include = True
+
+            if should_include:
+                # Remove any already-added lower-scoring result that shares a
+                # predicate key with this one.
+                deduped = [
+                    r for r in deduped
+                    if not any(
+                        (r.signature.user_id, rel.subject.lower(), rel.predicate) in profile_keys
+                        for rel in r.signature.structured.relations
+                    )
+                ]
+                deduped.append(result)
+
+        return deduped

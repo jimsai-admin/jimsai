@@ -57,6 +57,10 @@ async def startup_warm_classifier() -> None:
     Moves the 2 HF Space batch calls for prototype embeddings from
     per-query (cold) to startup (once). After this runs, classify_intent()
     uses cached embeddings and adds ~0ms overhead per query.
+
+    Also verifies that the embedding service is returning real vectors so
+    degraded retrieval (hash-only fallback) is surfaced loudly at startup
+    rather than silently failing on every query.
     """
     import asyncio
     import logging
@@ -72,6 +76,38 @@ async def startup_warm_classifier() -> None:
     except Exception as exc:
         # Non-fatal: first query will be slow but system still works
         _logger.warning("Startup classifier warm failed (non-fatal): %s", exc)
+
+    # ── Embedding service health check ─────────────────────────────────────
+    # If the embedding service isn't returning real vectors, every retrieval
+    # query will degrade to hash-only fallback and quality will be poor.
+    # Log clearly at startup so the issue is immediately visible.
+    try:
+        from .jimsai.models import Modality as _Modality
+        adapter = getattr(pipeline.production, "multimodal", None)
+        if adapter is not None and hasattr(adapter, "encode"):
+            test_vector = await asyncio.get_event_loop().run_in_executor(
+                None, adapter.encode, "embedding service health check", _Modality.TEXT
+            )
+            if test_vector:
+                _logger.info(
+                    "Embedding service verified: returning real vectors (dim=%d). "
+                    "Semantic-first retrieval is active.",
+                    len(test_vector),
+                )
+            else:
+                _logger.error(
+                    "EMBEDDING SERVICE NOT RETURNING VECTORS — all retrieval will degrade to "
+                    "hash-projection fallback until the service recovers. "
+                    "Check JIMS_EMBEDDING_SERVICE_URL and JIMS_EMBEDDING_SERVICE_TOKEN. "
+                    "Run POST /v1/autonomous/reembed-hash after the service comes back up."
+                )
+        else:
+            _logger.warning(
+                "No multimodal encoder adapter configured — semantic retrieval disabled. "
+                "Set JIMS_EMBEDDING_SERVICE_URL to enable real-vector retrieval."
+            )
+    except Exception as exc:
+        _logger.error("Embedding service health check failed at startup: %s", exc)
 
 
 class PasswordAuthRequest(BaseModel):

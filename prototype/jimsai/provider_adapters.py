@@ -1368,9 +1368,11 @@ class ExternalMultimodalEncoderAdapter:
             )
             or "6"
         )
-        max_attempts = max(1, int(os.getenv("JIMS_LIVE_EMBEDDING_ATTEMPTS", "1") or "1"))
+        max_attempts = 3  # Always try 3 times before declaring failure
         for attempt in range(max_attempts):
             try:
+                # Escalate timeout on each retry to handle a slow cold start
+                attempt_timeout = target_timeout if attempt == 0 else target_timeout * 2.0
                 response = httpx.post(
                     f"{base}/v1/embed",
                     headers=headers,
@@ -1379,15 +1381,35 @@ class ExternalMultimodalEncoderAdapter:
                         "model": model_id,
                         "purpose": purpose,
                     },
-                    timeout=target_timeout,
+                    timeout=attempt_timeout,
                 )
                 response.raise_for_status()
-                return self._extract_vector(response.json())
-            except Exception:
-                if attempt == max_attempts - 1:
-                    logger.warning("Embedding service unavailable after retry, using hash fallback")
-                    return []
-                continue
+                vector = self._extract_vector(response.json())
+                if vector:
+                    return vector
+                # Service returned 200 but no usable vector — don't retry
+                logger.warning(
+                    "Embedding service returned 200 but no vector (model=%s, content_len=%d)",
+                    model_id, len(content),
+                )
+                return []
+            except Exception as exc:
+                if attempt < max_attempts - 1:
+                    logger.warning(
+                        "Embedding attempt %d/%d failed: %s — retrying",
+                        attempt + 1, max_attempts, exc,
+                    )
+                    continue
+                # All attempts exhausted — return empty list so the caller marks
+                # the signature as reembedding_required=True.  Do NOT silently
+                # return hash embeddings here; the caller in dual_encoder.py
+                # already handles the hash fallback path explicitly.
+                logger.error(
+                    "All %d embedding attempts failed for content length %d (model=%s). "
+                    "Signature will be marked reembedding_required=True.",
+                    max_attempts, len(content), model_id,
+                )
+                return []
         return []  # unreachable but satisfies type checker
 
     def embed_batch(

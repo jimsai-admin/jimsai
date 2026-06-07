@@ -666,8 +666,13 @@ class JimsAIPipeline:
         signature.confidence.score = min(0.98, max(response.confidence, 0.90))
         signature.confidence.source = "resolution_learning_verified"
         signature.metadata.update(content)
-        self.memory.insert(signature)
-        self.graph.add_signature(signature)
+        # Write to training pipeline ONLY — not to the live retrieval memory.
+        # Resolved-prompt signatures are training examples (SPPE pairs) for the
+        # Kaggle fine-tuning loop; inserting them into self.memory contaminates
+        # the retrieval corpus with prior queries, causing cross-query retrieval
+        # of unrelated prompts as answers to future questions.
+        # self.memory.insert(signature)   ← intentionally removed
+        # self.graph.add_signature(signature)  ← intentionally removed
         panel_item = TrainingPanelItem(
             id=f"memory:{signature.id}",
             panel="memory",
