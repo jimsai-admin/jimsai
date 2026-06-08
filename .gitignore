@@ -55,3 +55,6 @@ debug_*.py
 # Lambda build artifacts
 .lambda-build/
 lambda-package.zip
+
+# Local model download cache (populate_modal_volume.py)
+.model_cache/

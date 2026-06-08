@@ -208,79 +208,98 @@ def populate_artifact(artifact: ModelArtifact) -> dict:
         return result
 
     # ------------------------------------------------------------------
-    # Download to a local temp directory, then push to volume
+    # Download to a persistent local cache directory, then push to volume
+    # Uses a stable path so HF hub reuses files across retries.
     # ------------------------------------------------------------------
     t0 = time.monotonic()
 
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        tmp_path = Path(tmp_dir)
+    # Persistent cache dir: <repo_root>/.model_cache/<artifact_key_safe>/
+    _CACHE_ROOT = _REPO_ROOT / ".model_cache"
+    safe_key = artifact.key.replace("/", "_")
+    cache_dir = _CACHE_ROOT / safe_key
+    cache_dir.mkdir(parents=True, exist_ok=True)
 
-        try:
-            if artifact.hf_filename is None:
-                # Full model snapshot (embedding / classification models)
-                print(f"  [DL]   snapshot_download → {artifact.hf_repo_id}")
-                local_model_dir = tmp_path / "model"
-                snapshot_download(
-                    repo_id=artifact.hf_repo_id,
-                    local_dir=str(local_model_dir),
-                    token=HF_TOKEN or None,
-                    ignore_patterns=["*.msgpack", "flax_model*", "rust_model*", "tf_model*"],
-                )
-                local_src = local_model_dir
-            else:
-                # Single GGUF file
-                print(f"  [DL]   hf_hub_download → {artifact.hf_repo_id}/{artifact.hf_filename}")
-                downloaded_path = hf_hub_download(
-                    repo_id=artifact.hf_repo_id,
-                    filename=artifact.hf_filename,
-                    local_dir=str(tmp_path),
-                    token=HF_TOKEN or None,
-                )
-                local_src = Path(downloaded_path)
+    try:
+        if artifact.hf_filename is None:
+            # Full model snapshot (embedding / classification models)
+            print(f"  [DL]   snapshot_download → {artifact.hf_repo_id}")
+            local_model_dir = cache_dir / "model"
+            snapshot_download(
+                repo_id=artifact.hf_repo_id,
+                local_dir=str(local_model_dir),
+                token=HF_TOKEN or None,
+                ignore_patterns=["*.msgpack", "flax_model*", "rust_model*", "tf_model*"],
+            )
+            local_src = local_model_dir
+        else:
+            # Single GGUF file
+            print(f"  [DL]   hf_hub_download → {artifact.hf_repo_id}/{artifact.hf_filename}")
+            downloaded_path = hf_hub_download(
+                repo_id=artifact.hf_repo_id,
+                filename=artifact.hf_filename,
+                local_dir=str(cache_dir),
+                token=HF_TOKEN or None,
+            )
+            local_src = Path(downloaded_path)
 
-            # ----------------------------------------------------------
-            # Validate non-zero size
-            # ----------------------------------------------------------
-            size_bytes = _local_dir_size(local_src)
-            if size_bytes == 0:
-                raise ValueError(f"Downloaded artifact has zero size: {local_src}")
+        # ----------------------------------------------------------
+        # Validate non-zero size
+        # ----------------------------------------------------------
+        size_bytes = _local_dir_size(local_src)
+        if size_bytes == 0:
+            raise ValueError(f"Downloaded artifact has zero size: {local_src}")
 
-            elapsed_dl = time.monotonic() - t0
-            print(f"  [OK]   Downloaded {_format_size(size_bytes)} in {elapsed_dl:.1f}s")
+        elapsed_dl = time.monotonic() - t0
+        print(f"  [OK]   Downloaded {_format_size(size_bytes)} in {elapsed_dl:.1f}s")
 
-            # ----------------------------------------------------------
-            # Push to Modal Volume
-            # ----------------------------------------------------------
-            t1 = time.monotonic()
-            remote_target = artifact.volume_path
+        # ----------------------------------------------------------
+        # Push to Modal Volume via CLI (modal 1.x removed put_directory/put_file)
+        # ----------------------------------------------------------
+        t1 = time.monotonic()
+        remote_target = artifact.volume_path
 
-            if local_src.is_dir():
-                print(f"  [VOL]  Uploading directory → volume:{remote_target}/")
-                volume.put_directory(
-                    local_path=str(local_src),
-                    remote_path=remote_target,
-                )
-            else:
-                print(f"  [VOL]  Uploading file → volume:{remote_target}")
-                volume.put_file(
-                    local_path=str(local_src),
-                    remote_path=remote_target,
-                )
+        import subprocess
 
-            volume.commit()
+        if local_src.is_dir():
+            print(f"  [VOL]  Uploading directory → volume:{remote_target}/")
+            cmd = [
+                "modal", "volume", "put",
+                "--force",
+                VOLUME_NAME,
+                str(local_src) + "/.",
+                remote_target,
+            ]
+        else:
+            print(f"  [VOL]  Uploading file → volume:{remote_target}")
+            cmd = [
+                "modal", "volume", "put",
+                "--force",
+                VOLUME_NAME,
+                str(local_src),
+                remote_target,
+            ]
 
-            elapsed_vol = time.monotonic() - t1
-            print(f"  [OK]   Volume write complete in {elapsed_vol:.1f}s")
-            print(f"  [SIZE] {_format_size(size_bytes)}")
+        result_proc = subprocess.run(
+            cmd,
+            capture_output=False,
+            text=True,
+            env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+        )
+        if result_proc.returncode != 0:
+            raise RuntimeError(f"modal volume put failed with exit code {result_proc.returncode}")
 
-            result["status"] = "ok"
-            result["size_bytes"] = size_bytes
-            result["message"] = f"Downloaded + uploaded in {elapsed_dl + elapsed_vol:.1f}s"
+        elapsed_vol = time.monotonic() - t1
+        print(f"  [OK]   Volume write complete in {elapsed_vol:.1f}s")
+        print(f"  [SIZE] {_format_size(size_bytes)}")
 
-        except Exception as exc:
-            result["status"] = "error"
-            result["message"] = str(exc)
-            print(f"  [ERR]  {exc}")
+        result["status"] = "ok"
+        result["size_bytes"] = size_bytes
+        result["message"] = f"Downloaded + uploaded in {elapsed_dl + elapsed_vol:.1f}s"
+
+    except Exception as exc:
+        result["status"] = "error"
+        result["message"] = str(exc)
+        print(f"  [ERR]  {exc}")
 
     return result
 
