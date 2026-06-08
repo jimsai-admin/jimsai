@@ -209,7 +209,7 @@ class JimsAIPipeline:
             if not self.production._visible_to_scope(signature, workspace_id=request.workspace_id, user_id=request.user_id):
                 continue
             score = self._lexical_signature_score(signature, query_terms)
-            if score >= 2:
+            if score >= 1:
                 scored.append((score, signature.confidence.score, signature.created_at, signature))
         scored.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
         return [item[3] for item in scored[:8]]

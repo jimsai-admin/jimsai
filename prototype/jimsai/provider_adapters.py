@@ -946,7 +946,7 @@ class ExternalMultimodalEncoderAdapter:
         response = httpx.get(
             f"{self._base_url()}/health",
             headers=self._headers(),
-            timeout=5,
+            timeout=30,  # Modal services need up to 15s on cold-start health check
         )
         response.raise_for_status()
         return "external embedding service reachable"
@@ -1177,8 +1177,17 @@ class ProductionRuntime:
         self._initialize()
 
     def _ensure_adapter(self, name: str, adapter: Any | None) -> None:
-        """Connect one provider without blocking hot paths on unrelated providers."""
-        if name in self._checked_adapters:
+        """Connect one provider without blocking hot paths on unrelated providers.
+
+        Successfully checked adapters are cached permanently.
+        Failed adapters are retried on subsequent calls so transient startup
+        errors (e.g. first-request cold-start) don't permanently disable a provider.
+        """
+        # Always skip if already confirmed available
+        if name in self._checked_adapters and self.statuses.get(name) and self.statuses[name].available:
+            return
+        # Also skip if adapter is None (will never change)
+        if name in self._checked_adapters and adapter is None:
             return
         self._checked_adapters.add(name)
         if adapter is None:
@@ -1190,6 +1199,8 @@ class ProductionRuntime:
             self.statuses[name] = ProviderStatus(name=name, configured=configured, available=configured, detail=detail)
         except Exception as exc:
             self.statuses[name] = ProviderStatus(name=name, configured=configured, available=False, detail=str(exc))
+            # Remove from checked set so failed adapters are retried next call
+            self._checked_adapters.discard(name)
             if self.settings.strict_provider_startup:
                 raise
 
@@ -1367,6 +1378,7 @@ class ProductionRuntime:
     ) -> list[MemorySignature]:
         if not latent_embedding:
             return []
+        # Retrieval only needs Vectorize + Supabase — multimodal adapter not required here
         self._ensure_adapter("vectorize", self.vectorize)
         self._ensure_adapter("supabase_postgres", self.postgres)
         if not (
