@@ -50,7 +50,10 @@ volume = modal.Volume.from_name("jimsai-models", create_if_missing=True)
 
 secret = modal.Secret.from_name("modal-jimsai-secrets")
 
-image = modal.Image.debian_slim(python_version="3.11").pip_install(
+image = modal.Image.debian_slim(python_version="3.11").run_commands([
+    # cache-bust: jina-v3-transformers5-rebuild
+    "echo 'jina-v3-transformers5-rebuild'",
+]).pip_install(
     [
         "modal>=1.0",
         "fastapi>=0.111",
@@ -142,8 +145,8 @@ class EmbeddingService:
         # Create volume dirs if not present (first cold start before populate)
         _os.makedirs("/vol/models/embedding", exist_ok=True)
 
-        _STARTUP_TIMEOUT_S = 120
-        _WARN_THRESHOLD_S = 90
+        _STARTUP_TIMEOUT_S = 300
+        _WARN_THRESHOLD_S = 120
 
         # jina-v3 is optional — controlled by JIMS_JINA_EMBEDDINGS_ENABLED
         jina_enabled = _os.getenv("JIMS_JINA_EMBEDDINGS_ENABLED", "false").lower() in {"1", "true", "yes", "on"}
@@ -153,7 +156,8 @@ class EmbeddingService:
             ("codebert", self._load_codebert),
         ]
         if jina_enabled:
-            model_configs.insert(1, ("jina-v3", self._load_jina))
+            # jina-v3 loads last — e5 and codebert always succeed first
+            model_configs.append(("jina-v3", self._load_jina))
 
         loaded: dict[str, bool] = {}
         for model_key, loader in model_configs:
@@ -197,10 +201,10 @@ class EmbeddingService:
         )
 
     def _load_jina(self) -> None:
-        """Load jina-embeddings-v3-hf (native transformers, no trust_remote_code required)."""
+        """Load jina-embeddings-v3 from the volume."""
         self._jina_model = SentenceTransformer(
             "/vol/models/embedding/jina-embeddings-v3",
-            # jina-embeddings-v3-hf is a native transformers model — no trust_remote_code
+            trust_remote_code=True,
         )
 
     def _load_codebert(self) -> None:
