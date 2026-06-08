@@ -1339,13 +1339,13 @@ class ExternalMultimodalEncoderAdapter:
         #   other â†’ intfloat/multilingual-e5-small  (768-dim, multilingual semantic)
         jina_enabled = os.getenv("JIMS_JINA_EMBEDDINGS_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
         if modality == Modality.CODE:
-            model_id = "microsoft/codebert-base"
+            model_id = "codebert"
             purpose = "document"
         elif modality == Modality.DATA and jina_enabled:
-            model_id = "jinaai/jina-embeddings-v3"
+            model_id = "jina-v3"
             purpose = "document"
         else:
-            model_id = os.getenv("JIMS_EMBEDDING_MODEL", "intfloat/multilingual-e5-small")
+            model_id = "multilingual-e5-small"
             purpose = "query" if modality == Modality.TEXT else "document"
 
         target_timeout = int(
@@ -1364,10 +1364,10 @@ class ExternalMultimodalEncoderAdapter:
                 # Escalate timeout on each retry to handle a slow cold start
                 attempt_timeout = target_timeout if attempt == 0 else target_timeout * 2.0
                 response = httpx.post(
-                    f"{base}/v1/embed",
+                    f"{base}/embed",
                     headers=headers,
                     json={
-                        "input": content[:16000],
+                        "texts": [content[:16000]],
                         "model": model_id,
                         "purpose": purpose,
                     },
@@ -1428,7 +1428,7 @@ class ExternalMultimodalEncoderAdapter:
 
         base = self._base_url()
         headers = self._headers()
-        resolved_model = model_id or "intfloat/multilingual-e5-small"
+        resolved_model = model_id or "multilingual-e5-small"
         target_timeout = float(os.getenv("JIMS_MULTIMODAL_ENCODER_TIMEOUT", "30") or "30")
 
         results: list[list[float]] = []
@@ -1437,10 +1437,10 @@ class ExternalMultimodalEncoderAdapter:
                 try:
                     timeout = target_timeout if attempt == 0 else 45.0
                     response = httpx.post(
-                        f"{base}/v1/embed",
+                        f"{base}/embed",
                         headers=headers,
                         json={
-                            "input": text[:16000],
+                            "texts": [text[:16000]],
                             "model": resolved_model,
                             "purpose": purpose,
                         },

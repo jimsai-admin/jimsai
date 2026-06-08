@@ -231,8 +231,8 @@ class _FallbackClassifier:
 
     def _fetch_embedding(self, text: str, model_id: str = "intfloat/multilingual-e5-small") -> list[float]:
         import httpx
-        url = f"{self.api_url}/v1/embed"
-        payload = {"input": text, "model": model_id}
+        url = f"{self.api_url}/embed"
+        payload = {"texts": [text], "model": "multilingual-e5-small", "purpose": "query"}
         headers = {}
         if self.api_token:
             headers["Authorization"] = f"Bearer {self.api_token}"
@@ -245,7 +245,14 @@ class _FallbackClassifier:
             )
             if response.status_code == 200:
                 data = response.json()
-                emb = data.get("data", [[]])[0].get("embedding", [])
+                # Modal returns {"vectors": [[...]], "model": ..., "dimension": ...}
+                vectors = data.get("vectors")
+                if isinstance(vectors, list) and vectors:
+                    emb = vectors[0]
+                    if isinstance(emb, list):
+                        return emb
+                # Legacy fallback shapes
+                emb = data.get("data", [[]])[0].get("embedding", []) if isinstance(data.get("data"), list) else []
                 if emb:
                     return emb
         except Exception:
@@ -264,14 +271,14 @@ class _FallbackClassifier:
         import httpx
         if not texts:
             return []
-        url = f"{self.api_url}/v1/embed"
+        url = f"{self.api_url}/embed"
         headers = {}
         if self.api_token:
             headers["Authorization"] = f"Bearer {self.api_token}"
         try:
             response = httpx.post(
                 url,
-                json={"input": texts, "model": model_id},
+                json={"texts": texts, "model": "multilingual-e5-small", "purpose": "document"},
                 headers=headers,
                 timeout=float(os.getenv("JIMS_INTENT_EMBEDDING_TIMEOUT", "6") or "6"),
             )

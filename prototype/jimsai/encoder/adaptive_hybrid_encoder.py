@@ -255,24 +255,31 @@ class AdaptiveHybridEncoder:
 
     def _fetch_remote_vector(self, text: str, model_id: str, headers: Dict[str, str]) -> List[float]:
         import httpx
-        url = f"{self.api_url}/v1/embed"
-        payload = {"input": text, "model": model_id}
+        # Map full HF model names to Modal service short names
+        _MODEL_NAME_MAP = {
+            "intfloat/multilingual-e5-small": "multilingual-e5-small",
+            "microsoft/codebert-base": "codebert",
+            "jinaai/jina-embeddings-v3": "jina-v3",
+        }
+        modal_model = _MODEL_NAME_MAP.get(model_id, model_id)
+        url = f"{self.api_url}/embed"
+        payload = {"texts": [text], "model": modal_model, "purpose": "document"}
         try:
             timeout = float(os.environ.get("JIMS_MULTIMODAL_ENCODER_TIMEOUT", "30"))
             response = httpx.post(url, json=payload, headers=headers, timeout=timeout)
             if response.status_code == 200:
                 data = response.json()
-                # Try each known HF Space response shape in priority order
+                # Modal returns {"vectors": [[...]], "model": ..., "dimension": ...}
                 vec = None
-                if isinstance(data.get("embeddings"), list) and data["embeddings"]:
+                if isinstance(data.get("vectors"), list) and data["vectors"]:
+                    first = data["vectors"][0]
+                    vec = first if isinstance(first, list) else None
+                if vec is None and isinstance(data.get("embeddings"), list) and data["embeddings"]:
                     first = data["embeddings"][0]
                     vec = first if isinstance(first, list) else None
                 if vec is None and isinstance(data.get("data"), list) and data["data"]:
                     first = data["data"][0]
                     vec = first.get("embedding") if isinstance(first, dict) else (first if isinstance(first, list) else None)
-                if vec is None and isinstance(data.get("vectors"), list) and data["vectors"]:
-                    first = data["vectors"][0]
-                    vec = first if isinstance(first, list) else None
                 if vec is None and isinstance(data.get("embedding"), list):
                     vec = data["embedding"]
                 return vec if isinstance(vec, list) else []

@@ -413,13 +413,13 @@ class CapabilityRouter:
         try:
             async with httpx.AsyncClient(timeout=self.embedding_timeout) as client:
                 query_response = await client.post(
-                    f"{self.embedding_url}/v1/embed",
+                    f"{self.embedding_url}/embed",
                     headers=headers,
                     json={"texts": [query], "purpose": "query"},
                 )
                 query_response.raise_for_status()
                 prototype_response = await client.post(
-                    f"{self.embedding_url}/v1/embed",
+                    f"{self.embedding_url}/embed",
                     headers=headers,
                     json={"texts": [CAPABILITY_PROTOTYPES[kind] for kind in kinds], "purpose": "document"},
                 )
