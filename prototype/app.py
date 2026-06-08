@@ -76,14 +76,25 @@ async def startup_warm_classifier() -> None:
     try:
         # Access the compiler's classifier to trigger lazy init
         classifier = pipeline.compiler.classifier
-        # Run the two blocking HF Space calls in a thread pool to avoid blocking the event loop
+        # Run the two embedding calls in a thread pool with a timeout guard.
+        # If the Modal embedding service is cold (first startup), these will
+        # fall back to hash projections — that's fine, real embeddings load async.
         loop = asyncio.get_event_loop()
-        await loop.run_in_executor(None, classifier._get_prototype_embeddings)
-        await loop.run_in_executor(None, classifier._get_profile_embedding)
-        _logger.info("Intent classifier prototype embeddings pre-warmed successfully.")
+        try:
+            await asyncio.wait_for(
+                loop.run_in_executor(None, classifier._get_prototype_embeddings),
+                timeout=30.0
+            )
+            await asyncio.wait_for(
+                loop.run_in_executor(None, classifier._get_profile_embedding),
+                timeout=15.0
+            )
+            _logger.info("Intent classifier prototype embeddings pre-warmed successfully.")
+        except asyncio.TimeoutError:
+            _logger.warning("Startup classifier warm timed out — will warm on first query (non-fatal).")
     except Exception as exc:
         # Non-fatal: first query will be slow but system still works
-        _logger.warning("Startup classifier warm failed (non-fatal): %s", exc)
+        _logger.warning("Startup classifier warm failed (non-fatal): %s", repr(exc))
 
     # ── Embedding service health check (background — does NOT block startup) ─
     # Run in a background task so the server accepts traffic immediately.
@@ -118,6 +129,33 @@ async def startup_warm_classifier() -> None:
             _logger.warning("Embedding service health check failed (non-fatal): %s", exc)
 
     asyncio.create_task(_check_embedding_service())
+
+    # ── Modal AI service pre-warm (background) ───────────────────────────────
+    # Ping all Modal services so containers wake from scale-to-zero before the
+    # first real query arrives. Failures are non-fatal — services will cold-start
+    # on demand, just with extra latency on the first request.
+    async def _prewarm_modal_services() -> None:
+        import os as _os
+        import httpx as _httpx
+        _key = _os.getenv("JIMS_MODAL_API_KEY", "")
+        _headers = {"Authorization": f"Bearer {_key}"} if _key else {}
+        _services = {
+            "intent":      _os.getenv("JIMS_INTENT_SERVICE_URL", "").rstrip("/"),
+            "renderer":    _os.getenv("JIMS_RENDERER_SERVICE_URL", "").rstrip("/"),
+            "classification": _os.getenv("JIMS_CLASSIFICATION_SERVICE_URL", "").rstrip("/"),
+            "embedding":   _os.getenv("JIMS_EMBEDDING_SERVICE_URL", "").rstrip("/"),
+        }
+        async with _httpx.AsyncClient(timeout=90.0) as client:
+            for name, url in _services.items():
+                if not url:
+                    continue
+                try:
+                    r = await client.get(f"{url}/health", headers=_headers)
+                    _logger.info("Modal %s pre-warm: %s", name, r.json().get("status", r.status_code))
+                except Exception as exc:
+                    _logger.warning("Modal %s pre-warm failed (non-fatal): %s", name, repr(exc))
+
+    asyncio.create_task(_prewarm_modal_services())
 
 
 class PasswordAuthRequest(BaseModel):

@@ -170,7 +170,7 @@ class QwenBridge:
                 raw_content = raw_content[start:end + 1]
             return json.loads(raw_content)
         except Exception as exc:
-            import logging as _log; _log.getLogger(__name__).warning("_render_chat_json failed: %s", exc)
+            import logging as _log; _log.getLogger(__name__).warning("_render_chat_json failed: %s", repr(exc))
             return None
 
     async def _local_chat_json(
@@ -225,7 +225,7 @@ class QwenBridge:
                 raw_content = raw_content[start:end + 1]
             return json.loads(raw_content)
         except Exception as exc:
-            import logging as _log; _log.getLogger(__name__).warning("_local_chat_json failed: %s", exc)
+            import logging as _log; _log.getLogger(__name__).warning("_local_chat_json failed: %s", repr(exc))
             return None
 
     # ── T1: Intent / routing / math ───────────────────────────────────────────
