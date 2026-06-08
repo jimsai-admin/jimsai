@@ -300,17 +300,17 @@ web_app = FastAPI(title="JIMS-AI Renderer Service")
 @web_app.post("/generate")
 async def route_generate(request: GenerateRequest, _token: str = Depends(require_bearer_token)):
     svc = RendererService()
-    return svc.generate.remote(request)
+    return await svc.generate.remote.aio(request)
 
 @web_app.get("/health")
 async def route_health():
     svc = RendererService()
-    return svc.health.remote()
+    return await svc.health.remote.aio()
 
 @web_app.get("/metrics")
 async def route_metrics():
     svc = RendererService()
-    return Response(content=svc.metrics.remote(), media_type="text/plain; version=0.0.4")
+    return Response(content=await svc.metrics.remote.aio(), media_type="text/plain; version=0.0.4")
 
 @app.function(image=image, volumes={"/vol/models": volume}, secrets=[secret],
               gpu="l4")

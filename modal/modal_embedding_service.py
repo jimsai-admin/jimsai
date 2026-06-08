@@ -341,7 +341,7 @@ async def route_embed(
 ) -> EmbedResponse:
     """POST /embed — embed a batch of texts."""
     svc = EmbeddingService()
-    return svc.embed.remote(request)
+    return await svc.embed.remote.aio(request)
 
 
 @web_app.post("/embed/code", response_model=EmbedResponse)
@@ -351,21 +351,21 @@ async def route_embed_code(
 ) -> EmbedResponse:
     """POST /embed/code — embed code snippets via codebert."""
     svc = EmbeddingService()
-    return svc.embed_code.remote(request)
+    return await svc.embed_code.remote.aio(request)
 
 
 @web_app.get("/health")
 async def route_health() -> dict:
     """GET /health — service health check."""
     svc = EmbeddingService()
-    return svc.health.remote()
+    return await svc.health.remote.aio()
 
 
 @web_app.get("/metrics")
 async def route_metrics():
     """GET /metrics — Prometheus text-format metrics."""
     svc = EmbeddingService()
-    content = svc.metrics.remote()
+    content = await svc.metrics.remote.aio()
     return Response(content=content, media_type="text/plain; version=0.0.4")
 
 

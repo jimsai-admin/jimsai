@@ -242,21 +242,21 @@ async def route_classify(
 ) -> ClassifyResponse:
     """POST /classify — zero-shot capability classification."""
     svc = ClassificationService()
-    return svc.classify.remote(request)
+    return await svc.classify.remote.aio(request)
 
 
 @web_app.get("/health")
 async def route_health() -> dict:
     """GET /health — service health check."""
     svc = ClassificationService()
-    return svc.health.remote()
+    return await svc.health.remote.aio()
 
 
 @web_app.get("/metrics")
 async def route_metrics():
     """GET /metrics — Prometheus text-format metrics."""
     svc = ClassificationService()
-    content = svc.metrics.remote()
+    content = await svc.metrics.remote.aio()
     return Response(content=content, media_type="text/plain; version=0.0.4")
 
 

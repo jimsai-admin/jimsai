@@ -308,21 +308,21 @@ async def route_generate(
 ) -> GenerateResponse:
     """POST /generate — synchronous T1 intent generation."""
     svc = IntentService()
-    return svc.generate.remote(request)
+    return await svc.generate.remote.aio(request)
 
 
 @web_app.get("/health")
 async def route_health() -> dict:
     """GET /health — service health check."""
     svc = IntentService()
-    return svc.health.remote()
+    return await svc.health.remote.aio()
 
 
 @web_app.get("/metrics")
 async def route_metrics():
     """GET /metrics — Prometheus text-format metrics."""
     svc = IntentService()
-    content = svc.metrics.remote()
+    content = await svc.metrics.remote.aio()
     return Response(content=content, media_type="text/plain; version=0.0.4")
 
 
