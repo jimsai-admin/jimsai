@@ -51,8 +51,8 @@ volume = modal.Volume.from_name("jimsai-models", create_if_missing=True)
 secret = modal.Secret.from_name("modal-jimsai-secrets")
 
 image = modal.Image.debian_slim(python_version="3.11").run_commands([
-    # cache-bust: jina-v3-transformers5-rebuild
-    "echo 'jina-v3-transformers5-rebuild'",
+    # cache-bust: jina-v3-hf-native-required
+    "echo 'jina-v3-hf-native-required'",
 ]).pip_install(
     [
         "modal>=1.0",
@@ -148,8 +148,8 @@ class EmbeddingService:
         _STARTUP_TIMEOUT_S = 300
         _WARN_THRESHOLD_S = 120
 
-        # jina-v3 is optional — controlled by JIMS_JINA_EMBEDDINGS_ENABLED
-        jina_enabled = _os.getenv("JIMS_JINA_EMBEDDINGS_ENABLED", "false").lower() in {"1", "true", "yes", "on"}
+        # jina-v3 is always loaded — it is a required model
+        jina_enabled = True
 
         model_configs = [
             ("multilingual-e5-small", self._load_e5),

@@ -102,9 +102,9 @@ MODEL_ARTIFACTS: list[ModelArtifact] = [
     ModelArtifact(
         key="embedding/jina-embeddings-v3",
         volume_path="embedding/jina-embeddings-v3",
-        hf_repo_id="jinaai/jina-embeddings-v3",
+        hf_repo_id="jinaai/jina-embeddings-v3-hf",
         hf_filename=None,
-        description="Jina Embeddings v3 (snapshot)",
+        description="Jina Embeddings v3 HF-native (snapshot, transformers 5.x compatible)",
     ),
     ModelArtifact(
         key="embedding/codebert-base",

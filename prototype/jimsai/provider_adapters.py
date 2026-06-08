@@ -1417,7 +1417,7 @@ class ExternalMultimodalEncoderAdapter:
         Args:
             texts: List of text strings to embed.
             purpose: 'document' for storage, 'query' for retrieval.
-            model_id: Override model. Defaults to JIMS_EMBEDDING_MODEL
+            model_id: Override model. Defaults to 
                       (intfloat/multilingual-e5-small).
                       Set `model_id='jinaai/jina-embeddings-v3'` when
                       `JIMS_JINA_EMBEDDINGS_ENABLED=true` and the Space
@@ -1428,7 +1428,7 @@ class ExternalMultimodalEncoderAdapter:
 
         base = self._base_url()
         headers = self._headers()
-        resolved_model = model_id or os.getenv("JIMS_EMBEDDING_MODEL", "intfloat/multilingual-e5-small")
+        resolved_model = model_id or "intfloat/multilingual-e5-small"
         target_timeout = float(os.getenv("JIMS_MULTIMODAL_ENCODER_TIMEOUT", "30") or "30")
 
         results: list[list[float]] = []
