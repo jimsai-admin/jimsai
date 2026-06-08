@@ -84,8 +84,7 @@ _svc_metrics = create_metrics("classification")
     image=image,
     volumes={"/vol/models": volume},
     secrets=[secret],
-    min_containers=1,
-    max_containers=3,
+    min_containers=0,    max_containers=3,
     memory=1536,
 )
 class ClassificationService:

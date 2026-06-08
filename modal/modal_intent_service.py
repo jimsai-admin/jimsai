@@ -2,7 +2,7 @@
 modal_intent_service.py — Modal app definition for JIMS-AI Intent Service.
 
 Serves Qwen3-1.7B (T1 intent/understanding tier) via llama-cpp-python on CPU.
-Always warm (min_containers=1) — no GPU required for the 1.7B GGUF model.
+Scale-to-zero (min_containers=0) — no GPU required for the 1.7B GGUF model.
 
 Task: 6.1 — App definition and container image scaffold.
 Model loading (6.2), inference (6.3), health/metrics (6.4) are TODO stubs.
@@ -107,8 +107,7 @@ _svc_metrics = create_metrics("intent")
     image=image,
     volumes={"/vol/models": volume},
     secrets=[secret],
-    min_containers=1,
-    max_containers=3,
+    min_containers=0,    max_containers=3,
     memory=4096,
 )
 class IntentService:

@@ -106,8 +106,7 @@ _svc_metrics = create_metrics("embedding", is_embedding_service=True)
     image=image,
     volumes={"/vol/models": volume},
     secrets=[secret],
-    min_containers=1,
-    max_containers=5,
+    min_containers=0,    max_containers=5,
     memory=2560,
 )
 class EmbeddingService:

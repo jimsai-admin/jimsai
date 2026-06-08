@@ -118,7 +118,7 @@ _svc_metrics = create_metrics("renderer", is_gpu_service=True)
     volumes={"/vol/models": volume},
     secrets=[secret],
     gpu="l4",
-    min_containers=1,
+    min_containers=0,
     max_containers=2,
     memory=16384,
 )
