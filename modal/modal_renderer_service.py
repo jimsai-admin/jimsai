@@ -42,15 +42,31 @@ secret = modal.Secret.from_name("modal-jimsai-secrets")
 image = (
     modal.Image.debian_slim(python_version="3.11")
     .run_commands([
-        "apt-get update && apt-get install -y --no-install-recommends build-essential cmake 2>/dev/null || true"
+        "apt-get update -qq && apt-get install -y --no-install-recommends "
+        "build-essential cmake git wget gnupg",
+        "wget -qO /tmp/cuda-keyring.deb "
+        "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb "
+        "&& dpkg -i /tmp/cuda-keyring.deb "
+        "&& apt-get update -qq "
+        "&& apt-get install -y cuda-toolkit-12-3 --no-install-recommends",
+        # Persist stub symlink and register with ldconfig so all link steps find libcuda.so.1
+        "ln -sf /usr/local/cuda/lib64/stubs/libcuda.so /usr/local/cuda/lib64/stubs/libcuda.so.1 "
+        "&& echo '/usr/local/cuda/lib64/stubs' > /etc/ld.so.conf.d/cuda-stubs.conf "
+        "&& ldconfig",
+        # Build llama-cpp-python 0.3.9 from source — Qwen3 GGUF supported from 0.3.5+
+        # cache-bust: llama-cpp-python-0.3.9-qwen3-fix
+        "export PATH=/usr/local/cuda/bin:$PATH && "
+        "export CUDACXX=/usr/local/cuda/bin/nvcc && "
+        "CMAKE_ARGS='-DGGML_CUDA=on -DGGML_AVX=off -DGGML_AVX2=off "
+        "-DGGML_F16C=off -DGGML_FMA=off' "
+        "pip install 'llama-cpp-python==0.3.9' --no-cache-dir --no-binary llama-cpp-python && "
+        "echo 'llama-cpp-python-0.3.9-qwen3-fix'",
     ])
-    .env({"CMAKE_ARGS": "-DGGML_CUDA=on", "FORCE_CMAKE": "1"})
     .pip_install([
         "modal>=1.0", "fastapi>=0.111", "uvicorn>=0.30",
         "huggingface-hub>=0.23", "pydantic>=2.7",
         "python-dotenv>=1.0", "torch>=2.3",
     ])
-    .pip_install(["llama-cpp-python>=0.2.90"])
     .add_local_dir(
         str(Path(__file__).parent / "shared"),
         remote_path="/root/shared",
@@ -101,7 +117,7 @@ _svc_metrics = create_metrics("renderer", is_gpu_service=True)
     image=image,
     volumes={"/vol/models": volume},
     secrets=[secret],
-    gpu=modal.gpu.Any(ordered=["L4", "A10G", "T4"]),
+    gpu="l4",
     min_containers=1,
     max_containers=2,
     memory=16384,
@@ -297,7 +313,7 @@ async def route_metrics():
     return Response(content=svc.metrics.remote(), media_type="text/plain; version=0.0.4")
 
 @app.function(image=image, volumes={"/vol/models": volume}, secrets=[secret],
-              gpu=modal.gpu.Any(ordered=["L4", "A10G", "T4"]))
+              gpu="l4")
 @modal.asgi_app()
 def fastapi_app():
     return web_app

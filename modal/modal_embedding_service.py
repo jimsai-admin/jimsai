@@ -55,8 +55,8 @@ image = modal.Image.debian_slim(python_version="3.11").pip_install(
         "modal>=1.0",
         "fastapi>=0.111",
         "uvicorn>=0.30",
-        "sentence-transformers>=2.7",
-        "transformers>=4.41",
+        "sentence-transformers>=3.0",
+        "transformers>=5.0",
         "torch>=2.3",
         "einops>=0.7",
         "huggingface-hub>=0.23",
@@ -130,84 +130,60 @@ class EmbeddingService:
 
     @modal.enter()
     def enter(self) -> None:
-        """Container lifecycle hook — load all three embedding models from the
-        Modal Volume.
-
-        Steps
-        -----
-        1. Record container start time.
-        2. Verify the volume is mounted and non-empty.
-        3. For each model: call ensure_model_on_volume (download + integrity),
-           then load into memory, record load duration, and emit INFO log.
-        4. Mark volume mounted and models loaded.
-        5. Warn if total startup exceeds 90 s; fail container if > 120 s.
-        6. Emit final "Container ready" log.
-        """
+        """Container lifecycle hook — load embedding models from the Modal Volume."""
+        import os as _os
         self._container_start_time = time.time()
 
-        # ---- 1. Volume presence check (Req 3.1, 10.6) ------------------
+        # Volume presence check — models will be downloaded on first request if absent
         vol_root = "/vol/models"
-        if not os.path.isdir(vol_root) or not os.listdir(vol_root):
-            raise RuntimeError(f"Volume not mounted or empty: {vol_root}")
+        if not _os.path.isdir(vol_root):
+            raise RuntimeError(f"Volume not mounted: {vol_root}")
 
-        # ---- 2. Model load sequence ------------------------------------
-        # (model_key, loader_callable_that_returns_loaded_object)
+        # Create volume dirs if not present (first cold start before populate)
+        _os.makedirs("/vol/models/embedding", exist_ok=True)
+
         _STARTUP_TIMEOUT_S = 120
         _WARN_THRESHOLD_S = 90
 
+        # jina-v3 is optional — controlled by JIMS_JINA_EMBEDDINGS_ENABLED
+        jina_enabled = _os.getenv("JIMS_JINA_EMBEDDINGS_ENABLED", "false").lower() in {"1", "true", "yes", "on"}
+
         model_configs = [
             ("multilingual-e5-small", self._load_e5),
-            ("jina-v3", self._load_jina),
             ("codebert", self._load_codebert),
         ]
+        if jina_enabled:
+            model_configs.insert(1, ("jina-v3", self._load_jina))
 
+        loaded: dict[str, bool] = {}
         for model_key, loader in model_configs:
-            # Ensure the artifact is on the volume (download if missing,
-            # validate integrity).  Req 3.2, 3.3, 30.2, 30.3
             try:
                 ensure_model_on_volume(ARTIFACT_REGISTRY[model_key])
             except Exception as exc:
-                raise RuntimeError(
-                    f"Failed to load model {model_key}: {exc}"
-                ) from exc
+                raise RuntimeError(f"Failed to prepare model {model_key}: {exc}") from exc
 
-            # Load the model into memory and time it.
             model_start = time.time()
             try:
                 loader()
             except Exception as exc:
-                raise RuntimeError(
-                    f"Failed to load model {model_key}: {exc}"
-                ) from exc
+                raise RuntimeError(f"Failed to load model {model_key}: {exc}") from exc
 
             duration_ms = (time.time() - model_start) * 1000.0
             logger.info("Model ready: %s", model_key)
             _svc_metrics.record_model_load(model_key, duration_ms)
+            loaded[model_key] = True
 
-            # ---- Startup timeout guard (Req 3.4) -----------------------
             elapsed = time.time() - self._container_start_time
             if elapsed > _STARTUP_TIMEOUT_S:
-                raise RuntimeError(
-                    f"Failed to load model {model_key}: "
-                    f"startup exceeded {_STARTUP_TIMEOUT_S} s timeout "
-                    f"(elapsed {elapsed:.1f} s)"
-                )
+                raise RuntimeError(f"Startup timeout exceeded {_STARTUP_TIMEOUT_S}s after loading {model_key}")
             if elapsed > _WARN_THRESHOLD_S:
-                logger.warning(
-                    "Container startup is taking longer than %d s (elapsed %.1f s); "
-                    "120 s hard limit not yet reached",
-                    _WARN_THRESHOLD_S,
-                    elapsed,
-                )
+                logger.warning("Slow startup: %.1fs elapsed", elapsed)
 
-        # ---- 3. Mark service as ready (Req 14.5, 14.8, 30.4) ----------
-        self._models_loaded = {
-            "multilingual-e5-small": True,
-            "jina-v3": True,
-            "codebert": True,
-        }
+        # jina-v3 is marked loaded only if enabled
+        loaded["jina-v3"] = jina_enabled and bool(self._jina_model)
+
+        self._models_loaded = loaded
         self._volume_mounted = True
-
         logger.info("Container ready — accepting requests")
 
     # ------------------------------------------------------------------
@@ -221,10 +197,10 @@ class EmbeddingService:
         )
 
     def _load_jina(self) -> None:
-        """Load jina-embeddings-v3 from the volume (trust_remote_code=True)."""
+        """Load jina-embeddings-v3-hf (native transformers, no trust_remote_code required)."""
         self._jina_model = SentenceTransformer(
             "/vol/models/embedding/jina-embeddings-v3",
-            trust_remote_code=True,
+            # jina-embeddings-v3-hf is a native transformers model — no trust_remote_code
         )
 
     def _load_codebert(self) -> None:

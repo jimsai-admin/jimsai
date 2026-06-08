@@ -59,7 +59,7 @@ ARTIFACT_REGISTRY: dict[str, ModelArtifact] = {
     ),
     "jina-v3": ModelArtifact(
         model_key="jina-v3",
-        hf_repo_id="jinaai/jina-embeddings-v3",
+        hf_repo_id="jinaai/jina-embeddings-v3-hf",  # native transformers, no trust_remote_code needed
         hf_filename=None,
         volume_path="/vol/models/embedding/jina-embeddings-v3",
         model_type="sentence_transformer",

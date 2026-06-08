@@ -38,17 +38,21 @@ volume = modal.Volume.from_name("jimsai-models", create_if_missing=True)
 
 secret = modal.Secret.from_name("modal-jimsai-secrets")
 
-image = modal.Image.debian_slim(python_version="3.11").pip_install(
+image = modal.Image.debian_slim(python_version="3.11").run_commands([
+    "apt-get update -qq && apt-get install -y --no-install-recommends build-essential cmake git 2>/dev/null || true"
+]).pip_install(
     [
         "modal>=1.0",
         "fastapi>=0.111",
         "uvicorn>=0.30",
-        "llama-cpp-python>=0.2.90",
         "huggingface-hub>=0.23",
         "pydantic>=2.7",
         "python-dotenv>=1.0",
     ]
-).add_local_dir(
+).run_commands([
+    # CPU-only llama-cpp, no AVX for broad compatibility — force source build
+    "CMAKE_ARGS='-DGGML_AVX=off -DGGML_AVX2=off -DGGML_AVX512=off -DGGML_F16C=off -DGGML_FMA=off -DGGML_SSE42=off' pip install 'llama-cpp-python==0.3.2' --no-cache-dir --no-binary llama-cpp-python",
+]).add_local_dir(
     str(Path(__file__).parent / "shared"),
     remote_path="/root/shared",
 )

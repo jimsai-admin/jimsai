@@ -115,10 +115,11 @@ class ClassificationService:
         self._container_start_time = time.time()
 
         try:
-            # 1. Verify /vol/models is mounted and non-empty
+            # 1. Verify /vol/models is mounted (models will be downloaded if missing)
             vol_path = "/vol/models"
-            if not os.path.isdir(vol_path) or not os.listdir(vol_path):
-                raise RuntimeError("Volume not mounted or empty: /vol/models")
+            if not os.path.isdir(vol_path):
+                raise RuntimeError("Volume not mounted: /vol/models")
+            os.makedirs("/vol/models/classification", exist_ok=True)
             self._volume_mounted = True
 
             # 2. Ensure mDeBERTa is present on the volume (download if missing)
