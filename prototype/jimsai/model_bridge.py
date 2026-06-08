@@ -153,8 +153,24 @@ class QwenBridge:
                     json=payload,
                 )
                 response.raise_for_status()
-            return json.loads(response.json()["choices"][0]["message"]["content"])
-        except Exception:
+            data = response.json()
+            # Modal Renderer_Service returns {"response": "...", "model": ..., "usage": ..., "finish_reason": ...}
+            # NOT OpenAI-style {"choices": [{"message": {"content": ...}}]}
+            raw_content = data.get("response") or data.get("content") or ""
+            if not raw_content and "choices" in data:
+                raw_content = data["choices"][0]["message"]["content"]
+            if not raw_content:
+                import logging as _log; _log.getLogger(__name__).warning("_render_chat_json: empty response field from Modal renderer")
+                return None
+            # Strip Qwen3 <think>...</think> blocks before JSON parsing
+            raw_content = re.sub(r"<think>.*?</think>", "", raw_content, flags=re.DOTALL).strip()
+            # Extract JSON object from the response text
+            start, end = raw_content.find("{"), raw_content.rfind("}")
+            if start != -1 and end > start:
+                raw_content = raw_content[start:end + 1]
+            return json.loads(raw_content)
+        except Exception as exc:
+            import logging as _log; _log.getLogger(__name__).warning("_render_chat_json failed: %s", exc)
             return None
 
     async def _local_chat_json(
@@ -193,9 +209,23 @@ class QwenBridge:
                     json=payload,
                 )
                 response.raise_for_status()
-            content = response.json()["choices"][0]["message"]["content"]
-            return json.loads(content)
-        except Exception:
+            data = response.json()
+            # Modal Intent_Service returns {"response": "...", "model": ..., "usage": ..., "finish_reason": ...}
+            # NOT OpenAI-style {"choices": [{"message": {"content": ...}}]}
+            raw_content = data.get("response") or data.get("content") or ""
+            if not raw_content and "choices" in data:
+                raw_content = data["choices"][0]["message"]["content"]
+            if not raw_content:
+                return None
+            # Strip Qwen3 <think>...</think> blocks before JSON parsing
+            raw_content = re.sub(r"<think>.*?</think>", "", raw_content, flags=re.DOTALL).strip()
+            # Extract JSON object from the response text
+            start, end = raw_content.find("{"), raw_content.rfind("}")
+            if start != -1 and end > start:
+                raw_content = raw_content[start:end + 1]
+            return json.loads(raw_content)
+        except Exception as exc:
+            import logging as _log; _log.getLogger(__name__).warning("_local_chat_json failed: %s", exc)
             return None
 
     # ── T1: Intent / routing / math ───────────────────────────────────────────

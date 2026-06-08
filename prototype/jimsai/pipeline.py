@@ -821,7 +821,7 @@ class JimsAIPipeline:
                 }
             )
         except Exception as exc:
-            logger.warning("Web search failed: %s", exc)
+            logger.error("Web search failed with exception: %s", exc, exc_info=True)
             return result.model_copy(
                 update={"status": "unavailable", "summary": f"Web search failed: {exc}"}
             )
@@ -2521,7 +2521,7 @@ class JimsAIPipeline:
                 panel="feedback",
                 kind="provider_readiness",
                 title="Production provider readiness",
-                subtitle=self.production.settings.storage_backend,
+                subtitle="supabase_rest",
                 data=self.production.readiness(),
                 created_at=utc_now(),
             )

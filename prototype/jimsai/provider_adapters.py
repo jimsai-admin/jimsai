@@ -117,10 +117,6 @@ class ProductionSettings:
         return True  # always production
 
     @property
-    def enable_postgres(self) -> bool:
-        return env_flag("JIMS_ENABLE_POSTGRES", False)
-
-    @property
     def enable_r2(self) -> bool:
         return env_flag("JIMS_ENABLE_R2", True)
 
@@ -358,18 +354,17 @@ class CloudflareVectorizeIndex:
 
 
 class SupabasePostgresStore:
+    """Supabase REST store. All persistence goes through the Supabase REST API.
+    Direct Postgres / psycopg support has been removed — Supabase is the only
+    storage backend.
+    """
+
     def __init__(self, settings: ProductionSettings) -> None:
         self.settings = settings
 
     @property
     def configured(self) -> bool:
-        return bool(self.settings.postgres_url or (self.settings.supabase_url and self.settings.supabase_service_key))
-
-    def _connect(self) -> Any:
-        import psycopg
-        from psycopg.rows import dict_row
-
-        return psycopg.connect(self.settings.postgres_url, row_factory=dict_row)
+        return bool(self.settings.supabase_url and self.settings.supabase_service_key)
 
     def _supabase_base_url(self) -> str:
         value = self.settings.supabase_url.strip().rstrip("/")
@@ -393,10 +388,7 @@ class SupabasePostgresStore:
 
     def check(self) -> str:
         if not self.configured:
-            return "missing POSTGRES_URL or SUPABASE_URL/SUPABASE_SERVICE_KEY"
-        if self.settings.postgres_url:
-            self.ensure_schema()
-            return "Postgres schema ready"
+            return "missing SUPABASE_URL or SUPABASE_SERVICE_KEY"
         response = httpx.get(
             self._rest_url("signatures"),
             headers=self._rest_headers(),
@@ -406,130 +398,13 @@ class SupabasePostgresStore:
         response.raise_for_status()
         return "Supabase REST tables reachable"
 
-    def ensure_schema(self) -> None:
-        statements = [
-            """
-            CREATE TABLE IF NOT EXISTS signatures (
-              id TEXT PRIMARY KEY,
-              provenance TEXT NOT NULL,
-              confidence DOUBLE PRECISION NOT NULL,
-              modality TEXT NOT NULL,
-              payload JSONB NOT NULL,
-              created_at TIMESTAMPTZ DEFAULT now()
-            )
-            """,
-            """
-            CREATE TABLE IF NOT EXISTS training_panel_items (
-              id TEXT PRIMARY KEY,
-              panel TEXT NOT NULL,
-              kind TEXT NOT NULL,
-              title TEXT NOT NULL,
-              subtitle TEXT NOT NULL DEFAULT '',
-              payload JSONB NOT NULL,
-              created_at TIMESTAMPTZ DEFAULT now()
-            )
-            """,
-            "CREATE INDEX IF NOT EXISTS training_panel_items_panel_created_idx ON training_panel_items(panel, created_at DESC, id DESC)",
-            """
-            CREATE TABLE IF NOT EXISTS execution_traces (
-              id BIGSERIAL PRIMARY KEY,
-              trace_id TEXT NOT NULL,
-              service TEXT NOT NULL,
-              stage TEXT NOT NULL,
-              payload JSONB NOT NULL,
-              created_at TIMESTAMPTZ DEFAULT now()
-            )
-            """,
-            """
-            CREATE TABLE IF NOT EXISTS chat_threads (
-              id TEXT PRIMARY KEY,
-              workspace_id TEXT,
-              user_id TEXT NOT NULL,
-              title TEXT NOT NULL DEFAULT '',
-              created_at TIMESTAMPTZ DEFAULT now(),
-              updated_at TIMESTAMPTZ DEFAULT now()
-            )
-            """,
-            """
-            CREATE TABLE IF NOT EXISTS chat_messages (
-              id TEXT PRIMARY KEY,
-              thread_id TEXT NOT NULL,
-              workspace_id TEXT,
-              user_id TEXT NOT NULL,
-              role TEXT NOT NULL,
-              content TEXT NOT NULL,
-              trace_id TEXT,
-              confidence DOUBLE PRECISION,
-              sources JSONB DEFAULT '[]'::jsonb,
-              created_at TIMESTAMPTZ DEFAULT now()
-            )
-            """,
-        ]
-        with self._connect() as connection:
-            for statement in statements:
-                connection.execute(statement)
-
     def save_signature(self, signature: MemorySignature) -> None:
-        if not self.settings.postgres_url:
-            self._save_signature_rest(signature)
-            return
-        from psycopg.types.json import Jsonb
-
-        payload = signature.model_dump(mode="json")
-        with self._connect() as connection:
-            connection.execute(
-                """
-                INSERT INTO signatures (id, provenance, confidence, modality, payload, created_at)
-                VALUES (%s, %s, %s, %s, %s, %s)
-                ON CONFLICT (id) DO UPDATE SET
-                  provenance = EXCLUDED.provenance,
-                  confidence = EXCLUDED.confidence,
-                  modality = EXCLUDED.modality,
-                  payload = EXCLUDED.payload,
-                  created_at = EXCLUDED.created_at
-                """,
-                (
-                    signature.id,
-                    signature.provenance,
-                    signature.confidence.score,
-                    signature.modality.value,
-                    Jsonb(payload),
-                    signature.created_at,
-                ),
-            )
+        self._save_signature_rest(signature)
 
     def save_panel_items(self, items: list[TrainingPanelItem]) -> None:
         if not items:
             return
-        if not self.settings.postgres_url:
-            self._save_panel_items_rest(items)
-            return
-        from psycopg.types.json import Jsonb
-
-        with self._connect() as connection:
-            for item in items:
-                connection.execute(
-                    """
-                    INSERT INTO training_panel_items (id, panel, kind, title, subtitle, payload, created_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
-                    ON CONFLICT (id) DO UPDATE SET
-                      panel = EXCLUDED.panel,
-                      kind = EXCLUDED.kind,
-                      title = EXCLUDED.title,
-                      subtitle = EXCLUDED.subtitle,
-                      payload = EXCLUDED.payload,
-                      created_at = EXCLUDED.created_at
-                    """,
-                    (
-                        item.id,
-                        item.panel,
-                        item.kind,
-                        item.title,
-                        item.subtitle,
-                        Jsonb(item.data),
-                        item.created_at,
-                    ),
-            )
+        self._save_panel_items_rest(items)
 
     def save_chat_exchange(
         self,
@@ -578,75 +453,17 @@ class SupabasePostgresStore:
                 "created_at": assistant_at.isoformat(),
             },
         ]
-        if not self.settings.postgres_url:
-            self._save_chat_exchange_rest(thread, messages)
-            return
-        from psycopg.types.json import Jsonb
-
-        with self._connect() as connection:
-            connection.execute(
-                """
-                INSERT INTO chat_threads (id, workspace_id, user_id, title, updated_at)
-                VALUES (%s, %s, %s, %s, %s)
-                ON CONFLICT (id) DO UPDATE SET
-                  workspace_id = EXCLUDED.workspace_id,
-                  user_id = EXCLUDED.user_id,
-                  title = COALESCE(NULLIF(chat_threads.title, ''), EXCLUDED.title),
-                  updated_at = EXCLUDED.updated_at
-                """,
-                (thread_id, workspace_id, user_id, title, now),
-            )
-            for message in messages:
-                connection.execute(
-                    """
-                    INSERT INTO chat_messages (id, thread_id, workspace_id, user_id, role, content, trace_id, confidence, sources, created_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    ON CONFLICT (id) DO UPDATE SET
-                      content = EXCLUDED.content,
-                      confidence = EXCLUDED.confidence,
-                      sources = EXCLUDED.sources
-                    """,
-                    (
-                        message["id"],
-                        message["thread_id"],
-                        message["workspace_id"],
-                        message["user_id"],
-                        message["role"],
-                        message["content"],
-                        message["trace_id"],
-                        message["confidence"],
-                        Jsonb(message["sources"]),
-                        message["created_at"],
-                    ),
-                )
+        self._save_chat_exchange_rest(thread, messages)
 
     def delete_signature(self, signature_id: str) -> None:
-        if not self.settings.postgres_url:
-            self._delete_signature_rest(signature_id)
-            return
-        with self._connect() as connection:
-            connection.execute("DELETE FROM signatures WHERE id = %s", (signature_id,))
+        self._delete_signature_rest(signature_id)
 
     def delete_panel_items_for_signature(self, signature_id: str) -> int:
         item_ids = [
             f"ingestion:{signature_id}",
             f"memory:{signature_id}",
         ]
-        if not self.settings.postgres_url:
-            return self._delete_panel_items_for_signature_rest(signature_id, item_ids)
-        with self._connect() as connection:
-            cursor = connection.execute(
-                """
-                DELETE FROM training_panel_items
-                WHERE id = ANY(%s)
-                   OR payload->'signature'->>'id' = %s
-                   OR payload->>'id' = %s
-                   OR payload->>'provenance' = %s
-                   OR payload->>'signature_id' = %s
-                """,
-                (item_ids, signature_id, signature_id, signature_id, signature_id),
-            )
-            return int(cursor.rowcount or 0)
+        return self._delete_panel_items_for_signature_rest(signature_id, item_ids)
 
     def review_world_model_candidate(
         self,
@@ -655,184 +472,31 @@ class SupabasePostgresStore:
         action: str,
         corrected_rule: str | None = None,
     ) -> int:
-        if not self.settings.postgres_url:
-            return self._review_world_model_candidate_rest(provenance, rule, action, corrected_rule)
-        from psycopg.types.json import Jsonb
-
-        with self._connect() as connection:
-            rows = connection.execute(
-                """
-                SELECT id, panel, payload, created_at
-                FROM training_panel_items
-                WHERE kind = 'world_model_candidate'
-                  AND panel = ANY(%s)
-                  AND payload->>'provenance' = %s
-                  AND (payload->>'rule' = %s OR title = %s)
-                """,
-                (["review", "world-model"], provenance, rule, rule),
-            ).fetchall()
-            if action == "reject":
-                for row in rows:
-                    connection.execute("DELETE FROM training_panel_items WHERE id = %s", (row["id"],))
-                return len(rows)
-            updated = 0
-            for row in rows:
-                payload = dict(row["payload"] or {})
-                final_rule = (corrected_rule or "").strip() if action == "correct" and corrected_rule else str(payload.get("rule") or rule)
-                payload["rule"] = final_rule
-                payload["review_required"] = action == "rollback"
-                if action in {"accept", "promote", "correct"}:
-                    payload["review_required"] = False
-                if action == "correct":
-                    payload["confidence"] = max(float(payload.get("confidence") or 0.0), 0.9)
-                state = "review required" if payload.get("review_required") else "accepted"
-                confidence = float(payload.get("confidence") or 0.0)
-                connection.execute(
-                    """
-                    UPDATE training_panel_items
-                    SET title = %s,
-                        subtitle = %s,
-                        payload = %s
-                    WHERE id = %s
-                    """,
-                    (final_rule, f"{state} / confidence {confidence:.2f} / {provenance}", Jsonb(payload), row["id"]),
-                )
-                updated += 1
-            return updated
+        return self._review_world_model_candidate_rest(provenance, rule, action, corrected_rule)
 
     def list_panel_items(self, panel: str, cursor: str | None, limit: int) -> TrainingPanelPage:
-        if not self.settings.postgres_url:
-            return self._list_panel_items_rest(panel, cursor, limit)
-        offset = max(int(cursor or "0"), 0)
-        page_size = min(max(limit, 1), 100)
-        with self._connect() as connection:
-            rows = connection.execute(
-                """
-                SELECT id, panel, kind, title, subtitle, payload, created_at
-                FROM training_panel_items
-                WHERE panel = %s
-                ORDER BY created_at DESC, id DESC
-                LIMIT %s OFFSET %s
-                """,
-                (panel, page_size + 1, offset),
-            ).fetchall()
-            total_row = connection.execute(
-                "SELECT count(*) AS total FROM training_panel_items WHERE panel = %s",
-                (panel,),
-            ).fetchone()
-        visible = rows[:page_size]
-        items = [
-            TrainingPanelItem(
-                id=row["id"],
-                panel=row["panel"],
-                kind=row["kind"],
-                title=row["title"],
-                subtitle=row["subtitle"],
-                data=row["payload"] or {},
-                created_at=row["created_at"],
-            )
-            for row in visible
-        ]
-        has_more = len(rows) > page_size
-        return TrainingPanelPage(
-            panel=panel,
-            items=items,
-            next_cursor=str(offset + page_size) if has_more else None,
-            has_more=has_more,
-            total=int(total_row["total"] if total_row else len(items)),
-        )
+        return self._list_panel_items_rest(panel, cursor, limit)
 
     def list_chat_threads(self, user_id: str, workspace_id: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
         page_size = min(max(limit, 1), 100)
-        if not self.settings.postgres_url:
-            return self._list_chat_threads_rest(user_id, workspace_id, page_size)
-        where = "WHERE user_id = %s"
-        params: list[Any] = [user_id]
-        if workspace_id:
-            where += " AND workspace_id = %s"
-            params.append(workspace_id)
-        params.append(page_size)
-        with self._connect() as connection:
-            rows = connection.execute(
-                f"""
-                SELECT id, workspace_id, user_id, title, created_at, updated_at
-                FROM chat_threads
-                {where}
-                ORDER BY updated_at DESC, created_at DESC
-                LIMIT %s
-                """,
-                tuple(params),
-            ).fetchall()
-        return [dict(row) for row in rows]
+        return self._list_chat_threads_rest(user_id, workspace_id, page_size)
 
     def list_chat_messages(self, thread_id: str, user_id: str, limit: int = 200) -> list[dict[str, Any]]:
         page_size = min(max(limit, 1), 500)
-        if not self.settings.postgres_url:
-            return self._list_chat_messages_rest(thread_id, user_id, page_size)
-        with self._connect() as connection:
-            rows = connection.execute(
-                """
-                SELECT id, thread_id, workspace_id, user_id, role, content, trace_id, confidence, sources, created_at
-                FROM chat_messages
-                WHERE thread_id = %s AND user_id = %s
-                ORDER BY created_at ASC, id ASC
-                LIMIT %s
-                """,
-                (thread_id, user_id, page_size),
-            ).fetchall()
-        return [dict(row) for row in rows]
+        return self._list_chat_messages_rest(thread_id, user_id, page_size)
 
     def delete_chat_thread(self, thread_id: str, user_id: str) -> int:
-        if not self.settings.postgres_url:
-            return self._delete_chat_thread_rest(thread_id, user_id)
-        with self._connect() as connection:
-            message_cursor = connection.execute(
-                "DELETE FROM chat_messages WHERE thread_id = %s AND user_id = %s",
-                (thread_id, user_id),
-            )
-            connection.execute(
-                "DELETE FROM chat_threads WHERE id = %s AND user_id = %s",
-                (thread_id, user_id),
-            )
-            return int(message_cursor.rowcount or 0)
+        return self._delete_chat_thread_rest(thread_id, user_id)
 
     def list_recent_signatures(self, limit: int = 500) -> list[MemorySignature]:
         page_size = min(max(limit, 1), 2000)
-        if not self.settings.postgres_url:
-            return self._list_recent_signatures_rest(page_size)
-        with self._connect() as connection:
-            rows = connection.execute(
-                """
-                SELECT payload
-                FROM signatures
-                ORDER BY created_at DESC, id DESC
-                LIMIT %s
-                """,
-                (page_size,),
-            ).fetchall()
-        return [MemorySignature.model_validate(row["payload"]) for row in rows if row.get("payload")]
+        return self._list_recent_signatures_rest(page_size)
 
     def get_signatures_by_ids(self, ids: list[str]) -> list[MemorySignature]:
-        unique_ids = [signature_id for signature_id in dict.fromkeys(ids) if signature_id]
+        unique_ids = [sig_id for sig_id in dict.fromkeys(ids) if sig_id]
         if not unique_ids:
             return []
-        if not self.settings.postgres_url:
-            return self._get_signatures_by_ids_rest(unique_ids)
-        with self._connect() as connection:
-            rows = connection.execute(
-                """
-                SELECT payload
-                FROM signatures
-                WHERE id = ANY(%s)
-                """,
-                (unique_ids,),
-            ).fetchall()
-        by_id = {
-            row["payload"].get("id"): MemorySignature.model_validate(row["payload"])
-            for row in rows
-            if row.get("payload")
-        }
-        return [by_id[signature_id] for signature_id in unique_ids if signature_id in by_id]
+        return self._get_signatures_by_ids_rest(unique_ids)
 
     def _save_signature_rest(self, signature: MemorySignature) -> None:
         payload = {
@@ -991,42 +655,13 @@ class SupabasePostgresStore:
             "payload": feedback.get("payload") or {},
             "created_at": feedback.get("created_at"),
         }
-        if not self.settings.postgres_url:
-            response = httpx.post(
-                self._rest_url("user_feedback"),
-                headers=self._rest_headers("resolution=merge-duplicates,return=minimal"),
-                json=row,
-                timeout=provider_http_timeout(),
-            )
-            response.raise_for_status()
-            return
-        from psycopg.types.json import Jsonb
-
-        with self._connect() as connection:
-            connection.execute(
-                """
-                INSERT INTO user_feedback (id, workspace_id, user_id, thread_id, trace_id, query, answer, rating, feedback, learn_this, payload, created_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (id) DO UPDATE SET
-                  rating = EXCLUDED.rating,
-                  feedback = EXCLUDED.feedback,
-                  payload = EXCLUDED.payload
-                """,
-                (
-                    row["id"],
-                    row["workspace_id"],
-                    row["user_id"],
-                    row["thread_id"],
-                    row["trace_id"],
-                    row["query"],
-                    row["answer"],
-                    row["rating"],
-                    row["feedback"],
-                    row["learn_this"],
-                    Jsonb(row["payload"]),
-                    row["created_at"],
-                ),
-            )
+        response = httpx.post(
+            self._rest_url("user_feedback"),
+            headers=self._rest_headers("resolution=merge-duplicates,return=minimal"),
+            json=row,
+            timeout=provider_http_timeout(),
+        )
+        response.raise_for_status()
 
     def _list_chat_threads_rest(self, user_id: str, workspace_id: str | None, limit: int) -> list[dict[str, Any]]:
         params = {
@@ -1519,7 +1154,7 @@ class ProductionRuntime:
         self.statuses: dict[str, ProviderStatus] = {}
         self.r2 = R2ObjectStore(self.settings) if self.settings.enable_r2 else None
         self.vectorize = CloudflareVectorizeIndex(self.settings) if self.settings.enable_vectorize else None
-        self.postgres = SupabasePostgresStore(self.settings) if self.settings.enable_postgres else None
+        self.postgres = SupabasePostgresStore(self.settings)  # always Supabase REST
         self.neo4j = Neo4jAuraGraphStore(self.settings) if self.settings.enable_neo4j else None
         self.celery = RedisCeleryQueue(self.settings) if self.settings.enable_celery else None
         self.multimodal = self._build_multimodal_adapter()
@@ -1587,7 +1222,7 @@ class ProductionRuntime:
         # Trigger lazy init so readiness() always reflects actual state
         self._ensure_initialized()
         data: dict[str, str | bool] = {
-            "storage_backend": self.settings.storage_backend,
+            "storage_backend": "supabase_rest",
             "graph_provider": self.settings.graph_provider,
             "production_runtime_enabled": self.enabled,
             "cloud_authoritative": self.settings.cloud_authoritative,

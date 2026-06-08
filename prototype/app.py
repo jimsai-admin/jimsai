@@ -283,3 +283,114 @@ async def memory_stats() -> dict[str, int]:
 @app.get("/v1/audit/events", dependencies=[Depends(require_scope("training:read"))])
 async def audit_events(limit: int = 100):
     return await pipeline.audit_events(limit=limit)
+
+
+@app.post("/v1/autonomous/reembed-hash", dependencies=[Depends(require_scope("training:write"))])
+async def reembed_hash():
+    """Re-embed all signatures stored with hash-projection fallback vectors.
+
+    Uses batch embedding (one Modal call for all texts) for speed.
+    Call once after the embedding service cold-starts.
+    """
+    import asyncio
+    import logging
+    import httpx as _httpx
+    _logger = logging.getLogger("jimsai.reembed")
+
+    try:
+        adapter = pipeline.production.multimodal
+        if adapter is None or not hasattr(adapter, "embed_batch"):
+            raise HTTPException(status_code=503, detail="Multimodal encoder adapter not configured.")
+
+        store = pipeline.production.postgres
+        if not store.configured:
+            raise HTTPException(status_code=503, detail="Supabase credentials not configured.")
+
+        # Fetch signatures
+        async with _httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.get(
+                store._rest_url("signatures"),
+                headers=store._rest_headers(),
+                params={"select": "id,provenance,payload", "limit": "500"},
+            )
+            resp.raise_for_status()
+            rows = resp.json()
+
+        to_reembed = [
+            r for r in rows
+            if isinstance(r.get("payload"), dict)
+            and r["payload"].get("metadata", {}).get("reembedding_required") is True
+        ]
+        _logger.info("reembed-hash: %d / %d need re-embedding", len(to_reembed), len(rows))
+        if not to_reembed:
+            return {"status": "ok", "total_found": 0, "reembedded": 0, "failed": 0}
+
+        # Batch-embed all texts in a single Modal call (up to 100 per batch)
+        loop = asyncio.get_event_loop()
+        texts = [str(r["payload"].get("provenance") or r.get("provenance") or "") for r in to_reembed]
+        BATCH = 100
+        all_vectors: list[list[float]] = []
+        for i in range(0, len(texts), BATCH):
+            chunk = texts[i:i + BATCH]
+            vecs = await loop.run_in_executor(None, adapter.embed_batch, chunk, "document")
+            all_vectors.extend(vecs)
+
+        reembedded = 0
+        failed = 0
+        async with _httpx.AsyncClient(timeout=20.0) as client:
+            for row, vector in zip(to_reembed, all_vectors):
+                if not vector:
+                    failed += 1
+                    continue
+                try:
+                    payload = dict(row["payload"])
+                    payload.setdefault("metadata", {})
+                    payload["metadata"]["reembedding_required"] = False
+                    payload["metadata"]["latent_embedding_source"] = "external_service"
+                    payload["latent_embedding"] = vector
+                    patch_resp = await client.patch(
+                        store._rest_url("signatures"),
+                        headers=store._rest_headers(prefer="return=minimal"),
+                        params={"id": f"eq.{row['id']}"},
+                        json={"payload": payload},
+                    )
+                    patch_resp.raise_for_status()
+                    reembedded += 1
+                except Exception as exc:
+                    _logger.warning("reembed patch failed for %s: %s", row.get("id"), exc)
+                    failed += 1
+
+        _logger.info("reembed-hash done: %d ok, %d failed", reembedded, failed)
+        return {"status": "ok", "total_found": len(to_reembed), "reembedded": reembedded, "failed": failed}
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        import logging as _log; _log.getLogger("jimsai.reembed").error("reembed-hash: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/v1/chat/threads", dependencies=[Depends(require_scope("runtime:query"))])
+async def chat_threads(user_id: str, workspace_id: str | None = None, limit: int = 50):
+    threads = pipeline.production.postgres.list_chat_threads(user_id, workspace_id=workspace_id, limit=limit)
+    return {"threads": threads}
+
+
+@app.get("/v1/chat/threads/{thread_id}/messages", dependencies=[Depends(require_scope("runtime:query"))])
+async def chat_thread_messages(thread_id: str, user_id: str, limit: int = 200):
+    messages = pipeline.production.postgres.list_chat_messages(thread_id, user_id, limit=limit)
+    return {"messages": messages}
+
+
+@app.delete("/v1/chat/threads/{thread_id}", dependencies=[Depends(require_scope("training:write"))])
+async def delete_chat_thread(thread_id: str):
+    import httpx as _httpx
+    store = pipeline.production.postgres
+    async with _httpx.AsyncClient(timeout=15.0) as client:
+        resp = await client.delete(
+            store._rest_url("chat_threads"),
+            headers=store._rest_headers(prefer="return=minimal"),
+            params={"id": f"eq.{thread_id}"},
+        )
+        resp.raise_for_status()
+    return {"deleted": thread_id}
