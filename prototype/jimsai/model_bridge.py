@@ -133,7 +133,14 @@ class QwenBridge:
     async def _render_chat_json(
         self, system: str, user: str, max_tokens: int = 800
     ) -> dict[str, Any] | None:
-        """Route to T2 Modal Renderer_Service."""
+        """Route to T2 Modal Renderer_Service.
+
+        Modal returns: {"response": "<model output>", "model": ..., "usage": ..., "finish_reason": ...}
+        The model output may be:
+          - A JSON string:  '{"response": "markdown text"}'  → parse → {"response": "markdown text"}
+          - A JSON string:  '{"candidate_steps": [...]}'     → parse → {"candidate_steps": [...]}
+          - Plain markdown: 'Here is your answer...'         → wrap  → {"response": "Here is your answer..."}
+        """
         if not self.qwen_enabled:
             return None
         headers = {"Content-Type": "application/json", "Authorization": f"Bearer {self.local_api_key}"}
@@ -154,23 +161,33 @@ class QwenBridge:
                 )
                 response.raise_for_status()
             data = response.json()
-            # Modal Renderer_Service returns {"response": "...", "model": ..., "usage": ..., "finish_reason": ...}
-            # NOT OpenAI-style {"choices": [{"message": {"content": ...}}]}
+            # Modal returns {"response": "<model output>", ...}
             raw_content = data.get("response") or data.get("content") or ""
             if not raw_content and "choices" in data:
+                # Tolerate OpenAI-compatible wrapper
                 raw_content = data["choices"][0]["message"]["content"]
             if not raw_content:
-                import logging as _log; _log.getLogger(__name__).warning("_render_chat_json: empty response field from Modal renderer")
+                import logging as _log
+                _log.getLogger(__name__).warning("_render_chat_json: empty response field from Modal renderer")
                 return None
-            # Strip Qwen3 <think>...</think> blocks before JSON parsing
+            # Strip Qwen3 <think>...</think> blocks
             raw_content = re.sub(r"<think>.*?</think>", "", raw_content, flags=re.DOTALL).strip()
-            # Extract JSON object from the response text
+            if not raw_content:
+                return None
+            # Try to parse as JSON object
             start, end = raw_content.find("{"), raw_content.rfind("}")
             if start != -1 and end > start:
-                raw_content = raw_content[start:end + 1]
-            return json.loads(raw_content)
+                try:
+                    return json.loads(raw_content[start:end + 1])
+                except json.JSONDecodeError:
+                    pass
+            # Model returned plain text instead of JSON — wrap it as {"response": ...}
+            # This handles cases where the model ignores the JSON instruction but
+            # still gives a useful answer (common with T2 long renders)
+            return {"response": raw_content}
         except Exception as exc:
-            import logging as _log; _log.getLogger(__name__).warning("_render_chat_json failed: %s", repr(exc))
+            import logging as _log
+            _log.getLogger(__name__).warning("_render_chat_json failed: %s", repr(exc))
             return None
 
     async def _local_chat_json(
@@ -182,8 +199,13 @@ class QwenBridge:
         model: str | None = None,
         timeout: float | None = None,
     ) -> dict[str, Any] | None:
+        """Route to T1 Modal Intent_Service.
+
+        Modal returns: {"response": "<model output>", "model": ..., "usage": ..., "finish_reason": ...}
+        The model output must be a JSON object (T1 is always structured). If parsing
+        fails, return None so the deterministic path takes over gracefully.
+        """
         headers = {"Content-Type": "application/json"}
-        # Inject Modal API key as Authorization header when available
         if self.local_api_key:
             headers["Authorization"] = f"Bearer {self.local_api_key}"
         payload = {
@@ -197,7 +219,6 @@ class QwenBridge:
             "response_format": {"type": "json_object"},
         }
         try:
-            # Check JIMS_GENERATION_TIMEOUT first, then legacy JIMS_LOCAL_INFERENCE_TIMEOUT
             request_timeout = timeout if timeout is not None else float(
                 os.getenv("JIMS_GENERATION_TIMEOUT",
                           os.getenv("JIMS_LOCAL_INFERENCE_TIMEOUT", "120")) or "120"
@@ -210,22 +231,33 @@ class QwenBridge:
                 )
                 response.raise_for_status()
             data = response.json()
-            # Modal Intent_Service returns {"response": "...", "model": ..., "usage": ..., "finish_reason": ...}
-            # NOT OpenAI-style {"choices": [{"message": {"content": ...}}]}
+            # Modal Intent_Service returns {"response": "<model output>", ...}
             raw_content = data.get("response") or data.get("content") or ""
             if not raw_content and "choices" in data:
                 raw_content = data["choices"][0]["message"]["content"]
             if not raw_content:
                 return None
-            # Strip Qwen3 <think>...</think> blocks before JSON parsing
+            # Strip Qwen3 <think>...</think> blocks
             raw_content = re.sub(r"<think>.*?</think>", "", raw_content, flags=re.DOTALL).strip()
-            # Extract JSON object from the response text
+            if not raw_content:
+                return None
+            # Extract and parse JSON object
             start, end = raw_content.find("{"), raw_content.rfind("}")
             if start != -1 and end > start:
-                raw_content = raw_content[start:end + 1]
-            return json.loads(raw_content)
+                try:
+                    return json.loads(raw_content[start:end + 1])
+                except json.JSONDecodeError:
+                    pass
+            # T1 must be JSON — if we can't parse it, fall back to deterministic path
+            import logging as _log
+            _log.getLogger(__name__).debug(
+                "_local_chat_json: model returned non-JSON T1 response (len=%d), "
+                "falling back to deterministic path", len(raw_content)
+            )
+            return None
         except Exception as exc:
-            import logging as _log; _log.getLogger(__name__).warning("_local_chat_json failed: %s", repr(exc))
+            import logging as _log
+            _log.getLogger(__name__).warning("_local_chat_json failed: %s", repr(exc))
             return None
 
     # ── T1: Intent / routing / math ───────────────────────────────────────────

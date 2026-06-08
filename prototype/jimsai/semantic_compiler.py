@@ -10,6 +10,8 @@ from .models import ExecutionMode, Hypothesis, IntentDomain, SemanticIR
 
 
 def _is_document_wide_relation(predicate: str) -> bool:
+    if not predicate:
+        return False
     return predicate.startswith("has_") or predicate.startswith("uses_") or predicate.startswith("is_")
 
 # Capability token sets used by _v9_capability_override
