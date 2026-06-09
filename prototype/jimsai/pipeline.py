@@ -1348,21 +1348,10 @@ class JimsAIPipeline:
         return tmpl.format(description=description, body=body)
 
     def _response_language_hint(self, query: str) -> str:
-        lowered = query.lower()
-        if any(token in lowered for token in (" yoruba", " yorùbá", " español", " spanish", " français", " french", " arabic", " العربية", " igbo", " hausa")):
-            return "explicit_language_requested"
+        # Enhanced language detection without hardcoded language lists
+        # Check for any non-ASCII characters which indicate multilingual content
         if any(ord(char) > 127 for char in query):
             return "non_ascii_or_multilingual_prompt"
-        
-        low_resource_keywords = {
-            "nibo", "bawo", "koni", "odabo", "kaabo", "e ku", "olofe",
-            "kedu", "bia", "imela", "otito", "nno",
-            "sannu", "lafiya", "nagode", "gida", "baba"
-        }
-        words = set(lowered.split())
-        if words & low_resource_keywords:
-            return "non_ascii_or_multilingual_prompt"
-            
         return "default"
 
     def _response_format_hint(self, query: str) -> str:

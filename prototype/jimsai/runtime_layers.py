@@ -130,18 +130,19 @@ class TransformerIntentInterface:
         used_local_model = False
         ir = deterministic_ir
 
-        # Typo-correction pass: if embedding confidence is low and Qwen is available,
-        # rewrite the query and re-classify. Only runs when JIMS_TYPO_CORRECTION_ENABLED=true.
+        # Enhanced processing for chaotic and multilingual prompts
+        # Remove the ASCII-only restriction and enhance for better multilingual support
         typo_correction_enabled = (
             os.getenv("JIMS_TYPO_CORRECTION_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
         )
+        # Enhanced intent processing for multilingual and chaotic inputs
         if (
             typo_correction_enabled
             and self.bridge.qwen_enabled
             and 0.20 <= deterministic_ir.confidence < 0.50
             and deterministic_ir.target_ir == "OP_ESCAPE_TO_SANDBOX"
-            and all(ord(c) < 128 for c in request.query)  # ASCII only — not low-resource language
         ):
+            # Remove ASCII restriction to better handle multilingual prompts
             clean_query = await self.bridge.rewrite_for_clarity(request.query)
             if clean_query and clean_query.strip().lower() != request.query.strip().lower():
                 rewritten_ir = self.compiler.compile(clean_query, namespace="TECHNICAL", session=session)

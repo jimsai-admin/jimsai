@@ -99,7 +99,10 @@ class QwenBridge:
         }
 
     async def rewrite_for_clarity(self, raw_input: str) -> str | None:
-        """Rewrite a chaotic/typo-heavy query into clear form without changing meaning.
+        """Enhanced rewrite for clarity that handles multilingual and chaotic inputs better.
+
+        Rewrite a chaotic/typo-heavy query into clear form without changing meaning.
+        This enhanced version better handles multilingual inputs and chaotic prompts.
 
         Used by SemanticCompilerRuntime when embedding confidence is low (0.20–0.49)
         and JIMS_TYPO_CORRECTION_ENABLED=true. Only activates when qwen_enabled.
@@ -109,9 +112,9 @@ class QwenBridge:
         if not self.qwen_enabled:
             return None
         system = (
-            "You are a text normalizer for JimsAI. "
-            "Fix spelling mistakes and typos only. "
-            "Do NOT rephrase, translate, or change the meaning. "
+            "You are an advanced text normalizer for JimsAI. "
+            "Fix spelling mistakes, typos, and normalize input for better processing while preserving the original meaning. "
+            "Handle multilingual inputs appropriately - preserve the original language but fix structural issues. "
             "Return JSON only: {\"clean\": \"corrected text here\"}"
         )
         data = await self._chat_json(self.local_model, system, raw_input[:512], max_tokens=120)
@@ -275,9 +278,10 @@ class QwenBridge:
             self.last_t1_skip_reason = f"deterministic_confidence_{confidence:.2f}"
             return None
         system = (
-            "You are the bounded T1 intent interface for JIMS-AI. "
+            "You are an enhanced bounded T1 intent interface for JIMS-AI. "
             "Return only JSON. You may classify ambiguity, tone, and intent. "
-            "You must not execute, retrieve, reason, plan, or invent."
+            "You must not execute, retrieve, reason, plan, or invent. "
+            "Handle multilingual and chaotic inputs appropriately and preserve the original language while providing structured output."
         )
         user = json.dumps(
             {
