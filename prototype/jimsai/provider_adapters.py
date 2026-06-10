@@ -943,13 +943,17 @@ class ExternalMultimodalEncoderAdapter:
     def check(self) -> str:
         if not self.configured:
             return "missing JIMS_EMBEDDING_SERVICE_URL"
-        response = httpx.get(
-            f"{self._base_url()}/health",
-            headers=self._headers(),
-            timeout=30,  # Modal services need up to 15s on cold-start health check
-        )
-        response.raise_for_status()
-        return "external embedding service reachable"
+        try:
+            response = httpx.get(
+                f"{self._base_url()}/health",
+                headers=self._headers(),
+                timeout=8,  # Fast check — Modal cold-start handled by retry in _ensure_adapter
+            )
+            response.raise_for_status()
+            return "external embedding service reachable"
+        except Exception as exc:
+            # Raise so _ensure_adapter marks it unavailable and retries on next call
+            raise
 
     def encode(self, content: str, modality: Modality) -> list[float]:
         """Embed content using the HF Space /v1/embed endpoint.

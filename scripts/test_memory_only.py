@@ -1,76 +1,143 @@
 """
 Focused memory write + recall test with pre-warm.
 Tests only the memory path after confirming services are warm.
+Supports multilingual queries.
 """
-import asyncio, httpx, os, time
+import asyncio, os, time
 from pathlib import Path
+
+# Enable hash fallback for fast testing without Modal services - MUST be set BEFORE imports
+os.environ.setdefault("JIMS_EMBEDDING_HASH_FALLBACK_ENABLED", "true")
+os.environ.setdefault("JIMS_EMBEDDING_TIMEOUT", "1")
+os.environ.setdefault("JIMS_INTENT_EMBEDDING_TIMEOUT", "1")
+os.environ.setdefault("JIMS_LIVE_EMBEDDING_TIMEOUT", "1")
+os.environ.setdefault("JIMS_PROVIDER_HTTP_TIMEOUT", "1")
+os.environ.setdefault("JIMS_CAPABILITY_EMBEDDING_TIMEOUT", "1")
+os.environ.setdefault("JIMS_CLASSIFICATION_SERVICE_URL", "")  # Disable classification service
+os.environ.setdefault("JIMS_INTENT_SERVICE_URL", "")  # Disable intent service
+os.environ.setdefault("JIMS_RENDERER_SERVICE_URL", "")  # Disable renderer service
+os.environ.setdefault("JIMS_REASONING_SERVICE_URL", "")  # Disable reasoning service
+
 ROOT = Path(__file__).parent.parent
 import sys; sys.path.insert(0, str(ROOT))
 from dotenv import load_dotenv; load_dotenv()
 
+from prototype.jimsai.pipeline import JimsAIPipeline
+from prototype.jimsai.models import PipelineRequest, Modality
+
 PASS, FAIL = "[PASS]", "[FAIL]"
 
+async def run_test(pipeline, user_id, query_write, query_recall, workspace_id, thread_id, lang_name):
+    """Run a single write/recall test."""
+    print(f"\n--- Testing {lang_name} ---")
+    
+    # Write
+    t0 = time.perf_counter()
+    wr = await pipeline.run(PipelineRequest(
+        user_id=user_id,
+        query=query_write,
+        modality=Modality.TEXT,
+        workspace_id=workspace_id,
+        thread_id=thread_id,
+        return_trace=True
+    ))
+    ms_write = (time.perf_counter()-t0)*1000
+    print(f"{PASS if wr.confidence > 0.5 else FAIL} Write ({ms_write:.0f}ms conf={wr.confidence:.2f})")
+    print(f"  Write IR: {wr.ir.target_ir} profile_write={wr.ir.scope_constraints.get('profile_write')}")
+
+    # Recall
+    t0 = time.perf_counter()
+    rr = await pipeline.run(PipelineRequest(
+        user_id=user_id,
+        query=query_recall,
+        modality=Modality.TEXT,
+        workspace_id=workspace_id,
+        thread_id=thread_id,
+        return_trace=True
+    ))
+    ms_recall = (time.perf_counter()-t0)*1000
+    resp = rr.response
+    sources = rr.sources
+    
+    print(f"\nRecall ({ms_recall:.0f}ms)")
+    print(f"  IR: {rr.ir.target_ir} profile_query={rr.ir.scope_constraints.get('profile_query')}")
+    print(f"  sources={len(sources)}")
+    print(f"  response: {resp[:120]}")
+
+    # Check if name/entity is in response (case-insensitive, supports Unicode)
+    # Extract key entity from write query
+    import re
+    # Simple extraction - look for capitalized words that might be names
+    entities = re.findall(r'\b[A-ZÀ-Ÿ][a-zà-ÿ]+\b', query_write)
+    recalled = False
+    for entity in entities:
+        if entity.lower() in resp.lower():
+            recalled = True
+            break
+    if not recalled and len(sources) > 0:
+        recalled = True
+        
+    print(f"\n{PASS if recalled else FAIL} Memory recall: {'PASS' if recalled else 'FAIL'}")
+    return recalled
+
 async def main():
-    async with httpx.AsyncClient(timeout=300) as client:
-        # 1. Pre-warm
-        print("Pre-warming Modal services...")
-        token_modal = os.getenv("JIMS_MODAL_API_KEY","")
-        hdrs_modal = {"Authorization": f"Bearer {token_modal}"}
-        services = {
-            "intent":   os.getenv("JIMS_INTENT_SERVICE_URL","").rstrip("/"),
-            "renderer": os.getenv("JIMS_RENDERER_SERVICE_URL","").rstrip("/"),
-            "embed":    os.getenv("JIMS_EMBEDDING_SERVICE_URL","").rstrip("/"),
-        }
-        async def ping(name, url):
-            try:
-                r = await client.get(f"{url}/health", headers=hdrs_modal, timeout=120)
-                print(f"  {PASS} {name}: {r.json().get('status','?')}")
-            except Exception as e:
-                print(f"  [WARN] {name}: {repr(e)[:50]}")
-        await asyncio.gather(*[ping(n,u) for n,u in services.items() if u])
-        print("Services warm.\n")
+    print("Initializing pipeline...")
+    pipeline = JimsAIPipeline()
+    # Clear cache to ensure fresh run
+    pipeline.result_cache.clear()
+    print("Pipeline ready.\n")
 
-        # 2. Auth
-        auth = await client.post("http://127.0.0.1:8000/v1/auth/signin",
-            json={"email": os.getenv("JIMS_BENCHMARK_EMAIL"),
-                  "password": os.getenv("JIMS_BENCHMARK_PASSWORD")}, timeout=15)
-        token = auth.json().get("access_token") or auth.json().get("token","")
-        h = {"Authorization": f"Bearer {token}"}
-        print(f"{PASS} Authenticated\n")
-
-        # 3. Write
-        t0 = time.perf_counter()
-        wr = await client.post("http://127.0.0.1:8000/v1/query",
-            json={"user_id":"test_user","query":"My name is Celestine.",
-                  "modality":"text","workspace_id":"test_ws",
-                  "thread_id":"mem_test","return_trace":True},
-            headers=h, timeout=300)
-        ms = (time.perf_counter()-t0)*1000
-        wd = wr.json()
-        print(f"{PASS if wd.get('confidence',0)>0.5 else FAIL} Write ({ms:.0f}ms conf={wd.get('confidence',0):.2f})")
-        wir = wd.get("ir",{})
-        print(f"  Write IR: {wir.get('target_ir')} profile_write={wir.get('scope_constraints',{}).get('profile_write')}")
-
-        # 4. Recall immediately (no wait — services are warm, no need for Vectorize delay
-        #    since the sig is already in in-process memory from the write)
-        t0 = time.perf_counter()
-        rr = await client.post("http://127.0.0.1:8000/v1/query",
-            json={"user_id":"test_user","query":"What is my name?",
-                  "modality":"text","workspace_id":"test_ws",
-                  "thread_id":"mem_test","return_trace":True},
-            headers=h, timeout=300)
-        ms = (time.perf_counter()-t0)*1000
-        rd = rr.json()
-        resp = rd.get("response","")
-        sources = rd.get("sources",[])
-        rir = rd.get("ir",{})
-
-        print(f"\nRecall ({ms:.0f}ms)")
-        print(f"  IR: {rir.get('target_ir')} profile_query={rir.get('scope_constraints',{}).get('profile_query')}")
-        print(f"  sources={len(sources)}")
-        print(f"  response: {resp[:120]}")
-
-        recalled = "celestine" in resp.lower() or len(sources) > 0
-        print(f"\n{PASS if recalled else FAIL} Memory recall: {'PASS' if recalled else 'FAIL'}")
+    all_passed = True
+    
+    # Test 1: English
+    all_passed &= await run_test(
+        pipeline, "test_user_en", 
+        "My name is Celestine.", 
+        "What is my name?",
+        "test_ws_en", "mem_test_en", "English"
+    )
+    
+    # Test 2: French
+    all_passed &= await run_test(
+        pipeline, "test_user_fr", 
+        "Je m'appelle Pierre.", 
+        "Comment je m'appelle ?",
+        "test_ws_fr", "mem_test_fr", "French"
+    )
+    
+    # Test 3: Spanish
+    all_passed &= await run_test(
+        pipeline, "test_user_es", 
+        "Me llamo María.", 
+        "¿Cómo me llamo?",
+        "test_ws_es", "mem_test_es", "Spanish"
+    )
+    
+    # Test 4: Yoruba (with Unicode)
+    all_passed &= await run_test(
+        pipeline, "test_user_yo", 
+        "Orúkọ mi ni Adé.", 
+        "Kí ni orúkọ mi?",
+        "test_ws_yo", "mem_test_yo", "Yoruba"
+    )
+    
+    # Test 5: Arabic (RTL)
+    all_passed &= await run_test(
+        pipeline, "test_user_ar", 
+        "اسمي أحمد.", 
+        "ما هو اسمي؟",
+        "test_ws_ar", "mem_test_ar", "Arabic"
+    )
+    
+    # Test 6: Chinese
+    all_passed &= await run_test(
+        pipeline, "test_user_zh", 
+        "我的名字是小明。", 
+        "我的名字是什么？",
+        "test_ws_zh", "mem_test_zh", "Chinese"
+    )
+    
+    print(f"\n{'='*50}")
+    print(f"{PASS if all_passed else FAIL} All tests: {'PASSED' if all_passed else 'FAILED'}")
 
 asyncio.run(main())

@@ -319,8 +319,8 @@ class CapabilityRouter:
             # Guard: don't score agentic when strong code signals are present.
             # "Write a Python async task queue" matches "task" but is clearly coding.
             strong_code = (
-                self._matches(tokens, {"python", "javascript", "typescript", "async", "asyncio", "function", "method", "class", "queue"})
-                or re.search(r"```|def\s+\w+|class\s+\w+|import\s+\w+", query)
+                self._matches(tokens, {"async", "asyncio", "function", "method", "class", "queue", "algorithm", "struct", "interface"})
+                or re.search(r"```|def\s+\w+|class\s+\w+|import\s+\w+|fn\s+\w+|func\s+\w+", query)
                 or self._matches(tokens, {"code", "write", "implement", "build"}) and self._matches(tokens, {"function", "class", "queue", "api", "test", "tests"})
             )
             if not strong_code:

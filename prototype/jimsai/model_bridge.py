@@ -156,11 +156,12 @@ class QwenBridge:
         }
         try:
             timeout = float(os.getenv("JIMS_GENERATION_TIMEOUT", "120") or "120")
-            async with httpx.AsyncClient(timeout=timeout) as client:
+            async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
                 response = await client.post(
                     f"{self.render_url}{self.local_render_path}",
                     headers=headers,
                     json=payload,
+                    follow_redirects=True,
                 )
                 response.raise_for_status()
             data = response.json()
@@ -219,18 +220,18 @@ class QwenBridge:
             ],
             "temperature": 0,
             "max_tokens": max_tokens,
-            "response_format": {"type": "json_object"},
         }
         try:
             request_timeout = timeout if timeout is not None else float(
                 os.getenv("JIMS_GENERATION_TIMEOUT",
                           os.getenv("JIMS_LOCAL_INFERENCE_TIMEOUT", "120")) or "120"
             )
-            async with httpx.AsyncClient(timeout=request_timeout) as client:
+            async with httpx.AsyncClient(timeout=request_timeout, follow_redirects=True) as client:
                 response = await client.post(
                     f"{self.local_url}{path or self.local_chat_path}",
                     headers=headers,
                     json=payload,
+                    follow_redirects=True,
                 )
                 response.raise_for_status()
             data = response.json()
@@ -240,8 +241,51 @@ class QwenBridge:
                 raw_content = data["choices"][0]["message"]["content"]
             if not raw_content:
                 return None
-            # Strip Qwen3 <think>...</think> blocks
-            raw_content = re.sub(r"<think>.*?</think>", "", raw_content, flags=re.DOTALL).strip()
+            # Strip Qwen3 thinking blocks (various formats)
+            # Qwen3 outputs: "think...done" or "thinking...done" or "think...done" blocks
+            raw_content = re.sub(r"(?i)think.*?done", "", raw_content, flags=re.DOTALL).strip()
+            raw_content = re.sub(r"(?i)think.*?done", "", raw_content, flags=re.DOTALL).strip()
+            raw_content = re.sub(r"(?i)\[think\].*?\[/think\]", "", raw_content, flags=re.DOTALL).strip()
+            # Also strip any leading "think" or "Thinking" blocks without "done"
+            raw_content = re.sub(r"(?i)^think\s*\n", "", raw_content).strip()
+            raw_content = re.sub(r"(?i)^thinking\s*\n", "", raw_content).strip()
+            # Strip Qwen3 thinking blocks (various formats)
+            # Qwen3 outputs: "think...done" or "thinking...done" or "think...done" blocks
+            raw_content = re.sub(r"(?i)think.*?done", "", raw_content, flags=re.DOTALL).strip()
+            raw_content = re.sub(r"(?i)think.*?done", "", raw_content, flags=re.DOTALL).strip()
+            raw_content = re.sub(r"(?i)\[think\].*?\[/think\]", "", raw_content, flags=re.DOTALL).strip()
+            # Also strip any leading "think" or "Thinking" blocks without "done"
+            raw_content = re.sub(r"(?i)^think\s*\n", "", raw_content).strip()
+            raw_content = re.sub(r"(?i)^thinking\s*\n", "", raw_content).strip()
+            # If still starts with reasoning, strip everything before first JSON object
+            if raw_content and not raw_content.startswith("{"):
+                # Find first { that looks like JSON start
+                first_brace = raw_content.find("{")
+                if first_brace > 0:
+                    # Check if it's a valid JSON start
+                    potential_json = raw_content[first_brace:]
+                    try:
+                        import json
+                        json.loads(potential_json[:potential_json.rfind("}")+1])
+                        raw_content = potential_json
+                    except:
+                        pass
+                # Also try: if content starts with "think" or "Thinking" (case insensitive)
+                # strip everything before the first {
+                if raw_content.lstrip().lower().startswith("think"):
+                    first_brace = raw_content.find("{")
+                    if first_brace > 0:
+                        raw_content = raw_content[first_brace:]
+            # AGGRESSIVE: If still not starting with {, find first { and use that
+            if raw_content and not raw_content.startswith("{"):
+                first_brace = raw_content.find("{")
+                import logging as _log
+                _log.getLogger(__name__).debug("_local_chat_json: before aggressive extract - first_brace=%d, content_start=%s", first_brace, raw_content[:100])
+                if first_brace > 0:
+                    raw_content = raw_content[first_brace:]
+                    _log.getLogger(__name__).debug("_local_chat_json: after aggressive extract - new content: %s", raw_content[:100])
+            import logging as _log
+            _log.getLogger(__name__).debug("_local_chat_json: after strip (len=%d): %s", len(raw_content), raw_content[:500])
             if not raw_content:
                 return None
             # Extract and parse JSON object
@@ -254,8 +298,8 @@ class QwenBridge:
             # T1 must be JSON — if we can't parse it, fall back to deterministic path
             import logging as _log
             _log.getLogger(__name__).debug(
-                "_local_chat_json: model returned non-JSON T1 response (len=%d), "
-                "falling back to deterministic path", len(raw_content)
+                "_local_chat_json: model returned non-JSON T1 response (len=%d): %s",
+                len(raw_content), raw_content[:500]
             )
             return None
         except Exception as exc:
@@ -278,10 +322,10 @@ class QwenBridge:
             self.last_t1_skip_reason = f"deterministic_confidence_{confidence:.2f}"
             return None
         system = (
-            "You are an enhanced bounded T1 intent interface for JIMS-AI. "
-            "Return only JSON. You may classify ambiguity, tone, and intent. "
-            "You must not execute, retrieve, reason, plan, or invent. "
-            "Handle multilingual and chaotic inputs appropriately and preserve the original language while providing structured output."
+            "You are an intent classifier. Return only JSON with target_ir and confidence. "
+            "Allowed targets: WORKSPACE_QUERY, FETCH_DOCUMENT, SYSTEM_DIAGNOSTIC, CODE_GENERATE, "
+            "RUN_CANVAS, RUN_INVENTION, GENERAL_FACT, EMOTIONAL_CATCH, META_INQUIRY. "
+            "Do not reason or explain. Output only the JSON object."
         )
         user = json.dumps(
             {

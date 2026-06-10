@@ -208,7 +208,10 @@ class JimsAIPipeline:
                 continue
             if not self.production._visible_to_scope(signature, workspace_id=request.workspace_id, user_id=request.user_id):
                 continue
-            score = self._lexical_signature_score(signature, query_terms)
+            try:
+                score = self._lexical_signature_score(signature, query_terms)
+            except Exception:
+                continue
             if score >= 1:
                 scored.append((score, signature.confidence.score, signature.created_at, signature))
         scored.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
@@ -231,11 +234,11 @@ class JimsAIPipeline:
 
     def _lexical_signature_score(self, signature, query_terms: set[str]) -> int:
         haystack_parts = [
-            signature.raw_excerpt.lower(),
-            " ".join(signature.abstraction_tags).lower(),
-            " ".join(entity.name for entity in signature.structured.entities).lower(),
-            " ".join(f"{relation.subject} {relation.predicate} {relation.object}" for relation in signature.structured.relations).lower(),
-            " ".join(f"{link.cause} {link.effect}" for link in signature.structured.causal_chain).lower(),
+            (signature.raw_excerpt or "").lower(),
+            " ".join(signature.abstraction_tags or []).lower(),
+            " ".join(entity.name for entity in (signature.structured.entities or []) if hasattr(entity, "name")).lower(),
+            " ".join(f"{relation.subject} {relation.predicate} {relation.object}" for relation in (signature.structured.relations or []) if hasattr(relation, "subject")).lower(),
+            " ".join(f"{link.cause} {link.effect}" for link in (signature.structured.causal_chain or []) if hasattr(link, "cause")).lower(),
         ]
         haystack = " ".join(haystack_parts)
         return sum(1 for term in query_terms if term in haystack)

@@ -97,7 +97,10 @@ class GenerateResponse(BaseModel):
 # Helpers
 # ---------------------------------------------------------------------------
 def _strip_think(text: str) -> str:
-    return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+    # Qwen3 outputs think...done or </think>...</think> blocks
+    text = re.sub(r"think.*?done", "", text, flags=re.DOTALL).strip()
+    text = re.sub(r"think.*?done", "", text, flags=re.DOTALL).strip()
+    return text.strip()
 
 def _extract_json(text: str) -> str:
     s, e = text.find("{"), text.rfind("}")

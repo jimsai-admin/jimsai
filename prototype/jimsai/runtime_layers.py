@@ -62,7 +62,11 @@ DOCUMENT_FACT_PREDICATES = {
     "has_role",
     "is_building",
 }
-USER_PROFILE_QUERY_TOKENS = {"i", "me", "my", "mine", "myself", "name", "profile", "know", "remember"}
+USER_PROFILE_QUERY_TOKENS: frozenset[str] = frozenset()
+# USER_PROFILE_QUERY_TOKENS intentionally empty — memory recall detection uses
+# ir.scope_constraints.get("profile_query") (set by SemanticCompilerRuntime via
+# embedding similarity + structural patterns) which works across all languages.
+# English token matching was removed to avoid false negatives on non-English queries.
 IMPORTANT_SHORT_QUERY_TERMS = {"ai", "ui", "ux", "db", "t1", "t2", "r2"}
 
 

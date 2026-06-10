@@ -143,8 +143,8 @@ class MultiIndexRetrievalEngine:
                 for relation in sig.structured.relations:
                     if relation.subject.lower() != "user":
                         continue
-                    relation_terms = set(re.findall(r"[a-z0-9]+", relation.predicate.lower()))
-                    relation_terms.update(re.findall(r"[a-z0-9]+", relation.object.lower()))
+                    relation_terms = set(re.findall(r"\w+", relation.predicate.lower(), flags=re.UNICODE))
+                    relation_terms.update(re.findall(r"\w+", relation.object.lower(), flags=re.UNICODE))
                     overlap = query_terms & relation_terms
                     if overlap:
                         matched_terms.update(overlap)
@@ -255,9 +255,10 @@ class MultiIndexRetrievalEngine:
         return final
 
     def _query_phrases(self, query: str) -> set[str]:
+        # Unicode-aware tokenization — preserves non-Latin scripts (Arabic, CJK, Yoruba, etc.)
         tokens = [
             token
-            for token in re.findall(r"[a-z0-9_+\-.#]+", query.lower())
+            for token in re.findall(r"[\w_+\-.#]+", query.lower(), flags=re.UNICODE)
             if len(token) >= 3
         ]
         phrases: set[str] = set()

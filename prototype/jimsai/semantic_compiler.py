@@ -19,8 +19,12 @@ def _is_document_wide_relation(predicate: str) -> bool:
 # Intent classification is now embedding-based (see intent_classifier.py)
 GENERATION_ACTION_TOKENS = {"write", "create", "build", "generate", "make", "draw", "produce", "implement", "scaffold", "want"}
 CODE_CAPABILITY_TOKENS = {
-    "api", "bug", "class", "code", "debug", "fastapi", "function", "javascript",
-    "library", "package", "python", "react", "refactor", "sdk", "test", "tests", "typescript",
+    # Language-agnostic code concepts — NOT specific language names
+    "api", "bug", "class", "code", "debug", "function", "library",
+    "package", "refactor", "sdk", "test", "tests", "algorithm",
+    "interface", "module", "method", "endpoint", "query", "schema",
+    "struct", "enum", "type", "async", "callback", "promise", "loop",
+    "variable", "constant", "parameter", "argument", "return",
 }
 CODE_DESIGN_TOKENS = {"calls", "consideration", "considerations", "design", "external", "fetch", "http", "safe", "security", "service"}
 IMAGE_CAPABILITY_TOKENS = {"image", "picture", "photo", "logo", "poster", "illustration", "dashboard"}
@@ -157,27 +161,20 @@ def _canonical_token(token: str) -> str:
     if not token:
         return ""
     slang_map = {
-        "rcgnz": "recognize",
-        "phshng": "phishing",
-        "mssg": "message",
+        # Universal abbreviations — not language-specific
         "msg": "message",
         "txt": "text",
-        "pymt": "payment",
-        "crd": "card",
-        "acct": "account",
         "pwd": "password",
         "usr": "user",
         "dev": "developer",
         "app": "application",
-        "pythn": "python",
-        "pyton": "python",
+        # Common typos for universal technical terms
         "functon": "function",
         "functin": "function",
         "tesst": "test",
         "tessts": "tests",
         "uplod": "upload",
         "fle": "file",
-        "xqz": "overwhelmed",
     }
     t_lower = token.lower()
     if t_lower in slang_map:
@@ -189,9 +186,13 @@ def _canonical_token(token: str) -> str:
 
 
 class _FallbackClassifier:
-    """Used when sentence-transformers is not available (e.g. Lambda).
-    Always routes through the Modal Embedding Service — no local models.
+    """Intent classifier that routes through the Modal Embedding Service.
+
+    Uses embedding similarity against semantic concept prototypes — no hardcoded
+    language patterns. All prototypes describe the *concept* the user intends,
+    not the specific words they use, so this works across all languages.
     """
+
     def __init__(self):
         import os
         self.api_url = os.getenv("JIMS_EMBEDDING_SERVICE_URL", "").strip().rstrip("/")
@@ -199,87 +200,113 @@ class _FallbackClassifier:
             os.getenv("JIMS_MODAL_API_KEY", "")
             or os.getenv("JIMS_EMBEDDING_SERVICE_TOKEN", "")
         ).strip()
-        
+
+        # ── IR prototype descriptions ──────────────────────────────────────
+        # Each value describes the CONCEPT behind the IR target.
+        # No hardcoded language samples — the embedding model handles translation.
         self.ir_prototypes = {
             "FETCH_DOCUMENT": (
-                "fetch retrieve download upload attach file document export save read open import load gba fifipamọ nweta chekwaa samu ajiye "
-                "télécharger document récupérer archivo descargar"
+                "Retrieve, download, open, or access a file, document, attachment, or stored artifact. "
+                "The user wants to get something that already exists."
             ),
-            "SYSTEM_DIAGNOSTIC": "system error status crash failure bug log trace debug issue diagnostic exception problem yọọda nye aka koma diagnostic crash erreur",
+            "SYSTEM_DIAGNOSTIC": (
+                "Diagnose a system error, crash, bug, failure, or unexpected behaviour. "
+                "The user is reporting or investigating a technical problem."
+            ),
             "WORKSPACE_QUERY": (
-                "workspace database db affects changed impact query what happens if codebase relation dependency effect consequence causation "
-                "base de données consulta"
+                "Query or recall information from stored memory, personal facts, prior conversations, "
+                "or the user's own workspace. The user wants to retrieve something JimsAI already knows "
+                "or has been told. Includes asking about the user's name, preferences, projects, history, "
+                "or anything previously shared."
             ),
             "CODE_GENERATE": (
-                "generate code write function method API create script implementation logic python javascript ruby java cpp testing tests koodu kodi "
-                "générer du code python écrire une fonction python generar código python escribir una función python "
-                "编写用于排序的Python函数 Python代码生成 ソート用のPython関数を書いてください Pythonコード生成 "
-                "اكتب دالة Python للفرز توليد رمز Python सॉर्टिंग के लिए Python फ़ंक्शन लिखें Python कोड उत्पन्न करें"
+                "Write, generate, create, or implement source code, a function, algorithm, script, "
+                "query, or program in any programming language or data format."
             ),
-            "RUN_CANVAS": "run analyze deep codebase synthesis comprehensive corpus investigation background execution canvas",
-            "RUN_INVENTION": "invent design novel architecture create blueprint prototype strategy plan original innovative solution invention",
-            "GENERAL_FACT": "general knowledge define explain concept understand information fact learning educational reference",
+            "RUN_CANVAS": (
+                "Analyse, synthesise, or investigate a codebase, corpus, or large body of information "
+                "through deep background processing."
+            ),
+            "RUN_INVENTION": (
+                "Invent, design, architect, or prototype a novel solution, system, or strategy. "
+                "The user wants original creative or technical output."
+            ),
+            "GENERAL_FACT": (
+                "Answer a factual question, explain a concept, define a term, or perform a calculation. "
+                "The user wants a direct informational answer."
+            ),
             "EMOTIONAL_CATCH": (
-                "help emotional support stress overwhelmed sad tired anxious upset frustrated struggling difficulty how overwhelm distressed worried concerned scared nervous confused broken unclear incoherent please xqz xyz abc taimako nye aka "
-                "Je suis stressé Je suis stressé et confus Estoy estresado Estoy estresado y confundido 我感到压力 我感到压力和困惑 ストレスを感じています ストレスを感じていて、混乱しています "
-                "أشعر بالتوتر أشعر بالتوتر والارتباك मैं तनावग्रस्त हूँ मैं तनावग्रस्त और भ्रमित हूँ"
+                "Respond to emotional distress, confusion, overwhelm, frustration, or a request for "
+                "support, comfort, or human-like understanding."
             ),
-            "META_INQUIRY": "meta about yourself reasoning explain sources confidence introspection self know capability awareness",
-            "OP_ESCAPE_TO_SANDBOX": "zzzz qqqq unknown random nonsense xxxx yyyy wwww vvvv",
+            "META_INQUIRY": (
+                "Ask about JimsAI itself: its capabilities, reasoning, sources, confidence, or how it works."
+            ),
+            "OP_ESCAPE_TO_SANDBOX": (
+                "Input that is unintelligible, random, nonsensical, or cannot be mapped to any intent."
+            ),
         }
-        self.profile_prototype_text = "tell me about myself my profile personal information who am i me"
-        self._prototype_embeddings = {}
-        self.profile_embedding = None
 
-    def _fetch_embedding(self, text: str, model_id: str = "intfloat/multilingual-e5-small") -> list[float]:
+        # ── Memory recall prototype ────────────────────────────────────────
+        # Covers any query where the user wants to retrieve something JimsAI
+        # was previously told or stored — profile facts, preferences, tasks,
+        # documents, prior discussions — not limited to "who am I" queries.
+        self.memory_recall_prototype = (
+            "Recall stored information, personal facts, user preferences, prior conversations, "
+            "remembered notes, tasks, or anything the user previously shared or asked JimsAI to store. "
+            "Retrieve what JimsAI knows about the user or their workspace from memory."
+        )
+
+        self._prototype_embeddings: dict[str, list[float]] = {}
+        self._memory_recall_embedding: list[float] | None = None
+        self._use_hash_fallback = False
+
+    # ── Embedding helpers ──────────────────────────────────────────────────
+
+    def _fetch_embedding(self, text: str) -> list[float]:
+        """Embed a single text via the Modal Embedding Service.
+
+        Falls back to a hash projection when the service is unavailable.
+        Hash projections are low-quality — callers should check _use_hash_fallback.
+        """
+        if self._use_hash_fallback:
+            return self._hash_embed(text, 256)
+
         import httpx
         url = f"{self.api_url}/embed"
-        payload = {"texts": [text], "model": "multilingual-e5-small", "purpose": "query"}
         headers = {}
         if self.api_token:
             headers["Authorization"] = f"Bearer {self.api_token}"
         try:
             response = httpx.post(
                 url,
-                json=payload,
+                json={"texts": [text], "model": "multilingual-e5-small", "purpose": "query"},
                 headers=headers,
                 timeout=float(os.getenv("JIMS_INTENT_EMBEDDING_TIMEOUT", "4") or "4"),
             )
             if response.status_code == 200:
                 data = response.json()
-                # Modal returns {"vectors": [[...]], "model": ..., "dimension": ...}
                 vectors = data.get("vectors")
-                if isinstance(vectors, list) and vectors:
-                    emb = vectors[0]
-                    if isinstance(emb, list):
-                        return emb
-                # Legacy fallback shapes
-                emb = data.get("data", [[]])[0].get("embedding", []) if isinstance(data.get("data"), list) else []
-                if emb:
-                    return emb
+                if isinstance(vectors, list) and vectors and isinstance(vectors[0], list):
+                    return vectors[0]
         except Exception:
             pass
-        try:
-            from .encoder.dual_encoder import hash_embedding
-            return hash_embedding(text, 768)
-        except ImportError:
-            try:
-                from .encoder import hash_embedding
-                return hash_embedding(text, 768)
-            except ImportError:
-                return [0.0] * 768
+        return self._hash_embed(text, 256)
 
-    def _fetch_embeddings(self, texts: list[str], model_id: str = "intfloat/multilingual-e5-small") -> list[list[float]]:
-        import httpx
+    def _fetch_embeddings(self, texts: list[str]) -> list[list[float]]:
+        """Embed a batch of texts via the Modal Embedding Service."""
         if not texts:
             return []
-        url = f"{self.api_url}/embed"
+        if self._use_hash_fallback:
+            return [self._hash_embed(t, 256) for t in texts]
+
+        import httpx
         headers = {}
         if self.api_token:
             headers["Authorization"] = f"Bearer {self.api_token}"
         try:
             response = httpx.post(
-                url,
+                f"{self.api_url}/embed",
                 json={"texts": texts, "model": "multilingual-e5-small", "purpose": "document"},
                 headers=headers,
                 timeout=float(os.getenv("JIMS_INTENT_EMBEDDING_TIMEOUT", "6") or "6"),
@@ -289,113 +316,252 @@ class _FallbackClassifier:
                 vectors = data.get("vectors") or data.get("embeddings")
                 if isinstance(vectors, list) and len(vectors) == len(texts):
                     return vectors
-                rows = data.get("data")
-                if isinstance(rows, list) and len(rows) == len(texts):
-                    extracted = [row.get("embedding", []) if isinstance(row, dict) else [] for row in rows]
-                    if all(extracted):
-                        return extracted
         except Exception:
             pass
+        return [self._hash_embed(t, 256) for t in texts]
+
+    @staticmethod
+    def _hash_embed(text: str, dim: int) -> list[float]:
         try:
-            from .encoder import hash_embedding
-            return [hash_embedding(text, 768) for text in texts]
+            from .encoder.dual_encoder import hash_embedding
+            return hash_embedding(text, dim)
         except ImportError:
             try:
-                from .encoder.dual_encoder import hash_embedding
-                return [hash_embedding(text, 768) for text in texts]
+                from .encoder import hash_embedding
+                return hash_embedding(text, dim)
             except ImportError:
-                return [[0.0] * 768 for _ in texts]
+                return [0.0] * dim
 
-    def _get_prototype_embeddings(self):
-        if not self._prototype_embeddings:
-            targets = list(self.ir_prototypes.keys())
-            texts = ["passage: " + self.ir_prototypes[target] for target in targets]
-            vectors = self._fetch_embeddings(texts)
-            for ir_target, emb in zip(targets, vectors):
-                self._prototype_embeddings[ir_target] = emb
+    @staticmethod
+    def _cosine(v1: list[float], v2: list[float]) -> float:
+        import math
+        dot = sum(a * b for a, b in zip(v1, v2))
+        n1 = math.sqrt(sum(a * a for a in v1)) or 1.0
+        n2 = math.sqrt(sum(b * b for b in v2)) or 1.0
+        return dot / (n1 * n2)
+
+    # ── Prototype caching ──────────────────────────────────────────────────
+
+    def _get_prototype_embeddings(self) -> dict[str, list[float]]:
+        if self._prototype_embeddings:
+            return self._prototype_embeddings
+
+        targets = list(self.ir_prototypes.keys())
+        # Use "passage: " prefix for asymmetric retrieval (document side)
+        texts = ["passage: " + self.ir_prototypes[t] for t in targets]
+        vectors = self._fetch_embeddings(texts)
+
+        for target, vec in zip(targets, vectors):
+            self._prototype_embeddings[target] = vec
+
+        # Quality check — if embeddings are all near-identical, the service
+        # returned garbage. Fall back to hash projections.
+        if len(self._prototype_embeddings) >= 4:
+            embs = list(self._prototype_embeddings.values())
+            high_sim = sum(
+                1 for i, e1 in enumerate(embs)
+                for e2 in embs[i + 1:]
+                if self._cosine(e1, e2) > 0.92
+            )
+            total_pairs = len(embs) * (len(embs) - 1) // 2
+            if total_pairs and high_sim / total_pairs > 0.5:
+                import logging
+                logging.getLogger("jimsai.classifier").warning(
+                    "Embedding service returned near-identical vectors — switching to hash fallback."
+                )
+                self._prototype_embeddings.clear()
+                self._use_hash_fallback = True
+                for target, text in self.ir_prototypes.items():
+                    self._prototype_embeddings[target] = self._hash_embed("passage: " + text, 256)
+
         return self._prototype_embeddings
 
-    def _get_profile_embedding(self):
-        if self.profile_embedding is None:
-            self.profile_embedding = self._fetch_embedding("passage: " + self.profile_prototype_text)
-        return self.profile_embedding
+    def _get_memory_recall_embedding(self) -> list[float]:
+        if self._memory_recall_embedding is None:
+            self._get_prototype_embeddings()  # trigger quality check first
+            self._memory_recall_embedding = self._fetch_embedding(
+                "passage: " + self.memory_recall_prototype
+            )
+        return self._memory_recall_embedding
+
+    # ── Public interface ───────────────────────────────────────────────────
 
     def classify_intent(self, query: str) -> tuple[str, float]:
+        """Return (ir_target, confidence) for the given query."""
+        prototypes = self._get_prototype_embeddings()
+        if not prototypes:
+            return "OP_ESCAPE_TO_SANDBOX", 0.0
+
         query_emb = self._fetch_embedding("query: " + query)
         if not query_emb or all(v == 0.0 for v in query_emb):
             return "OP_ESCAPE_TO_SANDBOX", 0.0
-        
-        import math
-        def cosine_similarity(v1, v2):
-            dot = sum(a * b for a, b in zip(v1, v2))
-            norm1 = math.sqrt(sum(a * a for a in v1))
-            norm2 = math.sqrt(sum(b * b for b in v2))
-            if norm1 == 0 or norm2 == 0:
-                return 0.0
-            return dot / (norm1 * norm2)
-        
+
         best_ir = "OP_ESCAPE_TO_SANDBOX"
         best_score = 0.0
-        
-        prototypes = self._get_prototype_embeddings()
         for ir_target, proto_emb in prototypes.items():
-            score = cosine_similarity(query_emb, proto_emb)
+            score = self._cosine(query_emb, proto_emb)
             if score > best_score:
                 best_score = score
                 best_ir = ir_target
-                
+
         return best_ir, round(max(0.0, min(1.0, best_score)), 4)
 
-    def is_profile_query(self, query: str, threshold: float = 0.70) -> bool:
+    def is_memory_recall_query(self, query: str, threshold: float = 0.55) -> bool:
+        """Return True if the query is asking to recall something from stored memory.
+
+        This covers all user-stored facts — profile, preferences, documents,
+        tasks, prior conversations — not just "what is my name?" style queries.
+        Works across all languages via embedding similarity.
+        """
+        self._get_prototype_embeddings()  # trigger quality check
+        effective_threshold = 0.20 if self._use_hash_fallback else threshold
+
         query_emb = self._fetch_embedding("query: " + query)
         if not query_emb or all(v == 0.0 for v in query_emb):
             return False
-        
-        import math
-        def cosine_similarity(v1, v2):
-            dot = sum(a * b for a, b in zip(v1, v2))
-            norm1 = math.sqrt(sum(a * a for a in v1))
-            norm2 = math.sqrt(sum(b * b for b in v2))
-            if norm1 == 0 or norm2 == 0:
-                return 0.0
-            return dot / (norm1 * norm2)
-            
-        profile_emb = self._get_profile_embedding()
-        score = cosine_similarity(query_emb, profile_emb)
-        return score > threshold
+
+        recall_emb = self._get_memory_recall_embedding()
+        score = self._cosine(query_emb, recall_emb)
+        return score > effective_threshold
+
+    def is_profile_query(self, query: str, threshold: float = 0.55) -> bool:
+        """Alias for is_memory_recall_query — kept for backward compatibility."""
+        return self.is_memory_recall_query(query, threshold)
 
     def get_intent_scores(self, query: str) -> dict[str, float]:
+        """Return similarity scores against all IR prototype embeddings."""
         query_emb = self._fetch_embedding("query: " + query)
         if not query_emb or all(v == 0.0 for v in query_emb):
-            return {ir_target: 0.0 for ir_target in self.ir_prototypes}
-            
-        import math
-        def cosine_similarity(v1, v2):
-            dot = sum(a * b for a, b in zip(v1, v2))
-            norm1 = math.sqrt(sum(a * a for a in v1))
-            norm2 = math.sqrt(sum(b * b for b in v2))
-            if norm1 == 0 or norm2 == 0:
-                return 0.0
-            return dot / (norm1 * norm2)
-            
-        scores = {}
+            return {t: 0.0 for t in self.ir_prototypes}
+
         prototypes = self._get_prototype_embeddings()
-        for ir_target, proto_emb in prototypes.items():
-            score = cosine_similarity(query_emb, proto_emb)
-            scores[ir_target] = round(max(0.0, min(1.0, score)), 4)
-        return scores
+        return {
+            t: round(max(0.0, min(1.0, self._cosine(query_emb, emb))), 4)
+            for t, emb in prototypes.items()
+        }
+
+
+class _LLMClassifier:
+    """Intent classifier using LLM (QwenBridge) for robust multilingual understanding.
+
+    Strategy (in order):
+    1. LLM via QwenBridge — handles any language, mixed intent, typos.
+    2. Embedding classifier (_FallbackClassifier) — semantic prototype matching,
+       language-agnostic, no hardcoded patterns.
+    3. Structural token analysis — lightweight fallback, Unicode-aware.
+
+    No hardcoded language-specific regex patterns. Everything is embedding or
+    semantics-based so it works equally well in English, French, Yoruba, Arabic,
+    Chinese, etc.
+    """
+
+    def __init__(self, qwen_bridge: Any) -> None:
+        self.qwen_bridge = qwen_bridge
+        # Lazy-init embedding classifier (shares Modal service, no extra cost)
+        self._embedding_classifier: "_FallbackClassifier | None" = None
+
+    @property
+    def _embed_cls(self) -> "_FallbackClassifier":
+        if self._embedding_classifier is None:
+            self._embedding_classifier = _FallbackClassifier()
+        return self._embedding_classifier
+
+    def classify_intent(self, query: str) -> tuple[str, float]:
+        """Return (ir_target, confidence) for any query in any language."""
+        # 1. Try LLM — most accurate, handles any language and mixed intent
+        if self.qwen_bridge and self.qwen_bridge.qwen_enabled:
+            try:
+                import asyncio
+                loop = asyncio.new_event_loop()
+                try:
+                    result = loop.run_until_complete(
+                        self.qwen_bridge.infer_intent(query, {
+                            "target_ir": "WORKSPACE_QUERY",
+                            "confidence": 0.3,
+                            "scope_constraints": {},
+                            "execution_mode": "UNKNOWN",
+                            "intent_domain": "UNKNOWN",
+                        })
+                    )
+                finally:
+                    loop.close()
+                if result and isinstance(result, dict):
+                    ir = result.get("target_ir") or result.get("intent")
+                    conf = float(result.get("confidence") or result.get("score") or 0.0)
+                    _VALID_IR = {
+                        "WORKSPACE_QUERY", "FETCH_DOCUMENT", "SYSTEM_DIAGNOSTIC",
+                        "CODE_GENERATE", "RUN_CANVAS", "RUN_INVENTION",
+                        "GENERAL_FACT", "EMOTIONAL_CATCH", "META_INQUIRY",
+                    }
+                    if ir in _VALID_IR and conf > 0.0:
+                        return ir, conf
+            except Exception:
+                pass
+
+        # 2. Embedding classifier — language-agnostic prototype matching
+        try:
+            return self._embed_cls.classify_intent(query)
+        except Exception:
+            pass
+
+        # 3. Minimal structural fallback — Unicode-aware, no language assumptions
+        return self._structural_classify(query)
+
+    def is_profile_query(self, query: str, threshold: float = 0.55) -> bool:
+        """Return True if query asks to recall something from stored memory.
+
+        Uses embedding similarity — no hardcoded language patterns.
+        Covers profile facts, preferences, stored notes, anything the user
+        previously shared with JimsAI.
+        """
+        try:
+            return self._embed_cls.is_memory_recall_query(query, threshold)
+        except Exception:
+            return False
+
+    def _structural_classify(self, query: str) -> tuple[str, float]:
+        """Minimal Unicode-aware structural classification — last resort only."""
+        raw = query.lower()
+        tokens = set(re.findall(r"[\w\.]+", raw, flags=re.UNICODE))
+
+        # Math: numbers + operators
+        if re.search(r"\d+\s*[\+\-\*/]\s*\d+|\d+", raw) and re.search(r"[\+\-\*/=]|solve|calculate|compute", raw):
+            return "GENERAL_FACT", 0.85
+
+        # Code: structural syntax signals that work across all languages
+        code_signals = {"def ", "class ", "import ", "function ", "return ", "```",
+                        "fn ", "const ", "let ", "var ", "func ", "fun ", "pub "}
+        if any(sig in query for sig in code_signals):
+            return "CODE_GENERATE", 0.90
+
+        # File operations: universal verbs
+        file_tokens = {"fetch", "download", "upload", "attach", "file", "document", "read", "open", "import", "load"}
+        if tokens & file_tokens:
+            return "FETCH_DOCUMENT", 0.65
+
+        return "WORKSPACE_QUERY", 0.50
 
 
 class SemanticCompilerRuntime:
     def __init__(self, confidence_threshold: float = 0.50) -> None:
         self.confidence_threshold = confidence_threshold
         self._classifier: Any = None  # Lazy initialization
+        self._qwen_bridge: Any = None
+
+    @property
+    def qwen_bridge(self) -> Any:
+        """Lazy initialize QwenBridge for intent classification."""
+        if self._qwen_bridge is None:
+            from .model_bridge import QwenBridge
+            self._qwen_bridge = QwenBridge()
+        return self._qwen_bridge
 
     @property
     def classifier(self) -> Any:
-        """Lazy initialize classifier — always uses Modal Embedding Service externally."""
+        """Lazy initialize classifier — prefers QwenBridge (LLM) for robust multilingual understanding,
+        falls back to deterministic scope analysis, then embeddings as last resort."""
         if self._classifier is None:
-            self._classifier = _FallbackClassifier()
+            self._classifier = _LLMClassifier(self.qwen_bridge)
         return self._classifier
 
     def _scope_from_tokens(self, tokens: list[str], raw_input: str) -> dict[str, Any]:
@@ -471,7 +637,7 @@ class SemanticCompilerRuntime:
         _num_count = len(re.findall(r"\d+(?:\.\d+)?", raw_input))
         if _num_count >= 1 and (_has_symbolic_op or _has_word_op):
             return "GENERAL_FACT", 0.92, "math_science"
-        if "def " in raw_input or "class " in raw_input or "import " in raw_input or "return " in raw_input or "function " in raw_input or "```python" in raw_lower:
+        if "def " in raw_input or "class " in raw_input or "import " in raw_input or "return " in raw_input or "function " in raw_input or "```" in raw_input:
             return "CODE_GENERATE", 0.99, "coding"
         has_generation_action = bool(token_set & GENERATION_ACTION_TOKENS)
         if (token_set & CODE_CAPABILITY_TOKENS) and (
@@ -495,7 +661,7 @@ class SemanticCompilerRuntime:
             strong_code_signal = bool(
                 (token_set & CODE_CAPABILITY_TOKENS) and (has_generation_action or bool(token_set & {"bug", "debug", "refactor", "test", "tests"}))
                 or "def " in raw_input or "class " in raw_input or "async " in raw_input
-                or bool(token_set & {"python", "javascript", "typescript", "async", "asyncio", "queue", "function", "method", "class"})
+                or bool(token_set & {"async", "asyncio", "queue", "function", "method", "class"})
             )
             if not strong_code_signal:
                 return "WORKSPACE_QUERY", 0.28, "agentic_task"
@@ -517,27 +683,14 @@ class SemanticCompilerRuntime:
         scope = self._scope_from_tokens(tokens, normalized_input)
         v9_override = self._v9_capability_override(tokens, normalized_input)
 
-        # === PROFILE WRITE FAST PATH: "My name is X", "Please remember", etc. ===
-        # This runs BEFORE the embedding classifier because hash-based embeddings
-        # mis-classify these as EMOTIONAL_CATCH (the word "please" scores near the
-        # emotional prototype).  Structural patterns are more reliable than hash
-        # projections for this specific class of query.
-        _PROFILE_WRITE_RE = re.compile(
-            r"\bmy\s+name\s+is\b"
-            r"|\bplease\s+remember\b"
-            r"|\bi\s+am\s+(?:a|an)\s+\w"
-            r"|\bi\s+work\s+at\b"
-            r"|\bi\s+am\s+building\b"
-            r"|\bremember\s+(?:that\s+)?(?:my|i\s+am)\b",
-            re.IGNORECASE,
-        )
-        if _PROFILE_WRITE_RE.search(raw_input):
-            target_ir = "WORKSPACE_QUERY"
-            scope["profile_write"] = True
-            scope["profile_query"] = True
-            confidence = 0.88
-            structural_fast_path = True
-        elif v9_override and v9_override[1] >= 0.9:
+        # === MEMORY WRITE / RECALL FAST PATH ======================================
+        # Detection strategy (no hardcoded language patterns):
+        # 1. Write: v9 capability override already handles most generation.
+        #    Profile writes are detected later via is_profile_query on the result.
+        # 2. Recall: classifier.classify_intent returns WORKSPACE_QUERY when the
+        #    embedding matches the "recall stored information" prototype.
+        # 3. Explicit: v9 high-confidence override fires first for code/math.
+        if v9_override and v9_override[1] >= 0.9:
             target_ir, confidence, capability_hint = v9_override
             scope["v9_capability_hint"] = capability_hint
             structural_fast_path = True
@@ -563,10 +716,10 @@ class SemanticCompilerRuntime:
                 target_ir = "WORKSPACE_QUERY"
                 confidence = max(confidence, 0.22)
         
-        # === PROFILE QUERY DETECTION: Always route to WORKSPACE_QUERY ===
-        # Threshold lowered from 0.85 to 0.55: the 0.85 target was calibrated for
-        # real e5-small embeddings.  When hash projections are active (embedding
-        # service unavailable), the cosine scores are lower and 0.85 is never hit.
+        # === MEMORY RECALL DETECTION: Route to WORKSPACE_QUERY ===
+        # classifier.is_profile_query uses embedding similarity against the
+        # "recall stored information" prototype — covers any user-stored fact
+        # (profile, preferences, tasks, documents, prior conversations) in any language.
         is_profile = False if structural_fast_path else self.classifier.is_profile_query(canonical_query or raw_input, threshold=0.55)
         if is_profile:
             scope["profile_query"] = True
@@ -638,3 +791,4 @@ class SemanticCompilerRuntime:
             context_inherited=context_inherited,
             context_boosted=context_boosted,
         )
+

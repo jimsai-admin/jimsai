@@ -74,88 +74,36 @@ async def startup_warm_classifier() -> None:
         # Re-raise so the process exits cleanly rather than silently serving bad requests
         raise
     try:
-        # Access the compiler's classifier to trigger lazy init
+        # Access the classifier to trigger lazy init
         classifier = pipeline.compiler.classifier
-        # Run the two embedding calls in a thread pool with a timeout guard.
-        # If the Modal embedding service is cold (first startup), these will
-        # fall back to hash projections — that's fine, real embeddings load async.
-        loop = asyncio.get_event_loop()
-        try:
-            await asyncio.wait_for(
-                loop.run_in_executor(None, classifier._get_prototype_embeddings),
-                timeout=30.0
-            )
-            await asyncio.wait_for(
-                loop.run_in_executor(None, classifier._get_profile_embedding),
-                timeout=15.0
-            )
-            _logger.info("Intent classifier prototype embeddings pre-warmed successfully.")
-        except asyncio.TimeoutError:
-            _logger.warning("Startup classifier warm timed out — will warm on first query (non-fatal).")
+        # Pre-warm the embedding classifier if it has the method (i.e. _FallbackClassifier
+        # is available via _LLMClassifier._embed_cls). Non-fatal if not available.
+        embed_cls = getattr(classifier, "_embed_cls", None) or getattr(classifier, "_embedding_classifier", None)
+        if embed_cls is None and hasattr(classifier, "_get_prototype_embeddings"):
+            embed_cls = classifier  # direct _FallbackClassifier
+        if embed_cls is not None:
+            try:
+                await asyncio.wait_for(
+                    loop.run_in_executor(None, embed_cls._get_prototype_embeddings),
+                    timeout=30.0
+                )
+                await asyncio.wait_for(
+                    loop.run_in_executor(None, embed_cls._get_memory_recall_embedding),
+                    timeout=15.0
+                )
+                _logger.info("Intent classifier prototype embeddings pre-warmed successfully.")
+            except asyncio.TimeoutError:
+                _logger.warning("Startup classifier warm timed out — will warm on first query (non-fatal).")
+        else:
+            _logger.info("Classifier pre-warm skipped (LLM-first mode, no prototype embeddings to cache).")
     except Exception as exc:
-        # Non-fatal: first query will be slow but system still works
         _logger.warning("Startup classifier warm failed (non-fatal): %s", repr(exc))
 
-    # ── Embedding service health check (background — does NOT block startup) ─
-    # Run in a background task so the server accepts traffic immediately.
-    # The HF Space may take 60-90s to cold-start on a free tier, but queries
-    # still work (hash-projection fallback) while it warms up.
-    async def _check_embedding_service() -> None:
-        try:
-            from .jimsai.models import Modality as _Modality
-            adapter = getattr(pipeline.production, "multimodal", None)
-            if adapter is not None and hasattr(adapter, "encode"):
-                loop = asyncio.get_event_loop()
-                test_vector = await loop.run_in_executor(
-                    None, adapter.encode, "embedding service health check", _Modality.TEXT
-                )
-                if test_vector:
-                    _logger.info(
-                        "Embedding service verified: real vectors available (dim=%d). "
-                        "Semantic-first retrieval is active.",
-                        len(test_vector),
-                    )
-                else:
-                    _logger.warning(
-                        "Embedding service not yet returning vectors — retrieval using hash fallback. "
-                        "Run POST /v1/autonomous/reembed-hash once the service wakes up."
-                    )
-            else:
-                _logger.warning(
-                    "No multimodal encoder adapter configured — semantic retrieval disabled. "
-                    "Set JIMS_EMBEDDING_SERVICE_URL to enable real-vector retrieval."
-                )
-        except Exception as exc:
-            _logger.warning("Embedding service health check failed (non-fatal): %s", exc)
+    # Embedding service health is checked on first encode call — no blocking startup check needed.
+    # Use POST /v1/autonomous/reembed-hash after startup if Vectorize needs refreshing.
 
-    asyncio.create_task(_check_embedding_service())
-
-    # ── Modal AI service pre-warm (background) ───────────────────────────────
-    # Ping all Modal services so containers wake from scale-to-zero before the
-    # first real query arrives. Failures are non-fatal — services will cold-start
-    # on demand, just with extra latency on the first request.
-    async def _prewarm_modal_services() -> None:
-        import os as _os
-        import httpx as _httpx
-        _key = _os.getenv("JIMS_MODAL_API_KEY", "")
-        _headers = {"Authorization": f"Bearer {_key}"} if _key else {}
-        _services = {
-            "intent":      _os.getenv("JIMS_INTENT_SERVICE_URL", "").rstrip("/"),
-            "renderer":    _os.getenv("JIMS_RENDERER_SERVICE_URL", "").rstrip("/"),
-            "classification": _os.getenv("JIMS_CLASSIFICATION_SERVICE_URL", "").rstrip("/"),
-            "embedding":   _os.getenv("JIMS_EMBEDDING_SERVICE_URL", "").rstrip("/"),
-        }
-        async with _httpx.AsyncClient(timeout=90.0) as client:
-            for name, url in _services.items():
-                if not url:
-                    continue
-                try:
-                    r = await client.get(f"{url}/health", headers=_headers)
-                    _logger.info("Modal %s pre-warm: %s", name, r.json().get("status", r.status_code))
-                except Exception as exc:
-                    _logger.warning("Modal %s pre-warm failed (non-fatal): %s", name, repr(exc))
-
-    asyncio.create_task(_prewarm_modal_services())
+    # Modal services are pre-warmed by the client (test scripts, benchmark runner).
+    # Server startup is intentionally kept lightweight — no blocking Modal calls.
 
 
 class PasswordAuthRequest(BaseModel):

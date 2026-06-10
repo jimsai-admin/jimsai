@@ -252,15 +252,16 @@ class IntentService:
         # 6. Extract content
         content = completion["choices"][0]["message"]["content"]
 
-        # 7. Handle json_object response format
-        if request.response_format and request.response_format.get("type") == "json_object":
-            # Strip think tags
-            content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
-            # Extract JSON object
-            start = content.find("{")
-            end = content.rfind("}")
-            if start != -1 and end != -1 and end > start:
-                content = content[start:end + 1]
+            # 7. Handle json_object response format
+            if request.response_format and request.response_format.get("type") == "json_object":
+                # Strip think tags - Qwen3 outputs think...done
+                content = re.sub(r"think.*?done", "", content, flags=re.DOTALL).strip()
+                content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
+                # Extract JSON object
+                start = content.find("{")
+                end = content.rfind("}")
+                if start != -1 and end != -1 and end > start:
+                    content = content[start:end + 1]
 
         # 8. Build usage
         usage = {
