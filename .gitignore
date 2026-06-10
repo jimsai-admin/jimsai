@@ -38,7 +38,6 @@ test_results*.txt
 test_results/
 
 # Local scratch tests
-test_*.py
 tests/
 
 # Python artifacts
