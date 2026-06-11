@@ -1163,12 +1163,6 @@ class JimsAIPipeline:
             f"# Re-send this request when the service is available.\n"
         )
 
-    # _SCAFFOLD_TEMPLATES removed — code generation is handled entirely by the
-    # Modal Renderer (Qwen3-4B via bridge.invention_candidates). The renderer
-    # infers the correct language and idioms from the user's request without any
-    # hardcoded per-language template mapping.
-    _SCAFFOLD_TEMPLATES: dict[str, str] = {}  # kept for import compatibility only
-
     def _code_scaffold(self, query: str, lang: str) -> str:
         """Kept for backward compatibility — delegates to universal stub."""
         return self._generate_code_deterministic(query)
@@ -1181,15 +1175,23 @@ class JimsAIPipeline:
         return "default"
 
     def _response_format_hint(self, query: str) -> str:
+        """Detect requested output format from the query.
+
+        Uses format-specific structural markers (like the word "json", code
+        fence markers, table pipe characters) rather than vocabulary-based
+        matching. "json" and "table" are technical format names that appear
+        verbatim in queries regardless of the user's language.
+        """
         lowered = query.lower()
-        format_terms = (
-            "json",
-            "table",
-            "format",
-            "detailed",
-        )
-        found = [term for term in format_terms if term in lowered]
-        return ",".join(found) if found else "default"
+        # JSON and table are format names — they appear in any language
+        if "json" in lowered or "```json" in query:
+            return "json"
+        if "|" in query and re.search(r"\|\s*\w+\s*\|", query):
+            return "table"
+        # Structured format request patterns (structural, not vocabulary)
+        if re.search(r"```|\bformat\b|\bformatted\b", lowered):
+            return "structured"
+        return "default"
 
     async def record_feedback(self, request: FeedbackRequest) -> FeedbackResponse:
         self.feedback_events.append(request)

@@ -128,13 +128,19 @@ class MultiIndexRetrievalEngine:
                     score += 0.55
                     reasons.append("relation_index")
             if user_profile_query and sig.user_id == user_id:
+                # Check for user-profile relations: subject is "user" with structural predicate
                 profile_relations = {
                     relation.predicate
                     for relation in sig.structured.relations
                     if relation.subject.lower() == "user"
                     and (relation.predicate.startswith("has_") or relation.predicate.startswith("is_"))
                 }
-                profile_tags = {"user", "profile", "user_profile_training"} & set(sig.abstraction_tags)
+                # Check for profile-related abstraction tags — any tag that contains
+                # "profile" or "user" as a substring (language-neutral prefix check)
+                profile_tags = {
+                    tag for tag in sig.abstraction_tags
+                    if "profile" in tag.lower() or tag.lower() in {"user", "personal", "identity"}
+                }
                 if profile_relations or profile_tags:
                     score += 0.6
                     reasons.append("user_profile_memory")
