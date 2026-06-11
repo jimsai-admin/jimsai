@@ -18,20 +18,44 @@ from .models import (
 )
 
 
-def _tokens(value: str) -> set[str]:
-    return set(re.findall(r"[a-z0-9_+\-.#]+", value.lower()))
-
-
+# CAPABILITY_PROTOTYPES — semantic concept descriptions used as embedding targets.
+# These describe what each capability *means*, not what words trigger it.
+# The embedding model translates queries in any language into the same vector space.
 CAPABILITY_PROTOTYPES: dict[CapabilityKind, str] = {
-    CapabilityKind.MEMORY_CHAT: "remember retrieve explain answer stored project memory user profile prior sources context provenance",
-    CapabilityKind.WORLD_KNOWLEDGE: "latest current news web internet public facts weather prices schedules changing external source citation",
-    CapabilityKind.CODING: "code debug stack trace error package api function class test sandbox repository deploy implementation",
-    CapabilityKind.MATH_SCIENCE: "calculate compute evaluate solve equation arithmetic formula quantitative proof derive validate numeric scientific",
-    CapabilityKind.CREATIVE_TEXT: "write rewrite draft story poem script tone email proposal copy style creative wording",
-    CapabilityKind.IMAGE_GENERATION: "generate create edit image picture photo logo poster illustration visual asset",
-    CapabilityKind.AUDIO_GENERATION: "generate create voice speech audio sound music tts narration",
-    CapabilityKind.VIDEO_GENERATION: "generate create video animation clip movie storyboard motion",
-    CapabilityKind.AGENTIC_TASK: "agent automate browser click book send schedule deploy rollback task execute external action approval",
+    CapabilityKind.MEMORY_CHAT: (
+        "Retrieve stored information, recall prior conversations, access personal memory, "
+        "answer from what has already been learned or shared."
+    ),
+    CapabilityKind.WORLD_KNOWLEDGE: (
+        "Look up current facts, recent events, live data, or information from the public internet "
+        "that JimsAI has not been directly told."
+    ),
+    CapabilityKind.CODING: (
+        "Write, generate, debug, refactor, or explain source code, algorithms, queries, "
+        "or technical implementations in any programming language or data format."
+    ),
+    CapabilityKind.MATH_SCIENCE: (
+        "Perform calculations, solve equations, derive formulas, evaluate numeric or symbolic "
+        "expressions, or answer scientific and quantitative questions."
+    ),
+    CapabilityKind.CREATIVE_TEXT: (
+        "Write creative content: stories, poems, essays, marketing copy, scripts, emails, "
+        "or any original text in a particular tone or style."
+    ),
+    CapabilityKind.IMAGE_GENERATION: (
+        "Generate, create, or edit visual content: images, illustrations, photos, logos, "
+        "diagrams, or other visual assets."
+    ),
+    CapabilityKind.AUDIO_GENERATION: (
+        "Generate speech, voice narration, sound effects, or music."
+    ),
+    CapabilityKind.VIDEO_GENERATION: (
+        "Generate or edit video content, animations, or motion graphics."
+    ),
+    CapabilityKind.AGENTIC_TASK: (
+        "Execute a multi-step autonomous task: browse the web, send messages, book appointments, "
+        "deploy software, or perform actions in external systems."
+    ),
 }
 
 class CapabilityRouter:
@@ -62,63 +86,68 @@ class CapabilityRouter:
         self.classifier_timeout = float(get_env("JIMS_CAPABILITY_CLASSIFIER_TIMEOUT", "20") or "20")
 
     async def route(self, request: PipelineRequest, ir: SemanticIR, activation: ActivationDecision) -> tuple[CapabilityPlan, LayerResult]:
-        query = request.query.lower()
-        tokens = _tokens(request.query)
-        scores, signals = self._score_capabilities(query, tokens, activation)
-        signals["language_hint"] = self._language_hint(request.query)
-        structural_signals = signals.get("structural") if isinstance(signals.get("structural"), dict) else {}
-        strong_structural = bool(structural_signals) and max(float(value) for value in structural_signals.values()) >= 0.7
+        # Start with zero scores — no hardcoded structural keyword scoring.
+        # All scoring comes from: (1) embedding similarity, (2) zero-shot classifier, (3) LLM overlay.
+        scores: dict[CapabilityKind, float] = {kind: 0.0 for kind in CapabilityKind}
+        signals: dict[str, Any] = {}
+
+        # Only unambiguous syntax signals are applied before embedding — these are
+        # format-based (not vocabulary-based) so they work in any language.
+        if self._looks_like_numeric_math(request.query):
+            scores[CapabilityKind.MATH_SCIENCE] = 0.82
+            signals["structural"] = {CapabilityKind.MATH_SCIENCE.value: 0.82}
+        if re.search(r"```|\bdef\s+\w+|\bclass\s+\w+|\bimport\s+\w+|\bfn\s+\w+|\bfunc\s+\w+", request.query, re.MULTILINE):
+            scores[CapabilityKind.CODING] = max(scores[CapabilityKind.CODING], 0.78)
+            signals.setdefault("structural", {})[CapabilityKind.CODING.value] = 0.78
+
+        strong_structural = bool(signals.get("structural")) and max(
+            float(v) for v in signals["structural"].values()
+        ) >= 0.7
+
         semantic_scores = {} if strong_structural else await self._semantic_embedding_scores(request.query)
         if semantic_scores:
-            signals["semantic_embedding"] = {key.value: round(value, 4) for key, value in semantic_scores.items()}
+            signals["semantic_embedding"] = {k.value: round(v, 4) for k, v in semantic_scores.items()}
             for kind, value in semantic_scores.items():
                 scores[kind] = min(1.0, scores.get(kind, 0.0) + value * 1.1)
+
         classifier_scores = {} if strong_structural else await self._zero_shot_classifier_scores(request.query)
         if classifier_scores:
-            signals["zero_shot_classifier"] = {key.value: round(value, 4) for key, value in classifier_scores.items()}
-            structural_signals = signals.get("structural") if isinstance(signals.get("structural"), dict) else {}
-            accepted_classifier_scores: dict[CapabilityKind, float] = {}
-            for kind, value in classifier_scores.items():
-                if value < 0.55:
-                    continue
-                semantic_agrees = semantic_scores.get(kind, 0.0) >= 0.05
-                structural_agrees = bool(structural_signals.get(kind.value))
-                if semantic_agrees or structural_agrees:
-                    accepted_classifier_scores[kind] = value
-            if accepted_classifier_scores:
-                signals["zero_shot_classifier_accepted"] = {
-                    key.value: round(value, 4) for key, value in accepted_classifier_scores.items()
-                }
-            for kind, value in accepted_classifier_scores.items():
+            signals["zero_shot_classifier"] = {k.value: round(v, 4) for k, v in classifier_scores.items()}
+            accepted: dict[CapabilityKind, float] = {
+                kind: value
+                for kind, value in classifier_scores.items()
+                if value >= 0.55 and (
+                    semantic_scores.get(kind, 0.0) >= 0.05
+                    or signals.get("structural", {}).get(kind.value)
+                )
+            }
+            if accepted:
+                signals["zero_shot_classifier_accepted"] = {k.value: round(v, 4) for k, v in accepted.items()}
+            for kind, value in accepted.items():
                 scores[kind] = min(1.0, scores.get(kind, 0.0) + value * 0.88)
-        structural_signals = signals.get("structural") if isinstance(signals.get("structural"), dict) else {}
-        if structural_signals.get(CapabilityKind.CREATIVE_TEXT.value, 0.0) >= 0.6:
-            scores[CapabilityKind.MEMORY_CHAT] = min(scores[CapabilityKind.MEMORY_CHAT], max(scores[CapabilityKind.CREATIVE_TEXT] - 0.08, 0.0))
+
         if not any(value > 0.16 for value in scores.values()):
             if semantic_scores:
-                semantic_kind, semantic_value = max(semantic_scores.items(), key=lambda item: item[1])
-                scores[semantic_kind] = max(scores.get(semantic_kind, 0.0), min(0.24, 0.12 + semantic_value))
-                signals["fallback"] = f"low_confidence_semantic_{semantic_kind.value}"
+                top_kind, top_val = max(semantic_scores.items(), key=lambda x: x[1])
+                scores[top_kind] = max(scores.get(top_kind, 0.0), min(0.24, 0.12 + top_val))
+                signals["fallback"] = f"low_confidence_semantic_{top_kind.value}"
             else:
                 scores[CapabilityKind.MEMORY_CHAT] = 0.28
                 signals["fallback"] = "memory_chat"
+
         ranked = sorted(scores.items(), key=lambda item: (-item[1], item[0].value))
         kind = ranked[0][0] if ranked else CapabilityKind.MEMORY_CHAT
         top_score = ranked[0][1] if ranked else 0.0
         second_score = ranked[1][1] if len(ranked) > 1 else 0.0
 
-        # IR override: when the semantic compiler has high confidence that the
-        # request is code generation (CODE_GENERATE), trust that signal over the
-        # capability router's score — it has more query context. This prevents
-        # "Write a Python async task queue" from landing on agentic_task when
-        # the IR correctly identified it as CODE_GENERATE.
+        # IR override: trust the semantic compiler's CODE_GENERATE signal
         if ir.target_ir == "CODE_GENERATE" and kind != CapabilityKind.CODING:
             kind = CapabilityKind.CODING
             top_score = max(top_score, scores.get(CapabilityKind.CODING, 0.35))
 
         confidence = self._confidence(top_score, second_score)
         reason = self._reason_for(kind, signals)
-        secondary = [candidate for candidate, score in ranked[1:4] if score >= 0.44 and top_score - score <= 0.28]
+        secondary = [c for c, s in ranked[1:4] if s >= 0.44 and top_score - s <= 0.28]
 
         if self._should_adjudicate_with_llm(confidence, top_score, second_score, signals):
             overlay = await self._llm_overlay(request.query, ir, scores, signals)
@@ -129,21 +158,18 @@ class CapabilityRouter:
                     kind = overlay_kind
                     confidence = min(0.92, max(confidence, float(overlay_confidence)))
                     reason = str(overlay.get("reason") or reason)
-                    overlay_secondary = overlay.get("secondary") or []
-                    secondary = [item for item in overlay_secondary if isinstance(item, CapabilityKind) and item != kind][:3]
+                    secondary = [i for i in (overlay.get("secondary") or []) if isinstance(i, CapabilityKind) and i != kind][:3]
                     signals["llm_overlay"] = {
                         "kind": kind.value,
                         "confidence": round(confidence, 4),
-                        "secondary": [item.value for item in secondary],
+                        "secondary": [i.value for i in secondary],
                         "reason": reason,
                     }
 
         plan = self._plan_for(
-            kind,
-            confidence,
-            reason,
+            kind, confidence, reason,
             secondary_intents=secondary,
-            routing_signals={"scores": {key.value: round(value, 4) for key, value in scores.items()}, **signals},
+            routing_signals={"scores": {k.value: round(v, 4) for k, v in scores.items()}, **signals},
         )
         return plan, LayerResult(
             layer="V9_capability_router",
@@ -267,23 +293,16 @@ class CapabilityRouter:
         tokens: set[str],
         activation: ActivationDecision,
     ) -> tuple[dict[CapabilityKind, float], dict[str, Any]]:
-        scores = {kind: 0.0 for kind in CapabilityKind}
-        signals: dict[str, Any] = {}
-        structural = self._structural_scores(query, tokens, activation)
-        signals["structural"] = {key.value: round(value, 4) for key, value in structural.items() if value > 0}
-        for kind, value in structural.items():
-            scores[kind] = value
-        return {kind: min(value, 1.0) for kind, value in scores.items()}, signals
+        # Kept for backward compatibility — route() no longer calls this.
+        # Returns empty scores; all scoring is done inline in route().
+        return {kind: 0.0 for kind in CapabilityKind}, {}
 
     def _looks_like_numeric_math(self, query: str) -> bool:
-        numeric_count = len(re.findall(r"\d+(?:\.\d+)?", query))
-        has_symbolic_op = bool(re.search(r"[+\-*/=]", query))
-        word_ops = (
-            r"\b(multiplied\s+by|times|divided\s+by|over|plus|added\s+to|minus|"
-            r"subtracted\s+from|to\s+the\s+power\s+of|squared|cubed)\b"
+        """Detect numeric math via structural signals only — digits + operators."""
+        return bool(
+            re.search(r"\d", query)
+            and re.search(r"[+\-*/=]|(?<!\w)(solve|calculate|compute|evaluate)(?!\w)", query, re.IGNORECASE)
         )
-        has_word_op = bool(re.search(word_ops, query, re.IGNORECASE))
-        return numeric_count >= 1 and (has_symbolic_op or has_word_op)
 
     def _confidence(self, top_score: float, second_score: float) -> float:
         if top_score <= 0:
@@ -292,18 +311,20 @@ class CapabilityRouter:
         return round(min(0.94, max(0.5, 0.48 + top_score * 0.45 + margin * 0.35)), 4)
 
     def _reason_for(self, kind: CapabilityKind, signals: dict[str, Any]) -> str:
-        structural = signals.get("structural") if isinstance(signals.get("structural"), dict) else {}
-        if structural.get(kind.value):
-            return f"Structural and semantic routing selected {kind.value}."
-        return f"Semantic capability prototype routing selected {kind.value}."
+        if signals.get("structural", {}).get(kind.value):
+            return f"Structural signal selected {kind.value}."
+        if signals.get("llm_overlay"):
+            return f"LLM overlay selected {kind.value}."
+        return f"Embedding/classifier routing selected {kind.value}."
 
     def _should_adjudicate_with_llm(self, confidence: float, top_score: float, second_score: float, signals: dict[str, Any]) -> bool:
+        """Use LLM overlay when embedding/classifier confidence is ambiguous.
+
+        No language detection needed — the LLM handles all languages natively.
+        """
         if not self.bridge:
             return False
-        structural = signals.get("structural") if isinstance(signals.get("structural"), dict) else {}
-        multilingual_without_structure = signals.get("language_hint") != "unknown_or_english" and not structural and top_score < 0.75
-        ambiguous = confidence < 0.62 or top_score - second_score < 0.16
-        return multilingual_without_structure or ambiguous
+        return confidence < 0.62 or top_score - second_score < 0.16
 
     async def _llm_overlay(
         self,
@@ -320,7 +341,6 @@ class CapabilityRouter:
                 "target_ir": ir.target_ir,
                 "intent_domain": ir.intent_domain.value,
                 "scores": {key.value: round(value, 4) for key, value in scores.items()},
-                "query_language_hint": self._language_hint(query),
                 "signals": signals,
             },
         )
@@ -435,13 +455,9 @@ class CapabilityRouter:
         return dot / (left_norm * right_norm)
 
     def _language_hint(self, query: str) -> str:
-        if re.search(r"[\u0600-\u06ff]", query):
-            return "arabic"
-        if re.search(r"[\u3040-\u30ff\u4e00-\u9fff]", query):
-            return "cjk"
-        if re.search(r"[¿¡ñáéíóúü]", query.lower()):
-            return "spanish_or_latin"
-        return "unknown_or_english"
+        # Kept for backward compatibility with any callers that log language hints.
+        # No longer used for routing decisions.
+        return "unknown"
 
 
 class CapabilityAdapterRegistry:
