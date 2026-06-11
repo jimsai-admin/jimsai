@@ -30,7 +30,7 @@ from .models import (
     WorldModelActivation,
 )
 from .planner import SymbolicPlanner
-from .retrieval import MultiIndexRetrievalEngine, term_matches
+from .retrieval import MultiIndexRetrievalEngine, _is_document_wide_relation, term_matches
 from .semantic_compiler import SemanticCompilerRuntime
 from .simulation import BoundedSimulationEngine
 

@@ -1867,7 +1867,7 @@ class JimsAIPipeline:
             signature.confidence.source = "groq_structured_ingestion_source_trust"
             signature.metadata["groq_ingestion"] = {
                 "used": True,
-                "model": self.bridge.ingest_model,
+                "model": getattr(self.bridge, "local_render_model", "qwen3-4b-instruct"),
                 "confidence": overlay_confidence,
                 "vectors_are_truth": False,
                 "truth_policy": "symbolic_memory_requires_provenance_and_review",

@@ -321,44 +321,21 @@ class _LLMClassifier:
         return self._embedding_classifier
 
     def classify_intent(self, query: str) -> tuple[str, float]:
-        """Return (ir_target, confidence) for any query in any language."""
-        # 1. Try LLM — most accurate, handles any language and mixed intent
-        if self.qwen_bridge and self.qwen_bridge.qwen_enabled:
-            try:
-                import asyncio
-                loop = asyncio.new_event_loop()
-                try:
-                    result = loop.run_until_complete(
-                        self.qwen_bridge.infer_intent(query, {
-                            "target_ir": "WORKSPACE_QUERY",
-                            "confidence": 0.3,
-                            "scope_constraints": {},
-                            "execution_mode": "UNKNOWN",
-                            "intent_domain": "UNKNOWN",
-                        })
-                    )
-                finally:
-                    loop.close()
-                if result and isinstance(result, dict):
-                    ir = result.get("target_ir") or result.get("intent")
-                    conf = float(result.get("confidence") or result.get("score") or 0.0)
-                    _VALID_IR = {
-                        "WORKSPACE_QUERY", "FETCH_DOCUMENT", "SYSTEM_DIAGNOSTIC",
-                        "CODE_GENERATE", "RUN_CANVAS", "RUN_INVENTION",
-                        "GENERAL_FACT", "EMOTIONAL_CATCH", "META_INQUIRY",
-                    }
-                    if ir in _VALID_IR and conf > 0.0:
-                        return ir, conf
-            except Exception:
-                pass
+        """Return (ir_target, confidence) for any query in any language.
 
-        # 2. Embedding classifier — language-agnostic prototype matching
+        This is a synchronous method called from compile() which runs inside
+        an async context. The LLM overlay (Qwen 1.7B) is handled asynchronously
+        by TransformerIntentInterface.infer() AFTER compile() returns — so we
+        skip the LLM here and go straight to the embedding classifier.
+        The async T1 overlay then refines the result if confidence is low.
+        """
+        # Embedding classifier — language-agnostic, works synchronously
         try:
             return self._embed_cls.classify_intent(query)
         except Exception:
             pass
 
-        # 3. Minimal structural fallback — Unicode-aware, no language assumptions
+        # Minimal structural fallback — Unicode-aware, no language assumptions
         return self._structural_classify(query)
 
     def is_profile_query(self, query: str, threshold: float = 0.55) -> bool:
