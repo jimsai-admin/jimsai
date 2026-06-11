@@ -125,6 +125,21 @@ class SymbolicMathSolver:
         except ModuleNotFoundError:
             return self._solve_without_sympy(text, solve_for)
 
+        # ── Direct sympy function call (from T1 bridge extraction) ───────────
+        # The bridge returns expressions like diff(x**3, x) or integrate(sin(x), x)
+        # that can be evaluated directly by sympy without keyword detection.
+        if text.startswith("diff(") or text.startswith("Derivative("):
+            return self._solve_calculus(text, "diff", safe_parse)
+        if text.startswith("integrate(") or text.startswith("Integral("):
+            return self._solve_calculus(text, "integrate", safe_parse)
+        if text.startswith("limit(") or text.startswith("Limit("):
+            try:
+                result = eval(text, {"__builtins__": {}},
+                              {k: getattr(sp, k) for k in dir(sp) if not k.startswith("_")})
+                return {"status": "solved", "result": str(result), "method": "sympy_eval", "steps": [f"{text} = {result}"]}
+            except Exception as exc:
+                return {"status": "failed", "result": str(exc), "method": "sympy_eval", "steps": []}
+
         # ── Calculus: derivatives ────────────────────────────────────────────
         calc_kws = ("derivative", "differentiate", "d/dx", "d/dy", "d/dz", "∂", "diff(")
         if any(kw in text.lower() for kw in calc_kws):

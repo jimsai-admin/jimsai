@@ -71,7 +71,8 @@ class _FallbackClassifier:
                 "Query or recall information from stored memory, personal facts, prior conversations, "
                 "or the user's own workspace. The user wants to retrieve something JimsAI already knows "
                 "or has been told. Includes asking about the user's name, preferences, projects, history, "
-                "or anything previously shared."
+                "or anything previously shared. ALSO includes telling JimsAI something to remember: "
+                "sharing a name, preference, fact, task, or any personal information to store."
             ),
             "CODE_GENERATE": (
                 "Write, generate, create, or implement source code, a function, algorithm, script, "
@@ -106,8 +107,9 @@ class _FallbackClassifier:
         # was previously told or stored — profile facts, preferences, tasks,
         # documents, prior discussions — not limited to "who am I" queries.
         self.memory_recall_prototype = (
-            "Recall stored information, personal facts, user preferences, prior conversations, "
+            "Store or recall personal facts, user preferences, prior conversations, "
             "remembered notes, tasks, or anything the user previously shared or asked JimsAI to store. "
+            "Includes telling JimsAI a name, preference, project, or any personal information. "
             "Retrieve what JimsAI knows about the user or their workspace from memory."
         )
 

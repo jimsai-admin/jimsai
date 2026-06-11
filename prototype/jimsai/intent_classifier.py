@@ -52,7 +52,9 @@ class EmbeddingClassifier:
             "WORKSPACE_QUERY": (
                 "Query or recall information from stored memory, personal facts, prior conversations, "
                 "or the user's own workspace. The user wants to retrieve something JimsAI already knows "
-                "or has been told."
+                "or has been told. Includes asking about the user's name, preferences, projects, history, "
+                "or anything previously shared. ALSO includes telling JimsAI something to remember: "
+                "sharing a name, preference, fact, task, or any personal information to store."
             ),
             "CODE_GENERATE": (
                 "Write, generate, create, or implement source code, a function, algorithm, script, "

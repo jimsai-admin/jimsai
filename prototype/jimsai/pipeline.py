@@ -534,8 +534,13 @@ class JimsAIPipeline:
         )
         obj.layer_results = layer_results
         used_qwen_render = used_groq_render  # True when Qwen3-4B rendered the response
+        # Strip any leaked Qwen3 <think>...</think> reasoning blocks from the final response.
+        # These can appear when the model doesn't wrap its output in JSON as instructed.
+        clean_response = re.sub(r"<think>.*?</think>", "", response, flags=re.DOTALL).strip()
+        if not clean_response:
+            clean_response = response  # keep original if stripping removed everything
         pipeline_response = PipelineResponse(
-            response=response,
+            response=clean_response,
             ir=ir,
             reasoning_chain=obj.reasoning_chain,
             confidence=obj.confidence,
@@ -823,17 +828,26 @@ class JimsAIPipeline:
             )
 
     async def _extract_solver_expression_with_qwen(self, query: str, context: dict[str, Any]) -> tuple[str, str | None]:
+        """Extract a mathematical expression from natural language using the T1 bridge.
+
+        Supports all mathematical domains — arithmetic, algebra, calculus, linear algebra,
+        differential equations, statistics, geometry, physics. The bridge returns a
+        sympy-compatible expression string that is passed directly to SymbolicMathSolver.solve().
+        No character-set validation — sympy expressions use letters, digits, and function names.
+        """
         data = await self.bridge.extract_math_expression(query, context)
         if not data:
             return "", None
         expression = str(data.get("expression") or "").strip()
+        if not expression:
+            return "", None
         solve_for_value = data.get("solve_for")
         solve_for = str(solve_for_value).strip() if solve_for_value else None
-        if solve_for and not re.fullmatch(r"[A-Za-z]", solve_for):
+        # solve_for must be a single variable name (1+ chars) — no equations
+        if solve_for and not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*", solve_for):
             solve_for = None
-        expression = re.sub(r"\s+", "", expression)
-        if not re.fullmatch(r"[0-9A-Za-z+\-*/().=]+", expression or ""):
-            return "", None
+        # Compact whitespace but preserve function calls like diff(x**3, x)
+        expression = re.sub(r"\s+", " ", expression).strip()
         return expression, solve_for
 
     def _extract_solver_expression(self, query: str) -> tuple[str, str | None]:

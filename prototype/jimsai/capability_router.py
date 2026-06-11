@@ -24,7 +24,9 @@ from .models import (
 CAPABILITY_PROTOTYPES: dict[CapabilityKind, str] = {
     CapabilityKind.MEMORY_CHAT: (
         "Retrieve stored information, recall prior conversations, access personal memory, "
-        "answer from what has already been learned or shared."
+        "answer from what has already been learned or shared. Also includes storing new "
+        "personal facts: the user is sharing their name, preferences, tasks, or anything "
+        "they want JimsAI to remember for future conversations."
     ),
     CapabilityKind.WORLD_KNOWLEDGE: (
         "Look up current facts, recent events, live data, or information from the public internet "

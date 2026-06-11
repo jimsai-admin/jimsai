@@ -391,29 +391,41 @@ class QwenBridge:
     async def extract_math_expression(
         self, raw_input: str, context: dict[str, Any] | None = None
     ) -> dict[str, Any] | None:
-        """Extract a safe arithmetic/equation expression from freeform text."""
+        """Extract any mathematical expression from freeform text — any language, any branch of math.
+
+        Covers arithmetic, algebra, calculus (derivatives/integrals), linear algebra,
+        differential equations, statistics, geometry, number theory, and physics problems.
+        The expression is returned in a form sympy can evaluate directly.
+        """
         if not self.qwen_enabled:
             return None
         system = (
-            "You are a bounded math-expression normalizer for JIMS-AI. Return only JSON. "
-            "Extract a safe arithmetic or simple equation expression from the user text in any language. "
-            "Do not solve it. Do not add assumptions. "
-            "If no bounded expression exists, return expression as an empty string."
+            "You are a mathematical expression extractor for JimsAI. Return only JSON. "
+            "Extract the mathematical expression or problem from the user's text. "
+            "Support ALL branches of mathematics: arithmetic, algebra, calculus (derivatives, integrals), "
+            "linear algebra, differential equations, statistics, geometry, number theory, physics. "
+            "Return the expression in Python/sympy syntax so it can be evaluated directly. "
+            "Examples:\n"
+            "  'derivative of x^3' → expression: 'diff(x**3, x)', solve_for: null\n"
+            "  'integral of sin(x)' → expression: 'integrate(sin(x), x)', solve_for: null\n"
+            "  'solve 2x + 6 = 20' → expression: '2*x + 6 = 20', solve_for: 'x'\n"
+            "  '847 * 63' → expression: '847*63', solve_for: null\n"
+            "If no mathematical content exists, return expression as empty string."
         )
         user = json.dumps(
             {
                 "raw_input": raw_input,
                 "context": context or {},
                 "schema": {
-                    "expression": "string using only digits, variables, +, -, *, /, parentheses, decimal points, and optional =",
+                    "expression": "sympy-compatible string (use diff(), integrate(), Eq() as needed)",
                     "solve_for": "single variable string or null",
+                    "math_domain": "one of: arithmetic, algebra, calculus, linear_algebra, statistics, other",
                     "confidence": "number between 0 and 1",
-                    "reason": "short string",
                 },
             },
             sort_keys=True,
         )
-        return await self._chat_json(self.local_model, system, user, max_tokens=160)
+        return await self._chat_json(self.local_model, system, user, max_tokens=200)
 
     # ── T2: Render / Canvas / Invention / Ingest ──────────────────────────────
 
