@@ -422,15 +422,15 @@ class SemanticCompilerRuntime:
         scope: dict[str, Any] = existing_scope or {}
         scope["raw_length"] = len(raw_input)
         scope["token_count"] = len(tokens)
-        # Entity extraction — language-neutral camelCase/PascalCase detection
+        # Entity extraction — PascalCase/CamelCase detection works for code/technical identifiers
+        # across all Latin-script languages. Non-Latin entities are extracted by the NLP layer.
         camel_entities = [
             entity.strip(".,:;!?")
             for entity in re.findall(r"\b[A-Z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)*\b", raw_input)
-            if entity.lower() not in {"what", "why", "how", "when", "where", "who", "which"}
+            if len(entity) > 1
         ]
         if camel_entities:
             scope["entities"] = sorted(set(camel_entities))
-        # Number extraction
         numbers = [int(n) for n in re.findall(r"\b\d+\b", raw_input)]
         if numbers:
             scope["numbers"] = numbers
@@ -446,47 +446,48 @@ class SemanticCompilerRuntime:
 
     def compile(self, raw_input: str, namespace: str = "TECHNICAL", session: dict[str, Any] | None = None) -> SemanticIR:
         session = session or {}
-        normalized_input = normalize_language(raw_input)
-        tokens = sanitize(raw_input)
-
-        # Pre-process the query using canonical tokens to resolve typos and slang
-        canonical_query = " ".join(_canonical_token(w) for w in _basic_tokens(raw_input))
-
+        # Use raw text directly — no preprocessing pipeline, no normalisation.
+        # The LLM (Qwen 1.7B) and embedding model handle all languages natively.
+        tokens = _raw_tokens(raw_input)
         scope: dict[str, Any] = {"raw_length": len(raw_input), "token_count": len(tokens)}
 
-        # 1. Use LLM/embedding classifier for intent
-        target_ir, confidence = self.classifier.classify_intent(canonical_query or raw_input)
+        # 1. Classify intent via LLM → embedding → structural fallback (in that order)
+        target_ir, confidence = self.classifier.classify_intent(raw_input)
 
-        # 2. Use classifier for memory recall detection
-        if target_ir == "WORKSPACE_QUERY" or self.classifier.is_profile_query(canonical_query or raw_input, threshold=0.45):
+        # 2. Memory recall detection — covers any user-stored fact in any language
+        if target_ir == "WORKSPACE_QUERY" or self.classifier.is_profile_query(raw_input, threshold=0.45):
             scope["profile_query"] = True
             target_ir = "WORKSPACE_QUERY"
             confidence = max(confidence, 0.50)
 
-        # 3. Session context rescue — when classifier is uncertain, inherit active session intent
+        # 3. Session context rescue — inherit active intent when classifier is uncertain
         execution_mode = ExecutionMode.DETERMINISTIC_CORE
         local_threshold = self.confidence_threshold
         has_non_ascii = any(ord(c) > 127 for c in raw_input)
         if has_non_ascii:
-            local_threshold = 0.30  # lower bar for non-Latin scripts
+            local_threshold = 0.30  # lower confidence bar for non-Latin scripts
 
         if target_ir == "OP_ESCAPE_TO_SANDBOX" or confidence < local_threshold:
             active_session_intent = session.get("ACTIVE_INTENT")
-            if active_session_intent and active_session_intent != "OP_ESCAPE_TO_SANDBOX" and confidence >= 0.20:
+            if (
+                active_session_intent
+                and active_session_intent != "OP_ESCAPE_TO_SANDBOX"
+                and confidence >= 0.20
+            ):
                 target_ir = active_session_intent
                 confidence = max(confidence, 0.35)
                 scope["session_intent_inherited"] = True
             else:
                 execution_mode = ExecutionMode.AIR_GAPPED_CONTAINER
 
-        # 4. Standard scope enrichment (entity extraction, numbers) — language-neutral
-        scope = self._scope_from_tokens(tokens, normalized_input, existing_scope=scope)
+        # 4. Scope enrichment — language-neutral entity + number extraction
+        scope = self._scope_from_tokens(tokens, raw_input, existing_scope=scope)
 
-        # 5. Profile query: if WORKSPACE_QUERY + profile_write flag, set scope
+        # 5. Mark profile write in scope
         if scope.get("profile_write"):
             scope["profile_query"] = True
 
-        # Context carry-forward from session — inherit active object when no entities detected
+        # 6. Session object carry-forward
         context_inherited = False
         context_boosted = False
         question_intent = scope.get("question_intent")
@@ -508,6 +509,11 @@ class SemanticCompilerRuntime:
             execution_mode=execution_mode,
             domain_namespace=namespace,
             intent_domain=domain,
+            tokens=tokens,
+            hypotheses=[],
+            context_inherited=context_inherited,
+            context_boosted=context_boosted,
+        )
             tokens=tokens,
             hypotheses=[],
             context_inherited=context_inherited,

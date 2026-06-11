@@ -23,7 +23,6 @@ from .data_source_connectors import DataSourceDocument
 from .document_ingestion import extract_document_facts, fact_to_signature, is_document_like
 from .encoder import DualRepresentationEncoder, stable_id
 from .models import MemorySignature, SPPETrainingPair, utc_now
-from .semantic_compiler import normalize_language
 
 
 logger = logging.getLogger(__name__)
@@ -81,8 +80,10 @@ class IngestionWorker:
                     processing_time_ms=(asyncio.get_event_loop().time() - start_time) * 1000,
                 )
             
-            # Step 2: Normalize
-            normalized = normalize_language(doc.content)
+            # Step 2: Normalize whitespace and Unicode
+            import unicodedata as _ud
+            normalized = _ud.normalize("NFKC", doc.content or "")
+            normalized = __import__("re").sub(r"\s+", " ", normalized).strip()
             
             # Step 3: Extract facts
             facts = extract_document_facts(normalized)
