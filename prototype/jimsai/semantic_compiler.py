@@ -684,13 +684,53 @@ class SemanticCompilerRuntime:
         v9_override = self._v9_capability_override(tokens, normalized_input)
 
         # === MEMORY WRITE / RECALL FAST PATH ======================================
-        # Detection strategy (no hardcoded language patterns):
-        # 1. Write: v9 capability override already handles most generation.
-        #    Profile writes are detected later via is_profile_query on the result.
-        # 2. Recall: classifier.classify_intent returns WORKSPACE_QUERY when the
-        #    embedding matches the "recall stored information" prototype.
-        # 3. Explicit: v9 high-confidence override fires first for code/math.
-        if v9_override and v9_override[1] >= 0.9:
+        # Minimal structural fast path — fires before any network call.
+        # Uses only universal structural markers that don't assume a specific language.
+        #
+        # Profile writes: first-person pronoun + present tense + fact
+        # These match "My name is X", "I am Y", "I work at Z", "Remember that I..."
+        # across Latin-script languages. Non-Latin scripts fall through to the
+        # LLM/embedding classifier which handles them better.
+        _STRUCT_WRITE_RE = re.compile(
+            # First-person possessive + "is/are/=" pattern
+            r"\bmy\s+\w+\s+is\b"
+            r"|\bi\s+am\b"
+            r"|\bi\s+work\b"
+            r"|\bi\s+prefer\b"
+            r"|\bi\s+like\b"
+            r"|\bi\s+use\b"
+            r"|\bi\s+live\b"
+            r"|\bi\s+study\b"
+            r"|\bi\s+own\b"
+            r"|\bremember\s+(?:that\s+)?(?:my|i)\b"
+            r"|\bplease\s+remember\b"
+            r"|\bnote\s+that\s+(?:my|i)\b"
+            r"|\bsave\s+(?:that|this)\b",
+            re.IGNORECASE,
+        )
+        _STRUCT_RECALL_RE = re.compile(
+            # Recall requests: interrogative + first-person pronoun + stored-fact verb
+            r"\bwhat\s+is\s+my\b"
+            r"|\bwhat\s+are\s+my\b"
+            r"|\bdo\s+you\s+(?:know|remember)\s+(?:my|what)\b"
+            r"|\bwhat\s+(?:did\s+i|do\s+i)\b"
+            r"|\btell\s+me\s+(?:about\s+)?(?:my|what\s+you\s+know)\b"
+            r"|\bwho\s+am\s+i\b"
+            r"|\bwhat\s+have\s+(?:i|you)\s+(?:told|shared|saved)\b",
+            re.IGNORECASE,
+        )
+        if _STRUCT_WRITE_RE.search(raw_input):
+            target_ir = "WORKSPACE_QUERY"
+            scope["profile_write"] = True
+            scope["profile_query"] = True
+            confidence = 0.88
+            structural_fast_path = True
+        elif _STRUCT_RECALL_RE.search(raw_input):
+            target_ir = "WORKSPACE_QUERY"
+            scope["profile_query"] = True
+            confidence = 0.88
+            structural_fast_path = True
+        elif v9_override and v9_override[1] >= 0.9:
             target_ir, confidence, capability_hint = v9_override
             scope["v9_capability_hint"] = capability_hint
             structural_fast_path = True
@@ -742,9 +782,36 @@ class SemanticCompilerRuntime:
         execution_mode = ExecutionMode.DETERMINISTIC_CORE
         local_threshold = self.confidence_threshold
         has_non_ascii = any(ord(c) > 127 for c in raw_input)
-        low_resource_words = {"nibo", "bawo", "koni", "odabo", "kaabo", "kedu", "bia", "imela", "sannu", "lafiya", "nagode", "koodu", "kodi", "gba", "fifipamo", "nweta", "chekwaa", "samu", "ajiye"}
-        if has_non_ascii or any(w in normalized_input.lower().split() for w in low_resource_words):
+        # Lower threshold for any non-ASCII input — covers all non-Latin scripts
+        # (Arabic, Chinese, Japanese, Korean, Yoruba, Hindi, etc.) without
+        # enumerating specific words from specific languages.
+        if has_non_ascii:
             local_threshold = 0.30
+
+        # === SHORT PERSONAL STATEMENT RESCUE ===
+        # When the classifier fails (cold embedding service, no LLM) and the query
+        # is short (< 120 chars) with no math/code signals, treat it as a potential
+        # personal statement or recall — route to WORKSPACE_QUERY rather than sandbox.
+        # This is a last-resort rescue that prevents all non-Latin writes from going
+        # to the sandbox when Modal services are cold.
+        _is_short = len(raw_input.strip()) < 120
+        _no_code_signals = not any(s in raw_input for s in ("def ", "class ", "import ", "```", "fn ", "function "))
+        _no_math_signals = not bool(re.search(r"\d+\s*[\+\-\*/]\s*\d+", raw_input))
+        if (
+            target_ir == "OP_ESCAPE_TO_SANDBOX"
+            and confidence < 0.5
+            and _is_short
+            and _no_code_signals
+            and _no_math_signals
+            and not structural_fast_path
+        ):
+            # Route to WORKSPACE_QUERY with low confidence — the pipeline will
+            # handle it as a general query and may identify it as a profile write
+            # through the _promote_user_fact_memory path.
+            target_ir = "WORKSPACE_QUERY"
+            confidence = max(confidence, 0.35)
+            scope["classifier_fallback"] = True
+
         if target_ir == "OP_ESCAPE_TO_SANDBOX" or confidence < local_threshold:
             # Context-less follow-up carry-forward — don't sandbox when session has active intent.
             # This handles "what about the error?" type queries and cross-language follow-ups.

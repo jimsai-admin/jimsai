@@ -74,28 +74,26 @@ async def startup_warm_classifier() -> None:
         # Re-raise so the process exits cleanly rather than silently serving bad requests
         raise
     try:
-        # Access the classifier to trigger lazy init
         classifier = pipeline.compiler.classifier
-        # Pre-warm the embedding classifier if it has the method (i.e. _FallbackClassifier
-        # is available via _LLMClassifier._embed_cls). Non-fatal if not available.
+        loop = asyncio.get_event_loop()
         embed_cls = getattr(classifier, "_embed_cls", None) or getattr(classifier, "_embedding_classifier", None)
         if embed_cls is None and hasattr(classifier, "_get_prototype_embeddings"):
-            embed_cls = classifier  # direct _FallbackClassifier
+            embed_cls = classifier
         if embed_cls is not None:
             try:
                 await asyncio.wait_for(
                     loop.run_in_executor(None, embed_cls._get_prototype_embeddings),
-                    timeout=30.0
+                    timeout=30.0,
                 )
                 await asyncio.wait_for(
                     loop.run_in_executor(None, embed_cls._get_memory_recall_embedding),
-                    timeout=15.0
+                    timeout=15.0,
                 )
                 _logger.info("Intent classifier prototype embeddings pre-warmed successfully.")
             except asyncio.TimeoutError:
                 _logger.warning("Startup classifier warm timed out — will warm on first query (non-fatal).")
         else:
-            _logger.info("Classifier pre-warm skipped (LLM-first mode, no prototype embeddings to cache).")
+            _logger.info("Classifier pre-warm skipped (LLM-first mode, embeddings warm on demand).")
     except Exception as exc:
         _logger.warning("Startup classifier warm failed (non-fatal): %s", repr(exc))
 
