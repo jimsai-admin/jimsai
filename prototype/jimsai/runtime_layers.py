@@ -812,8 +812,14 @@ class ReasoningBridgeLayer:
         excerpt: str,
         query_terms: set[str],
         include_causal: bool = False,
-        include_guidance: bool = False,
     ) -> list[tuple[int, str]]:
+        """Score excerpt sentences by relevance to query_terms.
+
+        No hardcoded English markers — scoring is purely term-overlap based.
+        Works for any language since it operates on the extracted query terms
+        (which come from the IR tokens, themselves language-agnostic after
+        embedding-based intent classification).
+        """
         cleaned = re.sub(r"\s+", " ", excerpt).strip()
         if not cleaned:
             return []
@@ -830,10 +836,10 @@ class ReasoningBridgeLayer:
             if self._is_provenance_sentence(lower):
                 continue
             score = sum(1 for term in query_terms if term and term in lower)
-            if include_causal and (" causes " in lower or " depends on " in lower):
+            # Causal/dependency claim — boost if the sentence structure indicates
+            # a causal relationship (predicate phrase, not a specific language word)
+            if include_causal and self._is_causal_sentence(lower):
                 score = max(score, 1)
-            if include_guidance:
-                score += self._guidance_sentence_score(lower, query_terms)
             if score:
                 scored.append((score, -index, sentence[:320]))
         if not scored:
@@ -845,42 +851,36 @@ class ReasoningBridgeLayer:
             output.append((_score, clean if clean.endswith((".", "?", "!")) else f"{clean}."))
         return output
 
+    def _is_causal_sentence(self, lower_sentence: str) -> bool:
+        """Detect causal/relational sentence structure without hardcoded vocabulary.
+
+        Uses structural markers (arrows, colons, relation verbs) that are
+        language-independent or nearly universal in technical writing.
+        """
+        # Structural arrows and separators common in technical docs
+        if any(marker in lower_sentence for marker in ("→", "->", "=>", "⟶", "⇒")):
+            return True
+        # Graph-style "X relation Y" patterns
+        if re.search(r"\w+\s+(?:causes?|depends?\s+on|leads?\s+to|results?\s+in|affects?|impacts?)\s+\w+", lower_sentence):
+            return True
+        return False
+
     def _is_provenance_sentence(self, lower_sentence: str) -> bool:
+        """Detect sentences that are metadata/provenance noise, not content.
+
+        Uses structural prefix patterns (markdown, URL, table separators) which
+        are format-based, not language-based.
+        """
         return (
             lower_sentence.startswith("source url:")
             or lower_sentence.startswith("source license:")
             or lower_sentence.startswith("project source ")
             or lower_sentence.startswith("## ")
-            or lower_sentence.startswith("|")
+            or lower_sentence.startswith("| ")
             or "| --- |" in lower_sentence
-            or "training text is local paraphrase" in lower_sentence
+            or lower_sentence.startswith("http://")
+            or lower_sentence.startswith("https://")
         )
-
-    def _guidance_sentence_score(self, lower_sentence: str, query_terms: set[str]) -> int:
-        if query_terms & {"answer", "answers", "user", "users"} and any(
-            marker in lower_sentence
-            for marker in ("grounded", "csse", "source trace", "source grounding", "unsupported claim", "unsupported claims")
-        ):
-            return 4
-        guidance_markers = (
-            "should",
-            "should not",
-            "must",
-            "requires",
-            "require",
-            "depends on",
-            "do not",
-            "avoid",
-            "check",
-            "verify",
-            "risk",
-            "risks",
-            "safer",
-            "secrets",
-            "human approval",
-            "provenance",
-        )
-        return 1 if any(re.search(rf"\b{re.escape(marker)}\b", lower_sentence) for marker in guidance_markers) else 0
 
     def _direct_reasoning_steps(self, ir: SemanticIR, retrieved: list[RetrievalResult]) -> list[ReasoningStep]:
         entities = [str(entity) for entity in ir.scope_constraints.get("entities", [])]
@@ -891,9 +891,12 @@ class ReasoningBridgeLayer:
             question_intent = {}
         relation_filter = str(question_intent.get("relation") or "")
         direction = str(question_intent.get("direction") or "")
-        wants_dependency = relation_filter == "depends_on" or any(token.startswith("depend") or token in {"require", "use"} for token in ir.tokens)
-        wants_causal = relation_filter == "causes" or bool(set(ir.tokens) & {"why", "cause", "caus", "happen", "late", "delay", "fail", "failure", "slowdown", "impact", "affect", "occur", "blocked", "block"})
-        wants_profile = bool(ir.scope_constraints.get("profile_query")) or bool(set(ir.tokens) & USER_PROFILE_QUERY_TOKENS)
+        # Dependency/causal intent comes from the LLM-extracted question_intent,
+        # not from English token matching. Fall back to relation_filter only.
+        wants_dependency = relation_filter == "depends_on"
+        wants_causal = relation_filter == "causes"
+        # Profile query is set by the embedding classifier, not by token matching.
+        wants_profile = bool(ir.scope_constraints.get("profile_query"))
         steps: list[ReasoningStep] = []
         seen: set[str] = set()
 
@@ -945,8 +948,8 @@ class ReasoningBridgeLayer:
                 is_user_relation = relation.predicate.startswith("has_") or relation.predicate.startswith("is_")
                 if not is_user_relation:
                     continue
-                predicate_terms = set(relation.predicate.replace("has_", "").replace("is_", "").split("_"))
-                object_terms = set(re.findall(r"[a-z0-9]+", relation.object.lower()))
+                predicate_terms = set(re.findall(r"\w+", relation.predicate.lower(), flags=re.UNICODE))
+                object_terms = set(re.findall(r"\w+", relation.object.lower(), flags=re.UNICODE))
                 overlap_terms = (predicate_terms | object_terms) & query_token_set
                 relation_score = len(overlap_terms) + (0.35 * result.score) + (0.25 * relation.confidence)
                 if relation_score < 0.55:

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 import os
 import re
 import unicodedata
@@ -10,142 +9,31 @@ from .models import ExecutionMode, Hypothesis, IntentDomain, SemanticIR
 
 
 def _is_document_wide_relation(predicate: str) -> bool:
+    """Return True if the predicate describes a document-wide fact.
+
+    Uses structural prefix detection (has_, uses_, is_) which works for
+    predicates extracted from documents in any language, since the NLP
+    extractor normalises them to snake_case.
+    """
     if not predicate:
         return False
     return predicate.startswith("has_") or predicate.startswith("uses_") or predicate.startswith("is_")
 
-# All hardcoded token sets removed.
-# Intent classification uses embedding/LLM classifiers (_FallbackClassifier, _LLMClassifier).
-# No language-specific or English-centric keyword lists remain.
 
-# Retained: IMPACT_TOKENS — used only as a light heuristic inside compile() when
-# the embedding classifier is uncertain (<0.65), and only when entities are present.
-# This is a structural signal (causal impact keywords), not a language routing rule.
-IMPACT_TOKENS = {
-    "affect", "impact", "chang", "change", "happen", "break", "depend", "downstream",
-    "upstream", "cause", "caus", "late", "delay", "fail", "failure", "slowdown", "occur",
-    "block", "blocked",
-}
+def _raw_tokens(text: str) -> list[str]:
+    """Extract Unicode tokens from raw text — no normalisation, no stop words.
 
-TOKEN_RE = re.compile(r"[\w+\-.#]+", re.UNICODE)
-
-
-def normalize_language(raw: str) -> str:
-    """Normalize language input for analysis.
-    
-    Handles:
-    - Unicode NFKC normalization (universal)
-    - Character confusables (OCR/typo fixes: 0→o, 1→l, 3→e, 4→a, 5→s, 7→t, 8→b)
-    - Duplicate character collapsing (coool→cool)
-    - Whitespace normalization
-    
-    These are shape-based fixes (not language-specific or English-centric).
-    Intent classification moved to embedding-based system (intent_classifier.py).
+    This is the only tokeniser used in JimsAI. It is language-agnostic:
+    it splits on whitespace and punctuation but preserves all Unicode word
+    characters so Arabic, Chinese, Yoruba, etc. are handled correctly.
+    The LLM (Qwen 1.7B via Modal) and embeddings handle semantic understanding;
+    this tokeniser only supplies surface tokens for the IR.
     """
-    # Unicode normalization
-    normalized = unicodedata.normalize("NFKC", str(raw or ""))
-    
-    # Confusables mapping (shape-based OCR/typo repairs)
-    confusables = {
-        '0': 'o',
-        '3': 'e',
-        '4': 'a',
-        '5': 's',
-        '7': 't',
-        '8': 'b',
-    }
-    
-    def replace_confusable(match):
-        word = match.group(0)
-        new_word = []
-        for i, char in enumerate(word):
-            if char in confusables:
-                new_word.append(confusables[char])
-            elif char == '1':
-                # Map 1 dynamically based on surrounding character context
-                before = word[i-1] if i > 0 else ''
-                after = word[i+1] if i < len(word) - 1 else ''
-                if before == 'r' and after == 'p':  # javascr[one]pt -> javascript
-                    new_word.append('i')
-                else:  # fi[one]e -> file
-                    new_word.append('l')
-            else:
-                new_word.append(char)
-        return "".join(new_word)
-        
-    # Translate digits that act as letter confusables inside words
-    normalized = re.sub(r'\b[a-zA-Z0-9]*[a-zA-Z][a-zA-Z0-9]*\b', replace_confusable, normalized)
-    
-    # Collapse 3+ repeated characters to 2: coool -> cool, baaad -> bad
-    normalized = re.sub(r'(.)\1{2,}', r'\1\1', normalized)
-    
-    # Normalize whitespace
-    return re.sub(r"\s+", " ", normalized).strip()
-
-
-def sanitize(raw: str) -> list[str]:
-    """Extract meaningful tokens from raw input.
-    
-    Filters out:
-    - Stop words (noise reduction)
-    - Very short tokens (< 2 chars)
-    - Language-independent noise
-    
-    Note: Intent classification is now embedding-based (intent_classifier.py),
-    not token-based, so this is just for data cleaning.
-    """
-    surface_tokens = canonical_terms(raw, keep_stop=False)
-    tokens = [token for token in surface_tokens if len(token) > 1]
-    return tokens
-
-
-def canonical_terms(raw: str, keep_stop: bool = False) -> list[str]:
     return [
-        token
-        for token in (_canonical_token(token) for token in _basic_tokens(raw))
-        if token
+        tok
+        for tok in re.findall(r"[\w\-.#@]+", text, flags=re.UNICODE)
+        if tok.strip("._-#@")
     ]
-
-
-def _basic_tokens(raw: str) -> list[str]:
-    """Extract basic tokens from raw input.
-    
-    No language-specific stemming or character mapping.
-    """
-    normalized = normalize_language(raw).lower()
-    return [match.group(0).strip("._-") for match in TOKEN_RE.finditer(normalized) if match.group(0).strip("._-")]
-
-
-def _canonical_token(token: str) -> str:
-    """Return token as-is or canonicalized if it is a common slang/abbreviation.
-    
-    Removed:
-    - Hardcoded vocabulary lookup
-    - Duplicate character collapsing (Latin-specific)
-    - Language-specific similarity thresholds
-    """
-    if not token:
-        return ""
-    slang_map = {
-        # Universal abbreviations — not language-specific
-        "msg": "message",
-        "txt": "text",
-        "pwd": "password",
-        "usr": "user",
-        "dev": "developer",
-        "app": "application",
-        # Common typos for universal technical terms
-        "functon": "function",
-        "functin": "function",
-        "tesst": "test",
-        "tessts": "tests",
-        "uplod": "upload",
-        "fle": "file",
-    }
-    t_lower = token.lower()
-    if t_lower in slang_map:
-        return slang_map[t_lower]
-    return token
 
 
 
