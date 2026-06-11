@@ -269,77 +269,11 @@ class CapabilityRouter:
     ) -> tuple[dict[CapabilityKind, float], dict[str, Any]]:
         scores = {kind: 0.0 for kind in CapabilityKind}
         signals: dict[str, Any] = {}
-        for kind, prototype in CAPABILITY_PROTOTYPES.items():
-            scores[kind] += self._prototype_similarity(tokens, _tokens(prototype)) * 0.24
         structural = self._structural_scores(query, tokens, activation)
         signals["structural"] = {key.value: round(value, 4) for key, value in structural.items() if value > 0}
         for kind, value in structural.items():
-            scores[kind] += value
-        if structural.get(CapabilityKind.CREATIVE_TEXT, 0.0) >= 0.6:
-            scores[CapabilityKind.MEMORY_CHAT] *= 0.35
+            scores[kind] = value
         return {kind: min(value, 1.0) for kind, value in scores.items()}, signals
-
-    def _prototype_similarity(self, query_tokens: set[str], prototype_tokens: set[str]) -> float:
-        if not query_tokens or not prototype_tokens:
-            return 0.0
-        overlap = len(query_tokens & prototype_tokens) / max(len(query_tokens), 1)
-        query_joined = " ".join(sorted(query_tokens))
-        proto_joined = " ".join(sorted(prototype_tokens))
-        qgrams = self._char_grams(query_joined)
-        pgrams = self._char_grams(proto_joined)
-        gram_overlap = len(qgrams & pgrams) / max(len(qgrams), 1) if qgrams else 0.0
-        return min(1.0, overlap * 0.72 + gram_overlap * 0.28)
-
-    def _char_grams(self, value: str, width: int = 4) -> set[str]:
-        compact = re.sub(r"\s+", " ", value.lower()).strip()
-        return {compact[index : index + width] for index in range(max(len(compact) - width + 1, 0))}
-
-    def _structural_scores(self, query: str, tokens: set[str], activation: ActivationDecision) -> dict[CapabilityKind, float]:
-        scores = {kind: 0.0 for kind in CapabilityKind}
-        generation = self._has_generate(query)
-        if self._looks_like_numeric_math(query):
-            scores[CapabilityKind.MATH_SCIENCE] += 0.82
-        if re.search(r"```|traceback|^\s*(import|from|def|class)\s+", query, re.MULTILINE):
-            scores[CapabilityKind.CODING] += 0.78
-        if re.search(r"\b[a-z0-9_.-]+\.(py|js|ts|tsx|jsx|sql|md|json|yaml|yml|toml)\b", query):
-            scores[CapabilityKind.CODING] += 0.45
-        if self._matches(tokens, {"sql", "migration", "schema", "index", "indexes", "database", "table", "function", "api", "component"}):
-            scores[CapabilityKind.CODING] += 0.68
-        if generation and self._matches(tokens, {"image", "picture", "photo", "logo", "poster", "illustration", "visual"}):
-            scores[CapabilityKind.IMAGE_GENERATION] += 0.82
-        if generation and self._matches(tokens, {"audio", "voice", "speech", "tts", "sound", "music"}):
-            scores[CapabilityKind.AUDIO_GENERATION] += 0.8
-        if generation and self._matches(tokens, {"video", "animation", "clip", "movie", "storyboard"}):
-            scores[CapabilityKind.VIDEO_GENERATION] += 0.8
-        if self._matches(tokens, {"latest", "today", "news", "web", "internet", "search", "browse", "president", "price", "weather"}):
-            scores[CapabilityKind.WORLD_KNOWLEDGE] += 0.72
-        if self._matches(tokens, {"book", "send", "click", "schedule", "automate", "deploy", "rollback"}) and self._matches(
-            tokens, {"agent", "task", "browser", "email", "site", "production", "calendar"}
-        ):
-            # Guard: don't score agentic when strong code signals are present.
-            # "Write a Python async task queue" matches "task" but is clearly coding.
-            strong_code = (
-                self._matches(tokens, {"async", "asyncio", "function", "method", "class", "queue", "algorithm", "struct", "interface"})
-                or re.search(r"```|def\s+\w+|class\s+\w+|import\s+\w+|fn\s+\w+|func\s+\w+", query)
-                or self._matches(tokens, {"code", "write", "implement", "build"}) and self._matches(tokens, {"function", "class", "queue", "api", "test", "tests"})
-            )
-            if not strong_code:
-                scores[CapabilityKind.AGENTIC_TASK] += 0.72
-        if generation and self._matches(tokens, {"story", "poem", "script", "email", "proposal", "copy", "tone", "rewrite"}):
-            scores[CapabilityKind.CREATIVE_TEXT] += 0.82
-        if activation.route in {"invention", "canvas"}:
-            scores[CapabilityKind.CREATIVE_TEXT] += 0.32
-        if self._matches(tokens, {"remember", "memory", "trained", "learned", "source", "sources", "project", "profile", "what"}) and not any(
-            value >= 0.7 for value in scores.values()
-        ):
-            scores[CapabilityKind.MEMORY_CHAT] += 0.4
-        return scores
-
-    def _matches(self, tokens: set[str], keywords: set[str]) -> bool:
-        return bool(tokens & keywords)
-
-    def _has_generate(self, query: str) -> bool:
-        return any(word in query for word in ("generate", "create", "make", "draw", "produce", "edit", "write", "rewrite", "draft"))
 
     def _looks_like_numeric_math(self, query: str) -> bool:
         numeric_count = len(re.findall(r"\d+(?:\.\d+)?", query))

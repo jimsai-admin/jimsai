@@ -47,27 +47,9 @@ ALLOWED_TARGETS = {
     "META_INQUIRY",
     "OP_ESCAPE_TO_SANDBOX",
 }
-DOCUMENT_FACT_PREDICATES = {
-    "means",
-    "has_title",
-    "has_case_study",
-    "has_author",
-    "has_institution",
-    "has_student_id",
-    "has_objective",
-    "has_module",
-    "has_problem",
-    "uses_technology",
-    "has_name",
-    "has_role",
-    "is_building",
-}
 USER_PROFILE_QUERY_TOKENS: frozenset[str] = frozenset()
 # USER_PROFILE_QUERY_TOKENS intentionally empty — memory recall detection uses
-# ir.scope_constraints.get("profile_query") (set by SemanticCompilerRuntime via
-# embedding similarity + structural patterns) which works across all languages.
-# English token matching was removed to avoid false negatives on non-English queries.
-IMPORTANT_SHORT_QUERY_TERMS = {"ai", "ui", "ux", "db", "t1", "t2", "r2"}
+# ir.scope_constraints.get("profile_query") via embedding similarity.
 
 
 def _layer(layer: str, activated: bool, summary: str, data: dict[str, Any] | None = None, deterministic: bool = True) -> LayerResult:
@@ -81,44 +63,32 @@ def _strict_entity_match(query_entity: str, candidate: str) -> bool:
 
 
 def _edge_claim(source: str, predicate: str, target: str) -> str:
-    phrase = "depends on" if predicate == "depends_on" else predicate
+    """Convert a graph edge into a natural-language claim.
+
+    Uses the relation text directly — no hardcoded predicate-to-phrase mapping.
+    The raw predicate (e.g. "depends_on", "causes", "relates_to") is used as-is
+    with underscores replaced by spaces, which works for any predicate in any language.
+    """
+    phrase = predicate.replace("_", " ")
     return f"{source} {phrase} {target}."
 
 
 def _document_claim(subject: str, predicate: str, obj: str) -> str:
-    if predicate == "means":
-        return f"{subject} means {obj}."
-    if predicate == "has_title":
-        return f"The project title is {obj}."
-    if predicate == "has_case_study":
-        return f"The case study is {obj}."
-    if predicate == "has_author":
-        return f"The researcher is {obj}."
-    if predicate == "has_institution":
-        return f"The institution is {obj}."
-    if predicate == "has_student_id":
-        return f"The student ID is {obj}."
-    if predicate == "has_objective":
-        return f"Objective: {obj}."
-    if predicate == "has_module":
-        return f"Module: {obj}."
-    if predicate == "has_problem":
-        return f"Problem: {obj}."
-    if predicate == "uses_technology":
-        return f"Technology used: {obj}."
-    if predicate == "has_name":
-        return f"Your name is {obj}."
-    if predicate == "has_role":
-        return f"You are {obj}."
-    if predicate == "is_building":
-        return f"You are building {obj}."
-    if subject.lower() == "user" and predicate.startswith("has_"):
-        label = predicate[4:].replace("_", " ")
-        if label.endswith(" first name"):
-            owner = label[: -len(" first name")].strip()
-            return f"Your {owner}'s first name is {obj}."
-        return f"Your {label} is {obj}."
-    return f"{subject} {predicate} {obj}."
+    """Convert a structured relation into a natural-language claim.
+
+    No hardcoded predicate-to-English-phrase mapping. The claim is assembled
+    directly from the relation triple, which works for relations extracted from
+    documents in any language. The LLM (T2 render) is responsible for
+    expressing this naturally in the user's language.
+    """
+    # For user-profile relations, make them first-person
+    if subject.lower() == "user":
+        label = predicate.replace("has_", "").replace("is_", "").replace("_", " ").strip()
+        if label:
+            return f"user {label}: {obj}."
+    # Generic form for all other relations
+    phrase = predicate.replace("_", " ")
+    return f"{subject} {phrase} {obj}."
 
 
 class TransformerIntentInterface:
@@ -168,7 +138,6 @@ class TransformerIntentInterface:
             "used_groq": False,
             "used_local_model": used_local_model,
             "local_model_skip_reason": self.bridge.last_t1_skip_reason,
-            "groq_skip_reason": "external_groq_disabled",
             "deterministic_target_ir": deterministic_ir.target_ir,
         }
         return ir, _layer("T1_transformer_intent_interface", True, "Compiled input into bounded Semantic IR.", data, deterministic=not used_local_model)
@@ -788,53 +757,30 @@ class ReasoningBridgeLayer:
         )
 
     def _memory_excerpt_steps(self, ir: SemanticIR, retrieved: list[RetrievalResult]) -> list[ReasoningStep]:
+        # Build query terms from IR tokens — include any token with 2+ chars
+        # (no hardcoded short-term whitelist; short tokens like "ai", "db" naturally
+        # appear as IR tokens when the model extracts them).
         query_terms = {
             token.lower().strip(".,:;!?")
             for token in ir.tokens
-            if len(token.strip(".,:;!?")) >= 3 or token.lower().strip(".,:;!?") in IMPORTANT_SHORT_QUERY_TERMS
+            if len(token.strip(".,:;!?")) >= 2
         }
-        if "image" in query_terms and ({"memory", "reason", "reasoning", "save", "saving"} & query_terms):
-            query_terms.update({"visible", "evidence", "inference", "gaps"})
-        if {"transformer", "thinning"} & query_terms and {"inference", "cost", "reduce"} & query_terms:
-            query_terms.update({"t1", "t2", "bypass", "confidence"})
-        wants_explanation = bool(query_terms & {"how", "why", "cause", "caus", "reduce", "lower", "cost", "effect", "impact"})
-        wants_guidance = bool(
-            query_terms
-            & {
-                "answer",
-                "blood",
-                "caught",
-                "explain",
-                "fafsa",
-                "health",
-                "information",
-                "interest",
-                "manage",
-                "need",
-                "pressure",
-                "recognize",
-                "risk",
-                "risks",
-                "safe",
-                "safety",
-                "symptom",
-                "tax",
-                "test",
-                "user",
-                "withholding",
-            }
+        # Causal intent is detected by the IR's scope_constraints (set by LLM/embedding)
+        # rather than hardcoded English causal keywords.
+        wants_explanation = bool(ir.scope_constraints.get("question_intent")) or bool(
+            set(ir.tokens) & {"why", "cause", "how", "explain", "impact", "effect"}
         )
         candidates: list[tuple[int, float, int, str, RetrievalResult]] = []
-        minimum_sentence_score = 1 if wants_guidance else (2 if len(query_terms) >= 3 else 1)
+        minimum_sentence_score = 2 if len(query_terms) >= 3 else 1
         for result_index, result in enumerate(retrieved):
-            excerpt = result.signature.raw_excerpt.strip()
+            raw = result.signature.raw_excerpt
+            excerpt = (raw or "").strip()
             if not excerpt:
                 continue
             for sentence_score, sentence in self._scored_excerpt_sentences(
                 excerpt,
                 query_terms,
                 include_causal=wants_explanation,
-                include_guidance=wants_guidance,
             ):
                 if sentence_score < minimum_sentence_score:
                     continue
@@ -843,8 +789,7 @@ class ReasoningBridgeLayer:
 
         seen: set[str] = set()
         steps: list[ReasoningStep] = []
-        wants_answer_policy = bool({"answer", "grounded", "csse"} & query_terms and {"user", "source", "claims"} & query_terms)
-        limit = 6 if wants_explanation or wants_answer_policy else 4
+        limit = 6 if wants_explanation else 4
         for _sentence_score, _result_score, _result_index, sentence, result in candidates:
             key = sentence.lower()
             if key in seen:
@@ -972,7 +917,7 @@ class ReasoningBridgeLayer:
                 )
             )
 
-        if relation_filter in DOCUMENT_FACT_PREDICATES:
+        if _is_document_wide_relation(relation_filter):
             requires_entity_target = relation_filter == "means"
             for result in retrieved:
                 sig = result.signature
@@ -1158,11 +1103,9 @@ class TransformerRenderInterface:
             True,
             "Rendered Verified Cognitive Object through CSSE with optional bounded local model phrasing.",
             {
-                "used_groq": False,
                 "used_local_model": used_local_model,
                 "mode": "local_bounded" if used_local_model else "csse",
                 "local_model_skip_reason": self.bridge.last_t2_skip_reason,
-                "groq_skip_reason": "external_groq_disabled",
             },
             deterministic=not used_local_model,
         )

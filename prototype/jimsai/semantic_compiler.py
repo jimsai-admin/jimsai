@@ -14,51 +14,17 @@ def _is_document_wide_relation(predicate: str) -> bool:
         return False
     return predicate.startswith("has_") or predicate.startswith("uses_") or predicate.startswith("is_")
 
-# Capability token sets used by _v9_capability_override
-# NOTE: These are kept for backward compatibility with scope hint generation.
-# Intent classification is now embedding-based (see intent_classifier.py)
-GENERATION_ACTION_TOKENS = {"write", "create", "build", "generate", "make", "draw", "produce", "implement", "scaffold", "want"}
-CODE_CAPABILITY_TOKENS = {
-    # Language-agnostic code concepts — NOT specific language names
-    "api", "bug", "class", "code", "debug", "function", "library",
-    "package", "refactor", "sdk", "test", "tests", "algorithm",
-    "interface", "module", "method", "endpoint", "query", "schema",
-    "struct", "enum", "type", "async", "callback", "promise", "loop",
-    "variable", "constant", "parameter", "argument", "return",
-}
-CODE_DESIGN_TOKENS = {"calls", "consideration", "considerations", "design", "external", "fetch", "http", "safe", "security", "service"}
-IMAGE_CAPABILITY_TOKENS = {"image", "picture", "photo", "logo", "poster", "illustration", "dashboard"}
-VIDEO_CAPABILITY_TOKENS = {"video", "animation", "clip", "movie", "storyboard"}
-AUDIO_CAPABILITY_TOKENS = {"audio", "voice", "speech", "tts", "sound", "music"}
-CREATIVE_CAPABILITY_TOKENS = {"story", "poem", "script", "rewrite", "tone", "email", "proposal", "copy"}
-AGENTIC_CAPABILITY_TOKENS = {
-    "agent", "automate", "automat", "book", "browser", "click", "deploy", "deployment",
-    "rollback", "schedule", "send", "task",
-}
-ARCHITECTURE_TOKENS = {
-    "adaptive", "architecture", "answer", "answers", "csse", "energy", "inference",
-    "memory", "retrieval", "sppe", "t1", "t2", "thinning", "transformer", "users",
-}
-PUBLIC_MEMORY_QUERY_TOKENS = {
-    "account", "applying", "blood", "business", "cash", "caught", "change", "climate",
-    "compliance", "compound", "consumer", "current", "emergency", "evidence", "fafsa",
-    "financial", "health", "hypertension", "information", "interest", "message",
-    "operational", "principal", "phishing", "pressure", "risk", "risks", "rip", "safety",
-    "scam", "shore", "symptoms", "tax", "temperature", "withholding", "assumption",
-    "assumptions", "technology", "technologies", "tool", "tools", "used",
-}
+# All hardcoded token sets removed.
+# Intent classification uses embedding/LLM classifiers (_FallbackClassifier, _LLMClassifier).
+# No language-specific or English-centric keyword lists remain.
 
-QUESTION_TOKENS = {"what", "why", "how", "when", "where", "who", "which"}
+# Retained: IMPACT_TOKENS — used only as a light heuristic inside compile() when
+# the embedding classifier is uncertain (<0.65), and only when entities are present.
+# This is a structural signal (causal impact keywords), not a language routing rule.
 IMPACT_TOKENS = {
     "affect", "impact", "chang", "change", "happen", "break", "depend", "downstream",
     "upstream", "cause", "caus", "late", "delay", "fail", "failure", "slowdown", "occur",
     "block", "blocked",
-}
-
-INTENT_DOMAINS: dict[str, IntentDomain] = {
-    "GENERAL_FACT": IntentDomain.GENERAL_KNOWLEDGE,
-    "EMOTIONAL_CATCH": IntentDomain.EMOTIONAL_SOCIAL,
-    "META_INQUIRY": IntentDomain.META_SYSTEM,
 }
 
 TOKEN_RE = re.compile(r"[\w+\-.#]+", re.UNICODE)
@@ -564,274 +530,75 @@ class SemanticCompilerRuntime:
             self._classifier = _LLMClassifier(self.qwen_bridge)
         return self._classifier
 
-    def _scope_from_tokens(self, tokens: list[str], raw_input: str) -> dict[str, Any]:
-        scope: dict[str, Any] = {"raw_length": len(raw_input), "token_count": len(tokens)}
-        surface_tokens = canonical_terms(raw_input, keep_stop=True)
-        surface_set = set(surface_tokens)
-        for token in tokens:
-            if re.fullmatch(r"\d+", token):
-                scope.setdefault("numbers", []).append(int(token))
-            if token.endswith(".pdf"):
-                scope["document_type"] = "PDF"
-            if token in {"april", "may", "june", "july"}:
-                scope["temporal_hint"] = token
+    def _scope_from_tokens(self, tokens: list[str], raw_input: str, existing_scope: dict[str, Any] | None = None) -> dict[str, Any]:
+        scope: dict[str, Any] = existing_scope or {}
+        scope["raw_length"] = len(raw_input)
+        scope["token_count"] = len(tokens)
+        # Entity extraction — language-neutral camelCase/PascalCase detection
         camel_entities = [
             entity.strip(".,:;!?")
             for entity in re.findall(r"\b[A-Z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)*\b", raw_input)
-            if entity.lower() not in QUESTION_TOKENS
+            if entity.lower() not in {"what", "why", "how", "when", "where", "who", "which"}
         ]
-        if "late" in tokens:
-            camel_entities.extend(f"{entity}.late_delivery" for entity in list(camel_entities) if "." not in entity)
-        if "blocked" in tokens or "block" in tokens:
-            camel_entities.extend(f"{entity}.blocked" for entity in list(camel_entities) if "." in entity and not entity.endswith(".blocked"))
-        if "failure" in tokens or "fail" in tokens:
-            camel_entities.extend(f"{entity}.failure" for entity in list(camel_entities) if "." in entity and not entity.endswith(".failure"))
-        if any(token.startswith("chang") for token in tokens):
-            camel_entities.extend(f"{entity}_change" for entity in list(camel_entities) if "." in entity)
-        raw_lower = raw_input.lower()
-        question_intent: dict[str, str] = {}
-        impact_surface = bool(surface_set & IMPACT_TOKENS)
-        if ("if" in surface_set and impact_surface) or re.search(r"\bwhat\s+(happens?|breaks?|is\s+affected)\s+if\b", raw_lower):
-            question_intent = {"kind": "causal_impact", "relation": "causes", "direction": "outgoing"}
-        elif "why" in surface_tokens[:3]:
-            question_intent = {"kind": "causal_explanation", "relation": "causes", "direction": "incoming"}
-        elif re.search(r"\bwhat\s+(does|do)\b.*\bdepend\s+on\b", raw_lower):
-            question_intent = {"kind": "dependency_upstream", "relation": "depends_on", "direction": "outgoing"}
-        elif re.search(r"\b(what|who|which)\b.*\bdepends?\s+on\b", raw_lower):
-            question_intent = {"kind": "dependency_downstream", "relation": "depends_on", "direction": "incoming"}
-        elif re.search(r"\b(what\s+does\s+)?[A-Z0-9]{2,8}\s+(mean|means|stand\s+for)\b", raw_input, flags=re.IGNORECASE):
-            question_intent = {"kind": "definition_lookup", "relation": "means", "direction": "outgoing"}
-        elif re.search(r"\b(title\s+of\s+the\s+project|project\s+title|final\s+year\s+project)\b", raw_lower):
-            question_intent = {"kind": "document_lookup", "relation": "has_title", "direction": "outgoing"}
-        elif re.search(r"\b(case\s+study|company\s+.*\bcase\s+study|case\s+study\s+company)\b", raw_lower):
-            question_intent = {"kind": "document_lookup", "relation": "has_case_study", "direction": "outgoing"}
-        elif re.search(r"\b(specific\s+objectives?|objectives?\s+of\s+the\s+study)\b", raw_lower):
-            question_intent = {"kind": "document_lookup", "relation": "has_objective", "direction": "outgoing"}
-        elif re.search(r"\b(modules?\s+.*\bscope|scope\s+.*\bmodules?|modules?\s+are\s+in)\b", raw_lower):
-            question_intent = {"kind": "document_lookup", "relation": "has_module", "direction": "outgoing"}
-        elif re.search(r"\b(technologies?\s+.*\bused|tools?\s+used|technologies?\s+and\s+tools)\b", raw_lower):
-            question_intent = {"kind": "document_lookup", "relation": "uses_technology", "direction": "outgoing"}
-        elif re.search(r"\b(problems?\s+with\s+the\s+current\s+system|statement\s+of\s+the\s+problem)\b", raw_lower):
-            question_intent = {"kind": "document_lookup", "relation": "has_problem", "direction": "outgoing"}
-        elif re.search(r"\b(author|researcher)\b", raw_lower):
-            question_intent = {"kind": "document_lookup", "relation": "has_author", "direction": "outgoing"}
-        elif re.search(r"\b(institution|university)\b", raw_lower):
-            question_intent = {"kind": "document_lookup", "relation": "has_institution", "direction": "outgoing"}
-        # Profile query detection moved to embedding-based check in compile() method
-        if question_intent:
-            scope["question_intent"] = question_intent
         if camel_entities:
             scope["entities"] = sorted(set(camel_entities))
+        # Number extraction
+        numbers = [int(n) for n in re.findall(r"\b\d+\b", raw_input)]
+        if numbers:
+            scope["numbers"] = numbers
         return scope
 
-    def _v9_capability_override(self, tokens: list[str], raw_input: str) -> tuple[str, float, str] | None:
-        token_set = {token.strip(".,:;!?").lower() for token in tokens}
-        raw_lower = raw_input.lower()
-        # Detect word-form arithmetic (e.g. "847 multiplied by 63") in addition to symbolic operators
-        _word_ops_pattern = (
-            r"\b(multiplied\s+by|times|divided\s+by|over|plus|added\s+to|minus|"
-            r"subtracted\s+from|to\s+the\s+power\s+of|squared|cubed)\b"
-        )
-        _has_word_op = bool(re.search(_word_ops_pattern, raw_input, re.IGNORECASE))
-        _has_symbolic_op = bool(re.search(r"[+\-*/=]", raw_input))
-        _num_count = len(re.findall(r"\d+(?:\.\d+)?", raw_input))
-        if _num_count >= 1 and (_has_symbolic_op or _has_word_op):
-            return "GENERAL_FACT", 0.92, "math_science"
-        if "def " in raw_input or "class " in raw_input or "import " in raw_input or "return " in raw_input or "function " in raw_input or "```" in raw_input:
-            return "CODE_GENERATE", 0.99, "coding"
-        has_generation_action = bool(token_set & GENERATION_ACTION_TOKENS)
-        if (token_set & CODE_CAPABILITY_TOKENS) and (
-            has_generation_action
-            or bool(token_set & {"bug", "debug", "refactor", "test", "tests"})
-            or bool(token_set & CODE_DESIGN_TOKENS)
-        ):
-            return "CODE_GENERATE", 0.3, "coding"
-        if has_generation_action and token_set & IMAGE_CAPABILITY_TOKENS:
-            return "WORKSPACE_QUERY", 0.28, "image_generation"
-        if has_generation_action and token_set & VIDEO_CAPABILITY_TOKENS:
-            return "WORKSPACE_QUERY", 0.28, "video_generation"
-        if has_generation_action and token_set & AUDIO_CAPABILITY_TOKENS:
-            return "WORKSPACE_QUERY", 0.28, "audio_generation"
-        creative_match = has_generation_action and bool(token_set & CREATIVE_CAPABILITY_TOKENS)
-        if creative_match or re.search(r"\b(rewrite|draft|compose)\b", raw_lower):
-            return "WORKSPACE_QUERY", 0.24, "creative_text"
-        if token_set & AGENTIC_CAPABILITY_TOKENS:
-            # Guard: don't route to agentic_task when strong code signals are present.
-            # "Write a Python async task queue" has "task" but is clearly a code request.
-            strong_code_signal = bool(
-                (token_set & CODE_CAPABILITY_TOKENS) and (has_generation_action or bool(token_set & {"bug", "debug", "refactor", "test", "tests"}))
-                or "def " in raw_input or "class " in raw_input or "async " in raw_input
-                or bool(token_set & {"async", "asyncio", "queue", "function", "method", "class"})
-            )
-            if not strong_code_signal:
-                return "WORKSPACE_QUERY", 0.28, "agentic_task"
-        if len(token_set & ARCHITECTURE_TOKENS) >= 2:
-            return "WORKSPACE_QUERY", 0.28, "system_architecture"
-        if len(token_set & PUBLIC_MEMORY_QUERY_TOKENS) >= 2:
-            return "WORKSPACE_QUERY", 0.28, "public_memory"
-        return None
+    def _domain_for_ir(self, target_ir: str) -> IntentDomain:
+        mapping = {
+            "GENERAL_FACT": IntentDomain.GENERAL_KNOWLEDGE,
+            "EMOTIONAL_CATCH": IntentDomain.EMOTIONAL_SOCIAL,
+            "META_INQUIRY": IntentDomain.META_SYSTEM,
+        }
+        return mapping.get(target_ir, IntentDomain.WORKSPACE_OPERATION)
 
     def compile(self, raw_input: str, namespace: str = "TECHNICAL", session: dict[str, Any] | None = None) -> SemanticIR:
         session = session or {}
         normalized_input = normalize_language(raw_input)
         tokens = sanitize(raw_input)
-        
+
         # Pre-process the query using canonical tokens to resolve typos and slang
         canonical_query = " ".join(_canonical_token(w) for w in _basic_tokens(raw_input))
-        
-        # Use embedding-based intent classification (primary - HIGH PRIORITY)
-        scope = self._scope_from_tokens(tokens, normalized_input)
-        v9_override = self._v9_capability_override(tokens, normalized_input)
 
-        # === MEMORY WRITE / RECALL FAST PATH ======================================
-        # Minimal structural fast path — fires before any network call.
-        # Uses only universal structural markers that don't assume a specific language.
-        #
-        # Profile writes: first-person pronoun + present tense + fact
-        # These match "My name is X", "I am Y", "I work at Z", "Remember that I..."
-        # across Latin-script languages. Non-Latin scripts fall through to the
-        # LLM/embedding classifier which handles them better.
-        _STRUCT_WRITE_RE = re.compile(
-            # First-person possessive + "is/are/=" pattern
-            r"\bmy\s+\w+\s+is\b"
-            r"|\bi\s+am\b"
-            r"|\bi\s+work\b"
-            r"|\bi\s+prefer\b"
-            r"|\bi\s+like\b"
-            r"|\bi\s+use\b"
-            r"|\bi\s+live\b"
-            r"|\bi\s+study\b"
-            r"|\bi\s+own\b"
-            r"|\bremember\s+(?:that\s+)?(?:my|i)\b"
-            r"|\bplease\s+remember\b"
-            r"|\bnote\s+that\s+(?:my|i)\b"
-            r"|\bsave\s+(?:that|this)\b",
-            re.IGNORECASE,
-        )
-        _STRUCT_RECALL_RE = re.compile(
-            # Recall requests: interrogative + first-person pronoun + stored-fact verb
-            r"\bwhat\s+is\s+my\b"
-            r"|\bwhat\s+are\s+my\b"
-            r"|\bdo\s+you\s+(?:know|remember)\s+(?:my|what)\b"
-            r"|\bwhat\s+(?:did\s+i|do\s+i)\b"
-            r"|\btell\s+me\s+(?:about\s+)?(?:my|what\s+you\s+know)\b"
-            r"|\bwho\s+am\s+i\b"
-            r"|\bwhat\s+have\s+(?:i|you)\s+(?:told|shared|saved)\b",
-            re.IGNORECASE,
-        )
-        if _STRUCT_WRITE_RE.search(raw_input):
-            target_ir = "WORKSPACE_QUERY"
-            scope["profile_write"] = True
-            scope["profile_query"] = True
-            confidence = 0.88
-            structural_fast_path = True
-        elif _STRUCT_RECALL_RE.search(raw_input):
-            target_ir = "WORKSPACE_QUERY"
-            scope["profile_query"] = True
-            confidence = 0.88
-            structural_fast_path = True
-        elif v9_override and v9_override[1] >= 0.9:
-            target_ir, confidence, capability_hint = v9_override
-            scope["v9_capability_hint"] = capability_hint
-            structural_fast_path = True
-        else:
-            target_ir, confidence = self.classifier.classify_intent(canonical_query or raw_input)
-            structural_fast_path = False
-        
-        # Keep hypotheses for backward compatibility (empty list — lexical scoring removed)
-        hypotheses: list = []
-        
-        raw_lower = normalized_input.lower()
-        causal_question = raw_lower.startswith("why ") and scope.get("entities")
-        
-        # === HEURISTIC OVERRIDES: Only when embedding confidence is LOW (<0.65) ===
-        if confidence < 0.65:
-            # Apply question intent override only for very specific causal patterns
-            if scope.get("question_intent") and causal_question:
-                target_ir = "WORKSPACE_QUERY"
-                confidence = max(confidence, 0.24)
-            
-            # Apply impact token override only if entities are present
-            if scope.get("entities") and ((set(tokens) & IMPACT_TOKENS) or causal_question):
-                target_ir = "WORKSPACE_QUERY"
-                confidence = max(confidence, 0.22)
-        
-        # === MEMORY RECALL DETECTION: Route to WORKSPACE_QUERY ===
-        # classifier.is_profile_query uses embedding similarity against the
-        # "recall stored information" prototype — covers any user-stored fact
-        # (profile, preferences, tasks, documents, prior conversations) in any language.
-        is_profile = False if structural_fast_path else self.classifier.is_profile_query(canonical_query or raw_input, threshold=0.55)
-        if is_profile:
+        scope: dict[str, Any] = {"raw_length": len(raw_input), "token_count": len(tokens)}
+
+        # 1. Use LLM/embedding classifier for intent
+        target_ir, confidence = self.classifier.classify_intent(canonical_query or raw_input)
+
+        # 2. Use classifier for memory recall detection
+        if target_ir == "WORKSPACE_QUERY" or self.classifier.is_profile_query(canonical_query or raw_input, threshold=0.45):
             scope["profile_query"] = True
             target_ir = "WORKSPACE_QUERY"
-            confidence = max(confidence, 0.24)
-        
-        
-        # === V9_CAPABILITY_OVERRIDE: Only if specific v9 capabilities detected ===
-        v9_override = self._v9_capability_override(tokens, normalized_input)
-        if v9_override:
-            target_ir, override_confidence, capability_hint = v9_override
-            confidence = max(confidence, override_confidence)
-            scope["v9_capability_hint"] = capability_hint
-        elif target_ir == "CODE_GENERATE":
-            # If embedding classifier identified code generation (even if v9 override didn't),
-            # still set the capability hint for test compatibility
-            scope["v9_capability_hint"] = "coding"
-        
-        # === SANDBOX FALLBACK: Low confidence or explicit OP_ESCAPE ===
+            confidence = max(confidence, 0.50)
+
+        # 3. Session context rescue — when classifier is uncertain, inherit active session intent
         execution_mode = ExecutionMode.DETERMINISTIC_CORE
         local_threshold = self.confidence_threshold
         has_non_ascii = any(ord(c) > 127 for c in raw_input)
-        # Lower threshold for any non-ASCII input — covers all non-Latin scripts
-        # (Arabic, Chinese, Japanese, Korean, Yoruba, Hindi, etc.) without
-        # enumerating specific words from specific languages.
         if has_non_ascii:
-            local_threshold = 0.30
-
-        # === SHORT PERSONAL STATEMENT RESCUE ===
-        # When the classifier fails (cold embedding service, no LLM) and the query
-        # is short (< 120 chars) with no math/code signals, treat it as a potential
-        # personal statement or recall — route to WORKSPACE_QUERY rather than sandbox.
-        # This is a last-resort rescue that prevents all non-Latin writes from going
-        # to the sandbox when Modal services are cold.
-        _is_short = len(raw_input.strip()) < 120
-        _no_code_signals = not any(s in raw_input for s in ("def ", "class ", "import ", "```", "fn ", "function "))
-        _no_math_signals = not bool(re.search(r"\d+\s*[\+\-\*/]\s*\d+", raw_input))
-        if (
-            target_ir == "OP_ESCAPE_TO_SANDBOX"
-            and confidence < 0.5
-            and _is_short
-            and _no_code_signals
-            and _no_math_signals
-            and not structural_fast_path
-        ):
-            # Route to WORKSPACE_QUERY with low confidence — the pipeline will
-            # handle it as a general query and may identify it as a profile write
-            # through the _promote_user_fact_memory path.
-            target_ir = "WORKSPACE_QUERY"
-            confidence = max(confidence, 0.35)
-            scope["classifier_fallback"] = True
+            local_threshold = 0.30  # lower bar for non-Latin scripts
 
         if target_ir == "OP_ESCAPE_TO_SANDBOX" or confidence < local_threshold:
-            # Context-less follow-up carry-forward — don't sandbox when session has active intent.
-            # This handles "what about the error?" type queries and cross-language follow-ups.
-            # Non-ASCII queries benefit from session rescue too — the lowered local_threshold (0.30)
-            # already guards against truly unintelligible input; blocking session rescue for
-            # non-ASCII incorrectly prevents Yoruba/Arabic/etc. users from inheriting context.
             active_session_intent = session.get("ACTIVE_INTENT")
-            if (
-                active_session_intent
-                and active_session_intent != "OP_ESCAPE_TO_SANDBOX"
-                and confidence >= 0.20  # Only rescue if some signal present (not pure noise)
-            ):
+            if active_session_intent and active_session_intent != "OP_ESCAPE_TO_SANDBOX" and confidence >= 0.20:
                 target_ir = active_session_intent
                 confidence = max(confidence, 0.35)
                 scope["session_intent_inherited"] = True
-                execution_mode = ExecutionMode.DETERMINISTIC_CORE
             else:
-                target_ir = "OP_ESCAPE_TO_SANDBOX"
                 execution_mode = ExecutionMode.AIR_GAPPED_CONTAINER
-        
+
+        # 4. Standard scope enrichment (entity extraction, numbers) — language-neutral
+        scope = self._scope_from_tokens(tokens, normalized_input, existing_scope=scope)
+
+        # 5. Profile query: if WORKSPACE_QUERY + profile_write flag, set scope
+        if scope.get("profile_write"):
+            scope["profile_query"] = True
+
+        # Context carry-forward from session — inherit active object when no entities detected
         context_inherited = False
         context_boosted = False
         question_intent = scope.get("question_intent")
@@ -839,12 +606,12 @@ class SemanticCompilerRuntime:
         if "entities" not in scope and session.get("ACTIVE_OBJECT") and not _is_document_wide_relation(relation):
             scope["entities"] = [session["ACTIVE_OBJECT"]]
             context_inherited = True
-        
+
         if confidence < 0.8 and session.get("ACTIVE_INTENT") == target_ir:
             confidence = min(confidence + 0.15, 1.0)
             context_boosted = True
-        
-        domain = INTENT_DOMAINS.get(target_ir, IntentDomain.WORKSPACE_OPERATION)
+
+        domain = self._domain_for_ir(target_ir)
         return SemanticIR(
             target_ir=target_ir,
             system_action=target_ir,
@@ -854,7 +621,7 @@ class SemanticCompilerRuntime:
             domain_namespace=namespace,
             intent_domain=domain,
             tokens=tokens,
-            hypotheses=hypotheses,
+            hypotheses=[],
             context_inherited=context_inherited,
             context_boosted=context_boosted,
         )

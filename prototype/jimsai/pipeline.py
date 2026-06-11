@@ -218,19 +218,12 @@ class JimsAIPipeline:
         return [item[3] for item in scored[:8]]
 
     def _lexical_query_terms(self, query: str) -> set[str]:
-        stop_terms = {"what", "how", "why", "the", "and", "for", "with", "about", "should"}
-        # Use \w (Unicode-aware) instead of [a-z0-9] so Yoruba, Arabic, French etc.
-        # characters (ọ, ẹ, à, è, ñ, ü, ...) are preserved as valid term characters.
+        # Unicode-aware tokenization, no hardcoded stop words
         terms = {
-            term
-            for term in re.findall(r"[\w\-.]+", query.lower(), flags=re.UNICODE)
-            if len(term) >= 3 and term not in stop_terms
+            term for term in re.findall(r"[\w\-.]+", query.lower(), flags=re.UNICODE)
+            if len(term) >= 3
         }
-        expanded = set(terms)
-        for term in terms:
-            if len(term) > 4 and term.endswith("s"):
-                expanded.add(term[:-1])
-        return expanded
+        return terms
 
     def _lexical_signature_score(self, signature, query_terms: set[str]) -> int:
         haystack_parts = [
