@@ -37,37 +37,56 @@ class EmbeddingClassifier:
         self.model = SentenceTransformer(model_name)
         self.model_name = model_name
         
-        # IR intent prototypes in English
-        # These will be embedded once and reused for all queries
-        # Prototypes tuned for semantic coverage across all 10 IR targets
-        # FETCH_DOCUMENT prototype includes OCR-error variants of common actions
+        # IR intent prototypes — semantic concept descriptions, not keyword lists.
+        # The embedding model maps any query in any language to the same vector space,
+        # so these English descriptions work as universal semantic anchors.
         self.ir_prototypes: dict[str, str] = {
             "FETCH_DOCUMENT": (
-                "fetch retrieve download upload attach file file document export save read open import load gba fifipamọ nweta chekwaa samu ajiye "
-                "télécharger document récupérer archivo descargar"
+                "Retrieve, download, open, or access a file, document, attachment, or stored artifact. "
+                "The user wants to get something that already exists."
             ),
-            "SYSTEM_DIAGNOSTIC": "system error status crash failure bug log trace debug issue diagnostic exception problem yọọda nye aka koma diagnostic crash erreur",
+            "SYSTEM_DIAGNOSTIC": (
+                "Diagnose a system error, crash, bug, failure, or unexpected behaviour. "
+                "The user is reporting or investigating a technical problem."
+            ),
             "WORKSPACE_QUERY": (
-                "workspace database db affects changed impact query what happens if codebase relation dependency effect consequence causation "
-                "base de données consulta"
+                "Query or recall information from stored memory, personal facts, prior conversations, "
+                "or the user's own workspace. The user wants to retrieve something JimsAI already knows "
+                "or has been told."
             ),
             "CODE_GENERATE": (
-                "generate code write function method API create script implementation logic python javascript ruby java cpp testing tests koodu kodi "
-                "générer du code python écrire une fonction python generar código python escribir una función python "
-                "编写用于排序的Python函数 Python代码生成 ソート用のPython関数を書いてください Pythonコード生成 "
-                "اكتب دالة Python للفرز توليد رمز Python सॉर्टिंग के लिए Python फ़ंक्शन लिखें Python कोड उत्पन्न करें"
+                "Write, generate, create, or implement source code, a function, algorithm, script, "
+                "query, or program in any programming language or data format."
             ),
-            "RUN_CANVAS": "run analyze deep codebase synthesis comprehensive corpus investigation background execution canvas",
-            "RUN_INVENTION": "invent design novel architecture create blueprint prototype strategy plan original innovative solution invention",
-            "GENERAL_FACT": "general knowledge define explain concept understand information fact learning educational reference",
+            "RUN_CANVAS": (
+                "Analyse, synthesise, or investigate a codebase, corpus, or large body of information "
+                "through deep background processing."
+            ),
+            "RUN_INVENTION": (
+                "Invent, design, architect, or prototype a novel solution, system, or strategy. "
+                "The user wants original creative or technical output."
+            ),
+            "GENERAL_FACT": (
+                "Answer a factual question, explain a concept, define a term, or perform a calculation. "
+                "The user wants a direct informational answer."
+            ),
             "EMOTIONAL_CATCH": (
-                "help emotional support stress overwhelmed sad tired anxious upset frustrated struggling difficulty how overwhelm distressed worried concerned scared nervous confused broken unclear incoherent please xqz xyz abc taimako nye aka "
-                "Je suis stressé Je suis stressé et confus Estoy estresado Estoy estresado y confundido 我感到压力 我感到压力和困惑 ストレスを感じています ストレスを感じていて、混乱しています "
-                "أشعر بالتوتر أشعر بالتوتر والارتباك मैं तनावग्रस्त हूँ मैं तनावग्रस्त और भ्रमित हूँ"
+                "Respond to emotional distress, confusion, overwhelm, frustration, or a request for "
+                "support, comfort, or human-like understanding."
             ),
-            "META_INQUIRY": "meta about yourself reasoning explain sources confidence introspection self know capability awareness",
-            "OP_ESCAPE_TO_SANDBOX": "zzzz qqqq unknown random nonsense xxxx yyyy wwww vvvv",
+            "META_INQUIRY": (
+                "Ask about JimsAI itself: its capabilities, reasoning, sources, confidence, or how it works."
+            ),
+            "OP_ESCAPE_TO_SANDBOX": (
+                "Input that is unintelligible, random, nonsensical, or cannot be mapped to any intent."
+            ),
         }
+
+        # Memory recall prototype — covers any user-stored fact recall in any language
+        self.memory_recall_prototype = (
+            "Recall stored information, personal facts, user preferences, prior conversations, "
+            "remembered notes, tasks, or anything the user previously shared or asked JimsAI to store."
+        )
         
         # Embed all prototypes once
         self._prototype_embeddings: dict[str, np.ndarray] = {}
@@ -79,12 +98,11 @@ class EmbeddingClassifier:
                 # Fallback: create zero embedding if model fails
                 self._prototype_embeddings[ir_target] = np.zeros(self.model.get_sentence_embedding_dimension())
         
-        # Profile query prototype
-        self.profile_prototype_text = "tell me about myself my profile personal information who am i me"
+        # Memory recall prototype — embed once for is_profile_query detection
         try:
             self.profile_embedding = self.model.encode(
-                "passage: " + self.profile_prototype_text, 
-                normalize_embeddings=True
+                "passage: " + self.memory_recall_prototype,
+                normalize_embeddings=True,
             )
         except Exception:
             dim = self.model.get_sentence_embedding_dimension()

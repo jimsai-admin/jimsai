@@ -514,9 +514,4 @@ class SemanticCompilerRuntime:
             context_inherited=context_inherited,
             context_boosted=context_boosted,
         )
-            tokens=tokens,
-            hypotheses=[],
-            context_inherited=context_inherited,
-            context_boosted=context_boosted,
-        )
 
