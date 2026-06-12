@@ -295,8 +295,6 @@ class _FallbackClassifier:
             t: round(max(0.0, min(1.0, self._cosine(query_emb, emb))), 4)
             for t, emb in prototypes.items()
         }
-
-
 class _LLMClassifier:
     """Intent classifier using LLM (QwenBridge) for robust multilingual understanding.
 
@@ -339,6 +337,48 @@ class _LLMClassifier:
 
         # Minimal structural fallback — Unicode-aware, no language assumptions
         return self._structural_classify(query)
+
+    def classify_intent_with_memory_check(self, query: str) -> tuple[str, float, bool]:
+        """Classify intent AND check memory recall in a single batch embedding call.
+
+        Sends the query + all prototypes + memory recall prototype in ONE batch
+        to the Modal embedding service. This minimises round-trips and handles
+        cold-start better — one call that can take 45s vs multiple 8s-timeout calls.
+        """
+        embed_cls = self._embed_cls
+        try:
+            prototypes = embed_cls._get_prototype_embeddings()
+            if not prototypes:
+                ir, conf = self._structural_classify(query)
+                return ir, conf, False
+
+            # Single batch: [query, memory_recall_proto, ...all IR protos already cached]
+            # Query embedding
+            query_emb = embed_cls._fetch_embedding("query: " + query)
+            if not query_emb or all(v == 0.0 for v in query_emb):
+                ir, conf = self._structural_classify(query)
+                return ir, conf, False
+
+            # Classify against IR prototypes
+            best_ir = "OP_ESCAPE_TO_SANDBOX"
+            best_score = 0.0
+            for ir_target, proto_emb in prototypes.items():
+                score = embed_cls._cosine(query_emb, proto_emb)
+                if score > best_score:
+                    best_score = score
+                    best_ir = ir_target
+
+            # Check memory recall similarity
+            recall_emb = embed_cls._get_memory_recall_embedding()
+            recall_score = embed_cls._cosine(query_emb, recall_emb)
+            # Use lower threshold when hash fallback is active
+            effective_threshold = 0.20 if embed_cls._use_hash_fallback else 0.38
+            is_memory = recall_score > effective_threshold
+
+            return best_ir, round(max(0.0, min(1.0, best_score)), 4), is_memory
+        except Exception:
+            ir, conf = self._structural_classify(query)
+            return ir, conf, False
 
     def is_profile_query(self, query: str, threshold: float = 0.55) -> bool:
         """Return True if query asks to recall something from stored memory.
@@ -430,14 +470,16 @@ class SemanticCompilerRuntime:
         tokens = _raw_tokens(raw_input)
         scope: dict[str, Any] = {"raw_length": len(raw_input), "token_count": len(tokens)}
 
-        # 1. Classify intent via LLM → embedding → structural fallback (in that order)
-        target_ir, confidence = self.classifier.classify_intent(raw_input)
+        # 1. Classify intent AND check memory recall in a single embedding call.
+        # Using one embedding avoids two Modal round-trips for every query.
+        target_ir, confidence, is_memory_query = self.classifier.classify_intent_with_memory_check(raw_input)
 
-        # 2. Memory recall detection — covers any user-stored fact in any language
-        if target_ir == "WORKSPACE_QUERY" or self.classifier.is_profile_query(raw_input, threshold=0.45):
+        # 2. Memory store/recall — fires when memory recall prototype similarity is high.
+        # This works for writes ("My name is X") and recalls ("What is my name?") in any language.
+        if is_memory_query or target_ir == "WORKSPACE_QUERY":
             scope["profile_query"] = True
             target_ir = "WORKSPACE_QUERY"
-            confidence = max(confidence, 0.50)
+            confidence = max(confidence, 0.60)
 
         # 3. Session context rescue — inherit active intent when classifier is uncertain
         execution_mode = ExecutionMode.DETERMINISTIC_CORE

@@ -427,7 +427,65 @@ class QwenBridge:
         )
         return await self._chat_json(self.local_model, system, user, max_tokens=200)
 
-    # ── T2: Render / Canvas / Invention / Ingest ──────────────────────────────
+    async def extract_user_facts(
+        self, raw_input: str, context: dict[str, Any] | None = None
+    ) -> dict[str, Any] | None:
+        """Extract subject-predicate-object facts the user stated about themselves.
+
+        Works for any language and phrasing — e.g. "My name is Celestine",
+        "Je m'appelle Kofi", "اسمي عمر", "I'm a backend developer", "I'm building
+        a podcast app". Returns relations in the same shape the deterministic
+        regex extractor produces (subject="user", predicate snake_case, object,
+        confidence), so callers can merge results from either source uniformly.
+
+        Returns None if Qwen is unavailable or no JSON could be parsed; returns
+        {"relations": []} if the LLM ran but found no self-referential facts.
+        """
+        if not self.qwen_enabled:
+            return None
+        system = (
+            "You are a user-fact extractor for JimsAI. Return only JSON. "
+            "Read the user's message in ANY language and extract facts the user "
+            "stated ABOUT THEMSELVES — name, role/occupation, preferences, projects "
+            "they are building, locations, or similar personal facts. "
+            "Do NOT extract facts about other people, the world, or general knowledge. "
+            "Always set subject to the literal string 'user'. "
+            "predicate must be snake_case and start with 'has_' or 'is_' "
+            "(e.g. has_name, has_role, has_preference, is_building, has_location). "
+            "object is the fact value, written in its original language/script — "
+            "do not translate names. "
+            "confidence is 0.0-1.0 reflecting how explicitly the user stated this. "
+            "If the message contains no self-referential facts, return an empty "
+            "relations list. "
+            "Examples:\n"
+            "  'My name is Celestine.' → relations: [{subject: 'user', predicate: "
+            "'has_name', object: 'Celestine', confidence: 0.96}]\n"
+            "  \"Je m'appelle Kofi.\" → relations: [{subject: 'user', predicate: "
+            "'has_name', object: 'Kofi', confidence: 0.96}]\n"
+            "  'اسمي عمر.' → relations: [{subject: 'user', predicate: 'has_name', "
+            "object: 'عمر', confidence: 0.96}]\n"
+            "  'I am a backend developer.' → relations: [{subject: 'user', "
+            "predicate: 'has_role', object: 'backend developer', confidence: 0.9}]\n"
+            "  'What is my name?' → relations: []"
+        )
+        user = json.dumps(
+            {
+                "raw_input": raw_input,
+                "context": context or {},
+                "schema": {
+                    "relations": [
+                        {
+                            "subject": "always 'user'",
+                            "predicate": "snake_case, has_* or is_*",
+                            "object": "fact value, original language/script",
+                            "confidence": "number between 0 and 1",
+                        }
+                    ],
+                },
+            },
+            sort_keys=True,
+        )
+        return await self._chat_json(self.local_model, system, user, max_tokens=300)
 
     async def canvas_synthesis(self, content: str) -> dict[str, Any] | None:
         """Bounded Active Canvas synthesis — returns JSON patterns only."""
@@ -572,6 +630,14 @@ class QwenBridge:
             "'Here's what I can verify from memory' unless the user asks for internals. "
             "Do not add claims, facts, sources, code, or conclusions not present in the object. "
             "If a gap is present, preserve it explicitly. "
+            "IMPORTANT — Failed or unexecuted capability results: "
+            "If any reasoning_chain step or capability result has status='failed', "
+            "executed=false, or solver_status!='solved', you MUST NOT invent, complete, "
+            "approximate, or partially render a numeric, symbolic, or code result for it. "
+            "State plainly that the calculation/operation could not be completed, and if "
+            "an error message is present in the data, summarise it briefly in plain language. "
+            "Never output bare formula fragments (e.g. '{d}{dx}', partial LaTeX, dangling "
+            "expressions) as if they were an answer. "
             "IMPORTANT — Code generation rules: "
             "If any reasoning_chain step has relation='CODE_GENERATION', treat its claim as "
             "the complete implementation. Present it in a fenced code block with the correct "
@@ -701,5 +767,3 @@ class QwenBridge:
         # Only skip T2 at very high confidence threshold (default 0.95, was 0.82)
         # This means T2 renders all but the most certain symbolic solver outputs
         return obj.confidence >= self.t2_skip_confidence
-
-

@@ -408,7 +408,7 @@ class JimsAIPipeline:
         input_signature, encoder_layer_result = self.encoder_layer.encode(request, ir)
         record(encoder_layer_result)
         record(self.learning_layer.learn(input_signature))
-        promoted_user_facts = self._promote_user_fact_memory(request, input_signature)
+        promoted_user_facts = await self._promote_user_fact_memory(request, input_signature)
         if promoted_user_facts:
             record(
                 LayerResult(
@@ -713,15 +713,16 @@ class JimsAIPipeline:
                 executed.append(result)
                 continue
             expression, solve_for = self._extract_solver_expression(request.query)
+            qwen_extraction_status = "not_attempted"
             if not expression:
-                expression, solve_for = await self._extract_solver_expression_with_qwen(request.query, result.data)
+                expression, solve_for, qwen_extraction_status = await self._extract_solver_expression_with_qwen(request.query, result.data)
             if not expression:
                 executed.append(
                     result.model_copy(
                         update={
                             "confidence": min(result.confidence, 0.35),
                             "summary": "Math route selected, but no bounded arithmetic expression was extracted.",
-                            "data": {**result.data, "executed": False, "extraction_status": "not_found"},
+                            "data": {**result.data, "executed": False, "extraction_status": qwen_extraction_status if qwen_extraction_status != "not_attempted" else "not_found"},
                         }
                     )
                 )
@@ -731,7 +732,7 @@ class JimsAIPipeline:
             except Exception as error:
                 solved = {"status": "failed", "result": str(error), "method": "internal_symbolic_solver"}
             if solved.get("status") != "solved":
-                qwen_expression, qwen_solve_for = await self._extract_solver_expression_with_qwen(request.query, {**result.data, "initial_expression": expression})
+                qwen_expression, qwen_solve_for, qwen_extraction_status = await self._extract_solver_expression_with_qwen(request.query, {**result.data, "initial_expression": expression})
                 if qwen_expression and qwen_expression != expression:
                     expression, solve_for = qwen_expression, qwen_solve_for
                     try:
@@ -764,6 +765,7 @@ class JimsAIPipeline:
                             "solver_result": solved.get("result", ""),
                             "solver_method": solved.get("method", ""),
                             "result_signature_id": signature.id,
+                            "extraction_status": qwen_extraction_status,
                         },
                     }
                 )
@@ -827,20 +829,25 @@ class JimsAIPipeline:
                 update={"status": "unavailable", "summary": f"Web search failed: {exc}"}
             )
 
-    async def _extract_solver_expression_with_qwen(self, query: str, context: dict[str, Any]) -> tuple[str, str | None]:
+    async def _extract_solver_expression_with_qwen(self, query: str, context: dict[str, Any]) -> tuple[str, str | None, str]:
         """Extract a mathematical expression from natural language using the T1 bridge.
 
         Supports all mathematical domains — arithmetic, algebra, calculus, linear algebra,
         differential equations, statistics, geometry, physics. The bridge returns a
         sympy-compatible expression string that is passed directly to SymbolicMathSolver.solve().
         No character-set validation — sympy expressions use letters, digits, and function names.
+
+        Returns (expression, solve_for, status), where status is a diagnostic string:
+        "ok", "bridge_unavailable_or_timeout" (bridge returned None — likely a Modal
+        timeout, cold start, or non-JSON response), or "empty_expression" (T1 ran but
+        found no mathematical content).
         """
         data = await self.bridge.extract_math_expression(query, context)
         if not data:
-            return "", None
+            return "", None, "bridge_unavailable_or_timeout"
         expression = str(data.get("expression") or "").strip()
         if not expression:
-            return "", None
+            return "", None, "empty_expression"
         solve_for_value = data.get("solve_for")
         solve_for = str(solve_for_value).strip() if solve_for_value else None
         # solve_for must be a single variable name (1+ chars) — no equations
@@ -848,7 +855,7 @@ class JimsAIPipeline:
             solve_for = None
         # Compact whitespace but preserve function calls like diff(x**3, x)
         expression = re.sub(r"\s+", " ", expression).strip()
-        return expression, solve_for
+        return expression, solve_for, "ok"
 
     def _extract_solver_expression(self, query: str) -> tuple[str, str | None]:
         # Translate natural language arithmetic operators to symbols
@@ -949,7 +956,7 @@ class JimsAIPipeline:
             return "", None
         return expression, solve_for
 
-    def _promote_user_fact_memory(self, request: PipelineRequest, input_signature) -> int:
+    async def _promote_user_fact_memory(self, request: PipelineRequest, input_signature) -> int:
         user_relations = [
             relation
             for relation in input_signature.structured.relations
@@ -957,6 +964,37 @@ class JimsAIPipeline:
             and (relation.predicate.startswith("has_") or relation.predicate.startswith("is_"))
             and relation.object.strip()
         ]
+        # LLM fallback — the deterministic regex extractor only covers a handful
+        # of English phrasings (e.g. "my name is X"). When it finds nothing,
+        # ask the T1 bridge (Qwen3-1.7B) to extract self-referential facts from
+        # the raw input in ANY language. This keeps the system fully
+        # language-agnostic without adding per-language regex patterns.
+        if not user_relations and self.bridge.qwen_enabled:
+            try:
+                data = await self.bridge.extract_user_facts(
+                    input_signature.raw_excerpt or request.query,
+                    context={"workspace_id": request.workspace_id},
+                )
+            except Exception:
+                data = None
+            if data:
+                for item in data.get("relations") or []:
+                    if not isinstance(item, dict):
+                        continue
+                    predicate = str(item.get("predicate") or "").strip()
+                    obj_value = str(item.get("object") or "").strip()
+                    if not predicate or not obj_value:
+                        continue
+                    if not (predicate.startswith("has_") or predicate.startswith("is_")):
+                        continue
+                    try:
+                        confidence = float(item.get("confidence") or 0.85)
+                    except (TypeError, ValueError):
+                        confidence = 0.85
+                    confidence = max(0.0, min(1.0, confidence))
+                    user_relations.append(
+                        Relation(subject="user", predicate=predicate[:80], object=obj_value[:240], confidence=confidence)
+                    )
         if not user_relations:
             return 0
         promoted = 0
