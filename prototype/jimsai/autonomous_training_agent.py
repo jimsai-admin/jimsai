@@ -428,7 +428,11 @@ class AutonomousTrainingAgent:
             intent_stability_score=0.88,  # Placeholder
             provider_dependency_rate=0.12,  # 12% provider calls
             retrieval_accuracy=0.82,
-            world_model_confidence_avg=0.73,
+            world_model_confidence_avg=(
+                self.pipeline.world_model_promotion.stats()["avg_confidence"]
+                if getattr(self, "pipeline", None) is not None
+                else 0.0
+            ),
             language_variant_scores={
                 "en": 0.91,
                 "fr": 0.78,

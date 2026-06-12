@@ -78,6 +78,7 @@ from .simulation import BoundedSimulationEngine
 from .constraints import ConstraintValidator
 from .provider_adapters import ProductionRuntime
 from .training_policy import AutoTrainingPolicy
+from .world_model_promotion import WorldModelPromotionEngine, WorldModelFastPath
 
 logger = logging.getLogger(__name__)
 
@@ -128,6 +129,8 @@ class JimsAIPipeline:
         self.retrieval_layer = MultiIndexRetrievalLayer(self.retrieval)
         self.abstraction_layer = AbstractionEngineLayer()
         self.world_model_layer = LatentWorldModelLayer(self.graph)
+        self.world_model_promotion = WorldModelPromotionEngine()
+        self.world_model_fast_path = WorldModelFastPath()
         self.reasoning_bridge_layer = ReasoningBridgeLayer(self.simulation, self.validator, self.planner, self.graph)
         self.reasoning_layer = self.reasoning_bridge_layer
         self.render_layer = TransformerRenderInterface(self.csse, self.bridge)
@@ -405,6 +408,60 @@ class JimsAIPipeline:
         session.pop("_prevent_active_object", None)
         self._save_session(request.user_id, session, request.thread_id)
 
+        # ── World-model fast-path ────────────────────────────────────────────
+        # If the query is a causal lookup ("X causes Y") and we have an accepted
+        # rule for the queried entity, return a deterministic answer immediately
+        # without invoking retrieval, reasoning, or render layers.
+        question_intent = ir.scope_constraints.get("question_intent", {})
+        wm_entities = [str(e) for e in ir.scope_constraints.get("entities", [])]
+        if (
+            isinstance(question_intent, dict)
+            and question_intent.get("relation") == "causes"
+            and len(wm_entities) >= 1
+            and self.world_model_fast_path._accepted
+        ):
+            direction = str(question_intent.get("direction") or "outgoing")
+            fast_matches: list[WorldModelCandidate] = []
+            for entity in wm_entities[:3]:
+                if direction == "incoming":
+                    fast_matches.extend(self.world_model_fast_path.lookup_causes_of(entity))
+                else:
+                    fast_matches.extend(self.world_model_fast_path.lookup_effects_of(entity))
+            if fast_matches:
+                summary_lines = [
+                    f"{c.rule} (confidence {c.confidence:.2f}, verified rule)"
+                    for c in fast_matches[:5]
+                ]
+                fast_sig = self._write_result_signature(
+                    "world_model_fast_path",
+                    "solved",
+                    "Answered from a human-approved world model rule (deterministic, no model inference).",
+                    user_id=request.user_id,
+                    confidence=min(c.confidence for c in fast_matches),
+                    provenance=[p for c in fast_matches for p in c.provenance.split(",") if p],
+                    data={
+                        "matched_rules": [c.model_dump(mode="json") for c in fast_matches],
+                        "summary_lines": summary_lines,
+                    },
+                )
+                self.event_store.append(
+                    "world_model_fast_path_hit",
+                    ir.trace_id,
+                    {"entities": wm_entities, "matched_rules": len(fast_matches)},
+                    user_id=request.user_id,
+                )
+                return PipelineResponse(
+                    response="\n".join(summary_lines),
+                    ir=ir,
+                    reasoning_chain=[],
+                    confidence=fast_sig.confidence,
+                    gaps=[],
+                    sources=fast_sig.provenance,
+                    simulation_results=[],
+                    trace=[],
+                    used_groq=False,
+                )
+
         input_signature, encoder_layer_result = self.encoder_layer.encode(request, ir)
         record(encoder_layer_result)
         record(self.learning_layer.learn(input_signature))
@@ -489,6 +546,13 @@ class JimsAIPipeline:
 
         world_model_activations, graph_view, world_model_layer_result = self.world_model_layer.activate(ir, retrieved, activation)
         record(world_model_layer_result)
+        newly_promoted = self.world_model_promotion.observe(world_model_activations)
+        if newly_promoted:
+            existing_rules = {c.rule for c in self.world_model_candidates}
+            self.world_model_candidates.extend(
+                c for c in newly_promoted if c.rule not in existing_rules
+            )
+            self.world_model_fast_path.rebuild(self.world_model_candidates)
 
         obj, simulations, reasoning_layer_result = self.reasoning_bridge_layer.build(
             ir=ir,
@@ -1372,6 +1436,7 @@ class JimsAIPipeline:
             )
             if updated_panel_items:
                 final_rule = request.corrected_rule.strip() if request.action == "correct" and request.corrected_rule else request.rule
+                self.world_model_fast_path.rebuild(self.world_model_candidates)
                 event_payload = {
                     "action": request.action,
                     "rule": request.rule,
@@ -1421,6 +1486,8 @@ class JimsAIPipeline:
         elif request.action == "rollback":
             candidate.review_required = True
             self.world_model_candidates[target_index] = candidate
+
+        self.world_model_fast_path.rebuild(self.world_model_candidates)
 
         event_payload = {
             "action": request.action,
