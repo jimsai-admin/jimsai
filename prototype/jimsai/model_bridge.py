@@ -448,8 +448,8 @@ class QwenBridge:
             "(no causal claim — this is a definition, not a cause-effect statement)\n"
             "Return JSON with keys: entities, relations, causal."
         )
-        user = json.dumps({"text": text[:4000], "modality": modality}, sort_keys=True)
-        return await self._chat_json(self.local_model, system, user, max_tokens=1000)
+        user = json.dumps({"text": text[:2000], "modality": modality}, sort_keys=True)
+        return await self._chat_json(self.local_model, system, user, max_tokens=450)
 
     async def extract_user_facts(
         self, raw_input: str, context: dict[str, Any] | None = None
