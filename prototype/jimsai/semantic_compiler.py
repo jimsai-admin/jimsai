@@ -178,15 +178,10 @@ class _FallbackClassifier:
 
     @staticmethod
     def _hash_embed(text: str, dim: int) -> list[float]:
-        try:
-            from .encoder.dual_encoder import hash_embedding
-            return hash_embedding(text, dim)
-        except ImportError:
-            try:
-                from .encoder import hash_embedding
-                return hash_embedding(text, dim)
-            except ImportError:
-                return [0.0] * dim
+        # hash_embedding removed — return zero vector so semantic prototype
+        # matching is skipped and classification falls to structural rules.
+        # Real embeddings are obtained via Modal embedding service at query time.
+        return [0.0] * dim
 
     @staticmethod
     def _cosine(v1: list[float], v2: list[float]) -> float:

@@ -104,7 +104,11 @@ class JimsAIPipeline:
         # Lazy fields — instantiated on first access via @property
         self._training: ModalTrainingOrchestrator | None = None
         self._compiler: SemanticCompilerRuntime | None = None
-        self.encoder = DualRepresentationEncoder(multimodal_adapter=self.production.multimodal)
+        self.bridge = QwenBridge()
+        self.encoder = DualRepresentationEncoder(
+            multimodal_adapter=self.production.multimodal,
+            bridge=self.bridge,
+        )
         self.memory = FourLayerMemoryStore()
         self.graph = CausalGraphEngine()
         self.retrieval = MultiIndexRetrievalEngine(self.memory)
@@ -112,7 +116,6 @@ class JimsAIPipeline:
         self.validator = ConstraintValidator()
         self.planner = SymbolicPlanner()
         self.csse = ConstrainedSemanticSynthesisEngine()
-        self.bridge = QwenBridge()
         self.intent_layer = TransformerIntentInterface(self.compiler, self.bridge)
         self.encoder_layer = FullEncoderLayer(self.encoder)
         self.learning_layer = RealTimeLearningLayer(self.memory, self.graph)
@@ -368,32 +371,7 @@ class JimsAIPipeline:
                     clear_context = True
             except Exception:
                 pass
-        if not clear_context and session.get("ACTIVE_OBJECT"):
-            active_obj = session["ACTIVE_OBJECT"]
-            logger.debug("Context decoupling check: active_obj=%s query=%r", active_obj, request.query)
-            try:
-                def get_pipeline_emb(text: str) -> list[float]:
-                    try:
-                        from .encoder import hash_embedding
-                        return hash_embedding(text, 768)
-                    except Exception:
-                        try:
-                            from .encoder.dual_encoder import hash_embedding
-                            return hash_embedding(text, 768)
-                        except Exception:
-                            return [0.0] * 768
-
-                q_emb = get_pipeline_emb(request.query)
-                o_emb = get_pipeline_emb(active_obj)
-                import math
-                dot = sum(a * b for a, b in zip(q_emb, o_emb))
-                norm1 = math.sqrt(sum(a * a for a in q_emb))
-                norm2 = math.sqrt(sum(b * b for b in o_emb))
-                sim = dot / (norm1 * norm2) if norm1 > 0 and norm2 > 0 else 0.0
-                if sim < 0.35:
-                    clear_context = True
-            except Exception:
-                pass
+        # hash_embedding removed — time-based check is sufficient
         if clear_context:
             session.pop("ACTIVE_OBJECT", None)
             session.pop("ACTIVE_INTENT", None)
@@ -459,10 +437,9 @@ class JimsAIPipeline:
                     sources=fast_sig.provenance,
                     simulation_results=[],
                     trace=[],
-                    used_groq=False,
-                )
+                    used_llm=False,                )
 
-        input_signature, encoder_layer_result = self.encoder_layer.encode(request, ir)
+        input_signature, encoder_layer_result = await self.encoder_layer.encode(request, ir)
         record(encoder_layer_result)
         record(self.learning_layer.learn(input_signature))
         promoted_user_facts = await self._promote_user_fact_memory(request, input_signature)
@@ -576,13 +553,13 @@ class JimsAIPipeline:
         }
         self._apply_capability_gates(obj)
 
-        response, used_groq_render, render_layer_result = await self.render_layer.render(obj)
+        response, used_llm_render, render_layer_result = await self.render_layer.render(obj)
         record(render_layer_result)
         record(
             LayerResult(
                 layer="output",
                 activated=True,
-                deterministic=not used_groq_render,
+                deterministic=not used_llm_render,
                 summary="Returned bounded response and persisted trace for feedback.",
                 data={"trace_id": ir.trace_id, "sources": obj.sources, "confidence": obj.confidence},
             )
@@ -597,7 +574,7 @@ class JimsAIPipeline:
             )
         )
         obj.layer_results = layer_results
-        used_qwen_render = used_groq_render  # True when Qwen3-4B rendered the response
+        used_llm_render = used_llm_render  # True when Qwen3-4B rendered the response
         # Strip any leaked Qwen3 <think>...</think> reasoning blocks from the final response.
         # These can appear when the model doesn't wrap its output in JSON as instructed.
         clean_response = re.sub(r"<think>.*?</think>", "", response, flags=re.DOTALL).strip()
@@ -620,7 +597,7 @@ class JimsAIPipeline:
             world_model_activations=world_model_activations,
             capability_plan=capability_plan,
             capability_results=capability_results,
-            used_groq=used_qwen_render,
+            used_llm=used_llm_render,
             suggestions=self._build_suggestions(response, obj),
         )
         self._learn_from_resolved_prompt(request, pipeline_response)
@@ -643,7 +620,7 @@ class JimsAIPipeline:
                 "confidence": obj.confidence,
                 "sources": obj.sources,
                 "gaps": obj.knowledge_gaps,
-                "used_groq": used_qwen_render,
+                "used_llm": used_llm_render,
                 "thread_id": request.thread_id or "default",
             },
             user_id=request.user_id,
@@ -720,45 +697,47 @@ class JimsAIPipeline:
             f"Answer: {response.response}\n"
             "Verification: structured verified result stored in metadata."
         )
-        signature = self.encoder.encode(
-            text,
-            modality=Modality.TEXT,
-            intent_type="resolved_prompt_memory",
-            provenance=f"resolution:{response.ir.trace_id}",
-            workspace_id=request.workspace_id,
-            user_id=request.user_id,
-        )
-        signature.confidence.score = min(0.98, max(response.confidence, 0.90))
-        signature.confidence.source = "resolution_learning_verified"
-        signature.metadata.update(content)
-        # Write to training pipeline ONLY — not to the live retrieval memory.
-        # Resolved-prompt signatures are training examples (SPPE pairs) for the
-        # Kaggle fine-tuning loop; inserting them into self.memory contaminates
-        # the retrieval corpus with prior queries, causing cross-query retrieval
-        # of unrelated prompts as answers to future questions.
-        # self.memory.insert(signature)   ← intentionally removed
-        # self.graph.add_signature(signature)  ← intentionally removed
-        panel_item = TrainingPanelItem(
-            id=f"memory:{signature.id}",
-            panel="memory",
-            kind="resolved_prompt_memory",
-            title=f"{capability_kind}: {request.query[:80]}",
-            subtitle=f"confidence {signature.confidence.score:.2f} / trace {response.ir.trace_id}",
-            data=signature.model_dump(mode="json"),
-            created_at=signature.created_at,
-        )
-        self.production.save_training_ingest(signature, text, [panel_item])
-        self.event_store.append(
-            "resolution_memory_written",
-            signature.id,
-            {
-                "trace_id": response.ir.trace_id,
-                "capability_kind": capability_kind,
-                "source_results": [result.provenance for result in executed_results],
-                "min_confidence_threshold": min_confidence,
-            },
-            user_id=request.user_id,
-        )
+        import asyncio as _asyncio_lrp
+        try:
+            loop = _asyncio_lrp.get_running_loop()
+
+            async def _write_resolved_mem() -> None:
+                sig = await self.encoder.encode(
+                    text,
+                    modality=Modality.TEXT,
+                    intent_type="resolved_prompt_memory",
+                    provenance=f"resolution:{response.ir.trace_id}",
+                    workspace_id=request.workspace_id,
+                    user_id=request.user_id,
+                )
+                sig.confidence.score = min(0.98, max(response.confidence, 0.90))
+                sig.confidence.source = "resolution_learning_verified"
+                sig.metadata.update(content)
+                panel_item = TrainingPanelItem(
+                    id=f"memory:{sig.id}",
+                    panel="memory",
+                    kind="resolved_prompt_memory",
+                    title=f"{capability_kind}: {request.query[:80]}",
+                    subtitle=f"confidence {sig.confidence.score:.2f} / trace {response.ir.trace_id}",
+                    data=sig.model_dump(mode="json"),
+                    created_at=sig.created_at,
+                )
+                self.production.save_training_ingest(sig, text, [panel_item])
+                self.event_store.append(
+                    "resolution_memory_written",
+                    sig.id,
+                    {
+                        "trace_id": response.ir.trace_id,
+                        "capability_kind": capability_kind,
+                        "source_results": [result.provenance for result in executed_results],
+                        "min_confidence_threshold": min_confidence,
+                    },
+                    user_id=request.user_id,
+                )
+
+            loop.create_task(_write_resolved_mem())
+        except RuntimeError:
+            pass
 
     async def _execute_capability_adapters(
         self,
@@ -776,7 +755,7 @@ class JimsAIPipeline:
             if result.kind != CapabilityKind.MATH_SCIENCE or result.adapter != "internal_symbolic_solver":
                 executed.append(result)
                 continue
-            expression, solve_for = self._extract_solver_expression(request.query)
+            expression, solve_for = "", None  # T1 bridge handles extraction
             qwen_extraction_status = "not_attempted"
             if not expression:
                 expression, solve_for, qwen_extraction_status = await self._extract_solver_expression_with_qwen(request.query, result.data)
@@ -858,7 +837,7 @@ class JimsAIPipeline:
             ingested_ids: list[str] = []
             for source in sources[:3]:
                 content = f"{source.title}: {source.snippet}" if source.snippet else source.title
-                sig = self.encoder.encode(
+                sig = await self.encoder.encode(
                     content,
                     modality=Modality.TEXT,
                     intent_type="web_knowledge",
@@ -921,105 +900,6 @@ class JimsAIPipeline:
         expression = re.sub(r"\s+", " ", expression).strip()
         return expression, solve_for, "ok"
 
-    def _extract_solver_expression(self, query: str) -> tuple[str, str | None]:
-        # Translate natural language arithmetic operators to symbols
-        # before the token-extraction step. This handles queries like
-        # "847 multiplied by 63" or "what is 2 plus 2?".
-        word_ops = [
-            (r"\bmultiplied\s+by\b", "*"),
-            (r"\btimes\b", "*"),
-            (r"\bdivided\s+by\b", "/"),
-            (r"\bover\b", "/"),
-            (r"\bplus\b", "+"),
-            (r"\badded\s+to\b", "+"),
-            (r"\bminus\b", "-"),
-            (r"\bsubtracted\s+from\b", "-"),
-            (r"\bto\s+the\s+power\s+of\b", "**"),
-            (r"\bsquared\b", "**2"),
-            (r"\bcubed\b", "**3"),
-        ]
-        normalized_query = query
-        for pattern, symbol in word_ops:
-            normalized_query = re.sub(pattern, symbol, normalized_query, flags=re.IGNORECASE)
-
-        # Strip physics unit labels BEFORE tokenisation so they don't produce
-        # false operator matches. Patterns like "9.81 m/s²", "km/h", "kN/m²",
-        # "m/s^2" look like division expressions but are just annotated constants.
-        # Remove: number + optional-space + unit (letters/digits + optional /,^,²,³)
-        # Examples removed: "9.81 m/s²" → "9.81", "50 kN" → "50", "6 metres" → "6"
-        unit_label_pattern = r"(\d+(?:\.\d+)?)\s*(?:[a-zA-Z°²³µΩ][a-zA-Z0-9°²³µΩ]*(?:[/^][a-zA-Z0-9²³]+)?)"
-        # Only strip unit labels that appear inside natural language context (have
-        # surrounding spaces/punctuation), not inside pure equations.
-        # Strategy: if the query contains '=' it is likely an equation — leave it.
-        # Otherwise strip units to prevent false operator extraction.
-        if "=" not in normalized_query:
-            normalized_query = re.sub(unit_label_pattern, r"\1", normalized_query)
-
-        # Detect and remove "given constant" assignments — patterns like "g = 9.81",
-        # "R = 8.314", "Earth's radius = 6371" that appear in word problems as
-        # supplied values, NOT as equations to solve.
-        # These are identified by: single-letter variable (or common constant name)
-        # followed by = followed by a pure number, with word-boundary context.
-        # We remove them so the solver doesn't try to "solve" g=9.81.
-        given_constant_pattern = r"\b([A-Za-z](?:_[A-Za-z0-9]+)?)\s*=\s*(\d+(?:\.\d+)?)\b"
-        # Only strip given-value assignments when the query is a word problem
-        # (contains "use", "given", "assume", "where", "let") not a pure equation.
-        word_problem_markers = re.search(
-            r"\b(use|given|assume|where|let|take|with|radius|surface|mass|charge|constant)\b",
-            normalized_query,
-            re.IGNORECASE,
-        )
-        if word_problem_markers:
-            normalized_query = re.sub(given_constant_pattern, r"\2", normalized_query)
-
-        lowered = normalized_query.lower()
-        normalized = lowered
-        normalized = normalized.replace("=", " = ")
-        tokens = re.findall(r"\d+(?:\.\d+)?|[a-z]+|[+\-*/().=]", normalized)
-        equation_context = "=" in tokens
-        candidates = []
-        current: list[str] = []
-        for token in tokens:
-            useful = bool(re.fullmatch(r"\d+(?:\.\d+)?|[+\-*/().=]", token) or (equation_context and re.fullmatch(r"[a-z]", token)))
-            if useful:
-                current.append(token)
-                continue
-            if current:
-                candidates.append("".join(current))
-                current = []
-        if current:
-            candidates.append("".join(current))
-        candidates = [
-            candidate
-            for candidate in candidates
-            if re.search(r"\d", candidate) and any(operator in candidate for operator in ("+", "-", "*", "/", "="))
-        ]
-        expression = max(candidates, key=len, default="")
-        expression = expression.strip(".")
-        expression = re.sub(r"(?<=\d)([a-z])", r"*\1", expression)
-        expression = re.sub(r"([a-z])(?=\d)", r"\1*", expression)
-        solve_for = None
-        if "=" in expression:
-            symbols = sorted(set(re.findall(r"\b[a-z]\b", expression)))
-            solve_for = symbols[0] if symbols else None
-            if solve_for is None:
-                sides = [part.strip() for part in expression.split("=", 1)]
-                if len(sides) == 2 and not sides[1]:
-                    expression = sides[0]
-        if not re.fullmatch(r"[0-9a-z+\-*/().=]+", expression or ""):
-            return "", None
-        # Guard: require at least 2 distinct numeric tokens to avoid false positives
-        # like "-99" extracted from "XK-99 processor"
-        numeric_tokens = re.findall(r"\d+", expression)
-        if len(numeric_tokens) < 2 and "=" not in expression:
-            return "", None
-        # Guard: reject expressions that are just a constant divided by a single
-        # letter — these are unit fragments like "9.81/s" extracted from "9.81 m/s²"
-        # after unit stripping is incomplete. Pattern: digits / single-letter (no rhs number)
-        if re.fullmatch(r"\d+(?:\.\d+)?[*/][a-z]", expression):
-            return "", None
-        return expression, solve_for
-
     async def _promote_user_fact_memory(self, request: PipelineRequest, input_signature) -> int:
         user_relations = [
             relation
@@ -1064,7 +944,7 @@ class JimsAIPipeline:
         promoted = 0
         for relation in user_relations:
             fact_text = f"User profile fact: user {relation.predicate} {relation.object}."
-            signature = self.encoder.encode(
+            signature = await self.encoder.encode(
                 fact_text,
                 modality=Modality.TEXT,
                 intent_type="user_profile",
@@ -1397,19 +1277,45 @@ class JimsAIPipeline:
             provenance=provenance or [],
             data=payload,
         )
-        memory_signature = self.encoder.encode(
-            f"{kind} result {status}: {summary}",
-            modality=Modality.CODE if kind == "sandbox" else Modality.TEXT,
-            intent_type=f"{kind}_result_signature",
-            provenance=signature.id,
-            workspace_id=workspace_id,
-            user_id=user_id,
-        )
-        memory_signature.confidence.score = signature.confidence
-        memory_signature.confidence.source = "verified_result_signature"
-        memory_signature.metadata.update({"verified_result": signature.model_dump(mode="json")})
-        self.memory.insert(memory_signature)
-        self.graph.add_signature(memory_signature)
+        import asyncio as _asyncio
+        memory_signature = _asyncio.get_event_loop().run_until_complete(
+            self.encoder.encode(
+                f"{kind} result {status}: {summary}",
+                modality=Modality.CODE if kind == "sandbox" else Modality.TEXT,
+                intent_type=f"{kind}_result_signature",
+                provenance=signature.id,
+                workspace_id=workspace_id,
+                user_id=user_id,
+            )
+        ) if not _asyncio.get_event_loop().is_running() else None
+        # In async context (called from within an async method), we must use a coroutine.
+        # _write_result_signature is called from both sync and async contexts.
+        # The simplest fix: make it return VerifiedResultSignature and schedule
+        # the encode in the background (fire-and-forget) when in an async context,
+        # or run synchronously when not in an event loop.
+        # However, since all callers are within async methods that have a running loop,
+        # we use asyncio.ensure_future to schedule the encode without blocking.
+        import asyncio as _asyncio2
+        try:
+            loop = _asyncio2.get_running_loop()
+            # Running inside an async context — schedule as a background task
+            async def _write_mem() -> None:
+                mem_sig = await self.encoder.encode(
+                    f"{kind} result {status}: {summary}",
+                    modality=Modality.CODE if kind == "sandbox" else Modality.TEXT,
+                    intent_type=f"{kind}_result_signature",
+                    provenance=signature.id,
+                    workspace_id=workspace_id,
+                    user_id=user_id,
+                )
+                mem_sig.confidence.score = signature.confidence
+                mem_sig.confidence.source = "verified_result_signature"
+                mem_sig.metadata.update({"verified_result": signature.model_dump(mode="json")})
+                self.memory.insert(mem_sig)
+                self.graph.add_signature(mem_sig)
+            loop.create_task(_write_mem())
+        except RuntimeError:
+            pass
         self.event_store.append(
             "result_signature_written",
             signature.id,
@@ -1726,7 +1632,7 @@ class JimsAIPipeline:
     async def ingest_training(self, request: TrainingIngestRequest) -> TrainingIngestResponse:
         tracer = ExecutionTracer()
         intent_type = request.domain_hint or "training_ingestion"
-        signature = self.encoder.encode(
+        signature = await self.encoder.encode(
             request.content,
             modality=request.modality,
             intent_type=intent_type,
@@ -1789,7 +1695,7 @@ class JimsAIPipeline:
                 "confidence": signature.confidence.score,
                 "modality": signature.modality.value,
                 "workspace_id": request.workspace_id,
-                "used_groq_ingest": groq_used,
+                "used_llm_ingest": groq_used,
             },
             user_id=request.user_id,
         )
@@ -1799,7 +1705,7 @@ class JimsAIPipeline:
             signature_id=signature.id,
             modality=request.modality,
             source_trust=request.source_trust,
-            used_groq=groq_used,
+            used_llm=groq_used,
         )
         if groq_overlay:
             tracer.add(

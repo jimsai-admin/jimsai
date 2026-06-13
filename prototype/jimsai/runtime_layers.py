@@ -135,7 +135,7 @@ class TransformerIntentInterface:
         data = {
             "target_ir": ir.target_ir,
             "confidence": ir.confidence,
-            "used_groq": False,
+            "used_llm": False,
             "used_local_model": used_local_model,
             "local_model_skip_reason": self.bridge.last_t1_skip_reason,
             "deterministic_target_ir": deterministic_ir.target_ir,
@@ -209,8 +209,8 @@ class FullEncoderLayer:
     def __init__(self, encoder: DualRepresentationEncoder) -> None:
         self.encoder = encoder
 
-    def encode(self, request: PipelineRequest, ir: SemanticIR) -> tuple[MemorySignature, LayerResult]:
-        signature = self.encoder.encode(
+    async def encode(self, request: PipelineRequest, ir: SemanticIR) -> tuple[MemorySignature, LayerResult]:
+        signature = await self.encoder.encode(
             request.query,
             modality=request.modality,
             intent_type=ir.target_ir.lower(),
@@ -319,7 +319,7 @@ class ActiveCanvasLayer:
     async def run(self, request: PipelineRequest, ir: SemanticIR) -> tuple[CanvasResult, LayerResult]:
         active = request.canvas_hint or ir.target_ir == "RUN_CANVAS"
         patterns: list[str] = []
-        used_groq = False
+        used_llm = False
         if active:
             entities = [str(entity) for entity in ir.scope_constraints.get("entities", [])]
             if entities:
@@ -331,7 +331,7 @@ class ActiveCanvasLayer:
             patterns.append(f"known_causal_links:{causal_count}")
             groq_result = await self.bridge.canvas_synthesis(request.query)
             if groq_result:
-                used_groq = True
+                used_llm = True
                 raw_patterns = groq_result.get("patterns", [])
                 if isinstance(raw_patterns, list):
                     patterns.extend(str(pattern)[:200] for pattern in raw_patterns[:8])
@@ -339,14 +339,14 @@ class ActiveCanvasLayer:
             activated=active,
             session_id=f"canvas_{ir.trace_id[:12]}" if active else None,
             patterns=sorted(set(patterns)),
-            used_groq=used_groq,
+            used_llm=used_llm,
         )
         return result, _layer(
             "L3_active_canvas",
             active,
             "Ran canvas synthesis." if active else "Canvas skipped by sparse routing preconditions.",
             result.model_dump(mode="json"),
-            deterministic=not used_groq,
+            deterministic=not used_llm,
         )
 
 
@@ -404,7 +404,7 @@ class InventionEngineLayer:
         active = decision.run_invention or request.invention_hint or ir.target_ir in {"RUN_INVENTION", "CODE_GENERATE"}
         steps: list[str] = []
         notes: list[str] = []
-        used_groq = False
+        used_llm = False
         mcts_traces: list[dict[str, Any]] = []
         node_scores: dict[str, float] = {}
         simulation_metrics: dict[str, Any] = {}
@@ -418,7 +418,7 @@ class InventionEngineLayer:
             mcts_res = await self.run_mcts(request.query, initial_plan)
             if mcts_res["best_path"]:
                 steps.extend(mcts_res["best_path"])
-                used_groq = True
+                used_llm = True
             mcts_traces = mcts_res["traces"]
             node_scores = mcts_res["node_scores"]
             simulation_metrics = mcts_res["metrics"]
@@ -428,7 +428,7 @@ class InventionEngineLayer:
             goal=ir.target_ir,
             candidate_steps=steps,
             simulation_notes=notes,
-            used_groq=used_groq,
+            used_llm=used_llm,
             mcts_traces=mcts_traces,
             node_scores=node_scores,
             simulation_metrics=simulation_metrics
@@ -438,7 +438,7 @@ class InventionEngineLayer:
             active,
             "Generated bounded invention candidates via MCTS." if active else "Invention engine skipped by sparse activation.",
             result.model_dump(mode="json"),
-            deterministic=not used_groq,
+            deterministic=not used_llm,
         )
 
     async def run_mcts(self, goal: str, initial_plan: str, iterations: int = 5) -> dict[str, Any]:

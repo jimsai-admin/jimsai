@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 import re
 
-from .encoder import hash_embedding
+from .encoder import stable_id
 from .memory import FourLayerMemoryStore
 from .models import RetrievalResult, SemanticIR
 
@@ -50,7 +50,12 @@ class MultiIndexRetrievalEngine:
         user_id: str | None = None,
     ) -> list[RetrievalResult]:
         exclude_ids = exclude_ids or set()
-        query_vec = hash_embedding(query)
+        # query_vec is intentionally empty — in-memory retrieval is lexical-first.
+        # Signatures with real embeddings are surfaced via Vectorize similarity
+        # search in pipeline._hydrate_persistent_retrieval() before this runs.
+        # Hash embeddings have been removed; cosine on empty vec yields 0.0,
+        # which correctly demotes unembedded signatures to lexical-only paths.
+        query_vec: list[float] = []
         raw_query_terms = set(ir.tokens) | {str(entity).lower() for entity in ir.scope_constraints.get("entities", [])}
         query_terms = raw_query_terms
         query_phrases = self._query_phrases(query)

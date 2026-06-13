@@ -72,7 +72,7 @@ class EvalOutcome:
     gaps: int
     target_ir: str
     capability: str | None
-    used_groq: bool
+    used_llm: bool
 
 
 @dataclass(frozen=True)
@@ -358,7 +358,7 @@ async def run_eval(
                 gaps=len(result.gaps),
                 target_ir=result.ir.target_ir,
                 capability=capability,
-                used_groq=result.used_groq,
+                used_llm=result.used_llm,
             )
         )
     return outcomes
@@ -468,13 +468,13 @@ def load_previous_metrics(report_dir: Path) -> dict[str, Any] | None:
 
 def provider_usage_analysis(outcomes: list[EvalOutcome]) -> dict[str, Any]:
     total = len(outcomes)
-    provider_model_calls = sum(1 for outcome in outcomes if outcome.used_groq)
+    provider_model_calls = sum(1 for outcome in outcomes if outcome.used_llm)
     by_capability: dict[str, dict[str, int]] = {}
     for outcome in outcomes:
         capability = outcome.capability or "unknown"
         row = by_capability.setdefault(capability, {"total": 0, "provider_model_calls": 0, "provider_model_bypassed": 0})
         row["total"] += 1
-        if outcome.used_groq:
+        if outcome.used_llm:
             row["provider_model_calls"] += 1
         else:
             row["provider_model_bypassed"] += 1

@@ -206,7 +206,7 @@ class CanvasResult(BaseModel):
     session_id: str | None = None
     signatures_created: list[str] = Field(default_factory=list)
     patterns: list[str] = Field(default_factory=list)
-    used_groq: bool = False
+    used_llm: bool = False
 
 
 class InventionResult(BaseModel):
@@ -214,7 +214,7 @@ class InventionResult(BaseModel):
     goal: str
     candidate_steps: list[str] = Field(default_factory=list)
     simulation_notes: list[str] = Field(default_factory=list)
-    used_groq: bool = False
+    used_llm: bool = False
     mcts_traces: list[dict[str, Any]] = Field(default_factory=list)
     node_scores: dict[str, float] = Field(default_factory=dict)
     simulation_metrics: dict[str, Any] = Field(default_factory=dict)
@@ -439,7 +439,7 @@ class PipelineResponse(BaseModel):
     world_model_activations: list[WorldModelActivation] = Field(default_factory=list)
     capability_plan: CapabilityPlan | None = None
     capability_results: list[CapabilityExecutionResult] = Field(default_factory=list)
-    used_groq: bool = False
+    used_llm: bool = False
     suggestions: list[str] = Field(default_factory=list)
 
 

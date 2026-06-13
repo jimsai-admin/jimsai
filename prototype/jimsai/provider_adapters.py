@@ -955,27 +955,22 @@ class ExternalMultimodalEncoderAdapter:
             # Raise so _ensure_adapter marks it unavailable and retries on next call
             raise
 
-    def encode(self, content: str, modality: Modality) -> list[float]:
-        """Embed content using the HF Space /v1/embed endpoint.
+    async def encode(self, content: str, modality: Modality) -> list[float]:
+        """Embed content using the Modal Embedding Service /embed endpoint.
+
+        Async — uses httpx.AsyncClient so the event loop is never blocked.
+        No hash fallback. Returns [] on failure; caller marks reembedding_required=True.
 
         Model selection per modality:
-          - CODE  â†’ microsoft/codebert-base       (768-dim, code-aware CLS pooling)
-          - DATA  â†’ jinaai/jina-embeddings-v3      (when JIMS_JINA_EMBEDDINGS_ENABLED=true)
-                    Jina v3 is linked on the HF Space but off by default.
-                    Enable only when the Space confirms it's serving jina-embeddings-v3.
-          - other â†’ intfloat/multilingual-e5-small (768-dim, multilingual semantic)
+          - CODE  -> codebert                 (768-d, code-aware)
+          - DATA  -> jina-v3                  (768-d, when JIMS_JINA_EMBEDDINGS_ENABLED=true)
+          - other -> multilingual-e5-small    (768-d, multilingual semantic)
         """
         if not self.configured:
             return []
         base = self._base_url()
         headers = self._headers()
 
-        # Select embedding model based on modality:
-        #   CODE  â†’ microsoft/codebert-base  (768-dim, code-aware)
-        #   DATA  â†’ jinaai/jina-embeddings-v3 (when JIMS_JINA_EMBEDDINGS_ENABLED=true)
-        #           Jina v3 is linked on the HF Space but off by default.
-        #           Enable only when the Space confirms it's serving jina-embeddings-v3.
-        #   other â†’ intfloat/multilingual-e5-small  (768-dim, multilingual semantic)
         jina_enabled = os.getenv("JIMS_JINA_EMBEDDINGS_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
         if modality == Modality.CODE:
             model_id = "codebert"
@@ -987,36 +982,31 @@ class ExternalMultimodalEncoderAdapter:
             model_id = "multilingual-e5-small"
             purpose = "query" if modality == Modality.TEXT else "document"
 
-        target_timeout = int(
-            os.getenv(
-                "JIMS_EMBEDDING_TIMEOUT",
-                os.getenv(
-                    "JIMS_LIVE_EMBEDDING_TIMEOUT",
-                    os.getenv("JIMS_MULTIMODAL_ENCODER_TIMEOUT", "8"),
-                ),
-            )
-            or "8"
+        target_timeout = float(
+            os.getenv("JIMS_EMBEDDING_TIMEOUT",
+                os.getenv("JIMS_LIVE_EMBEDDING_TIMEOUT",
+                    os.getenv("JIMS_MULTIMODAL_ENCODER_TIMEOUT", "10")))
+            or "10"
         )
-        max_attempts = 3  # Always try 3 times before declaring failure
+
+        max_attempts = 3
         for attempt in range(max_attempts):
             try:
-                # Escalate timeout on each retry to handle a slow cold start
                 attempt_timeout = target_timeout if attempt == 0 else target_timeout * 2.0
-                response = httpx.post(
-                    f"{base}/embed",
-                    headers=headers,
-                    json={
-                        "texts": [content[:16000]],
-                        "model": model_id,
-                        "purpose": purpose,
-                    },
-                    timeout=attempt_timeout,
-                )
+                async with httpx.AsyncClient(timeout=attempt_timeout) as client:
+                    response = await client.post(
+                        f"{base}/embed",
+                        headers=headers,
+                        json={
+                            "texts": [content[:16000]],
+                            "model": model_id,
+                            "purpose": purpose,
+                        },
+                    )
                 response.raise_for_status()
                 vector = self._extract_vector(response.json())
                 if vector:
                     return vector
-                # Service returned 200 but no usable vector — don't retry
                 logger.warning(
                     "Embedding service returned 200 but no vector (model=%s, content_len=%d)",
                     model_id, len(content),
@@ -1029,18 +1019,13 @@ class ExternalMultimodalEncoderAdapter:
                         attempt + 1, max_attempts, exc,
                     )
                     continue
-                # All attempts exhausted — return empty list so the caller marks
-                # the signature as reembedding_required=True.  Do NOT silently
-                # return hash embeddings here; the caller in dual_encoder.py
-                # already handles the hash fallback path explicitly.
                 logger.error(
-                    "All %d embedding attempts failed for content length %d (model=%s). "
+                    "All %d embedding attempts failed (model=%s, content_len=%d). "
                     "Signature will be marked reembedding_required=True.",
-                    max_attempts, len(content), model_id,
+                    max_attempts, model_id, len(content),
                 )
                 return []
-        return []  # unreachable but satisfies type checker
-
+        return []
     def embed_batch(
         self,
         texts: list[str],

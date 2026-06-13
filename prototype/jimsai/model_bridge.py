@@ -427,6 +427,62 @@ class QwenBridge:
         )
         return await self._chat_json(self.local_model, system, user, max_tokens=200)
 
+    async def extract_structured_relations(
+        self, text: str, modality: str = "text"
+    ) -> dict[str, Any] | None:
+        """Extract entities, relations, and causal links from text in ANY language.
+
+        Replaces all regex-based NLP extraction (CAUSAL_VERBS, DEPENDENCY_VERBS,
+        extract_sentence_relations, extract_entity_names). Uses T1 (Qwen3-1.7B)
+        which:
+          - Handles any language, script, or encoding
+          - Tolerates misspellings and grammatical errors (normalises intent)
+          - Produces complete cause/effect phrases, not single-token regex captures
+          - Never invents facts — returns only what the text explicitly states
+
+        Returns {"entities": [...], "relations": [...], "causal": [...]}
+        or None if the bridge is unavailable (caller must surface as explicit gap,
+        never fall back to regex or hash).
+
+        Example — "A net force causes acceleration. Friction causes deceleration.":
+          causal: [
+            {"cause": "net force", "effect": "acceleration", "confidence": 0.92},
+            {"cause": "friction",  "effect": "deceleration", "confidence": 0.94}
+          ]
+          NOT: {"cause": "net", "effect": "causes"} or {"cause": "force", "effect": "causes"}
+        """
+        if not self.qwen_enabled:
+            return None
+        system = (
+            "You are a structured-extraction engine for JimsAI. Return only JSON. "
+            "Read the text in ANY language (including misspelled or grammatically "
+            "incorrect text — normalise intent, not surface form) and extract:\n"
+            "(1) entities — named things: services, people, chemicals, concepts, "
+            "code symbols, organisms, locations, physical quantities. "
+            "Use the entity's canonical name as it appears in the text.\n"
+            "(2) relations — subject–predicate–object triples. Use snake_case "
+            "predicates (depends_on, is_a, has_field, means, uses, etc.).\n"
+            "(3) causal — ONLY explicit cause-effect pairs where one stated thing "
+            "DIRECTLY causes another stated thing. Both cause and effect must be "
+            "complete, meaningful phrases as they appear in the text. "
+            "Do NOT extract a causal pair from a sentence fragment, a partial match, "
+            "or a single token. If a sentence has no clear causal claim, emit nothing "
+            "for it even if it contains a word like 'causes' or 'force'.\n"
+            "confidence: 0.0–1.0 per item.\n\n"
+            "Examples:\n"
+            "  'A net force causes acceleration.' → "
+            "causal: [{cause: 'net force', effect: 'acceleration', confidence: 0.92}]\n"
+            "  'Friction causes deceleration.' → "
+            "causal: [{cause: 'friction', effect: 'deceleration', confidence: 0.94}]\n"
+            "  'High cortisol causes memory impairment.' → "
+            "causal: [{cause: 'high cortisol', effect: 'memory impairment', confidence: 0.91}]\n"
+            "  'The net force is mass times acceleration.' → causal: [] "
+            "(no causal claim — this is a definition, not a cause-effect statement)\n"
+            "Return JSON with keys: entities, relations, causal."
+        )
+        user = json.dumps({"text": text[:4000], "modality": modality}, sort_keys=True)
+        return await self._chat_json(self.local_model, system, user, max_tokens=1000)
+
     async def extract_user_facts(
         self, raw_input: str, context: dict[str, Any] | None = None
     ) -> dict[str, Any] | None:
@@ -486,6 +542,42 @@ class QwenBridge:
             sort_keys=True,
         )
         return await self._chat_json(self.local_model, system, user, max_tokens=300)
+
+    async def extract_structured_relations(
+        self, text: str, modality: str = "text"
+    ) -> dict[str, Any] | None:
+        """Extract entities, relations, and causal links from text in ANY language using T1.
+
+        Replaces regex-based extract_sentence_relations. Returns:
+          {"entities": [...], "relations": [...], "causal": [...]}
+        or None if the bridge is unavailable or T1 times out / returns non-JSON.
+
+        Caller must surface None as an explicit extraction gap — never silently
+        fall back to regex or hash when this returns None.
+        """
+        if not self.qwen_enabled:
+            return None
+        system = (
+            "You are a structured-extraction engine for JimsAI. Return only JSON. "
+            "Read the text in ANY language and extract: "
+            "(1) entities — named things (services, people, chemicals, concepts, code symbols), "
+            "(2) relations — subject-predicate-object triples using snake_case predicates "
+            "(depends_on, is_a, has_field, means, etc.), "
+            "(3) causal — ONLY explicit cause-effect pairs where one stated thing "
+            "directly causes another stated thing. Do not extract a causal pair from "
+            "a sentence fragment, a single noun phrase, or a partial match — both "
+            "cause and effect must be complete, meaningful entities/concepts as they "
+            "appear in the text. If a sentence has no clear causal claim, emit nothing "
+            "for it, even if it contains a word like 'causes'. "
+            "confidence 0.0-1.0 per item. "
+            "Example: 'A net force causes acceleration. Friction causes deceleration.' -> "
+            "causal: [{\"cause\": \"net force\", \"effect\": \"acceleration\", \"confidence\": 0.92}, "
+            "{\"cause\": \"friction\", \"effect\": \"deceleration\", \"confidence\": 0.94}] "
+            "NOT {\"cause\": \"net\", \"effect\": \"causes\"} or {\"cause\": \"force\", \"effect\": \"causes\"}."
+        )
+        import json as _json
+        user = _json.dumps({"text": text[:4000], "modality": modality}, sort_keys=True)
+        return await self._chat_json(self.local_model, system, user, max_tokens=800)
 
     async def canvas_synthesis(self, content: str) -> dict[str, Any] | None:
         """Bounded Active Canvas synthesis — returns JSON patterns only."""

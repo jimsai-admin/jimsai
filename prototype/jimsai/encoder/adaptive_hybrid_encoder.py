@@ -1,346 +1,233 @@
+"""Adaptive hybrid encoder — Modal-only version.
+
+No local model loading. No sentence-transformers, transformers, or torch imports.
+All ML runs on Modal embedding service.
+"""
+
+from __future__ import annotations
+
+import hashlib
 import logging
 import os
-import re
-import hashlib
 from datetime import datetime
-from typing import Dict, List, Tuple, Any, Optional
+from typing import Any, Optional
 
-# Attempt torch import for fusion weights
-try:
-    import torch
-except ImportError:
-    torch = None
+import httpx
 
 logger = logging.getLogger(__name__)
 
 
 class SymbolicAugmenter:
-    """Light symbolic processing for math, code, causal relations"""
+    """Symbolic processing delegated to T1 (QwenBridge)."""
 
-    def augment(self, text: str) -> Dict[str, Any]:
+    async def augment(self, text: str, bridge=None) -> dict[str, Any]:
         return {
-            "math_normalized": self.normalize_math(text),
-            "code_snippets": self.extract_code(text),
-            "causal_signals": self.detect_causal(text),
+            "math_normalized": await self.normalize_math(text, bridge),
+            "code_snippets": await self.extract_code(text, bridge),
         }
 
-    def normalize_math(self, text: str) -> str:
-        # Detect presence of mathematical content
-        math_operators = set("=+-*/^()√πθ")
-        has_operator = any(c in math_operators for c in text)
-        has_math_pattern = bool(re.search(r"\b\d+[xXyY]\b|\b[xXyY]\s*=\s*\d+", text))
+    async def normalize_math(self, text: str, bridge=None) -> str:
+        """Delegate math normalization to T1 bridge.
 
-        if not (has_operator or has_math_pattern):
+        Calls bridge.extract_math_expression(text, {}) and returns the
+        normalized sympy expression string, or "" if bridge unavailable.
+        """
+        if bridge is None or not getattr(bridge, "qwen_enabled", False):
+            return ""
+        try:
+            data = await bridge.extract_math_expression(text, {})
+            if not data:
+                return ""
+            expression = str(data.get("expression") or "").strip()
+            return expression
+        except Exception as exc:
+            logger.warning("normalize_math bridge call failed: %s", repr(exc))
             return ""
 
-        # Clean expression spaces and inject implicit multiplications
-        normalized = text.strip()
-        normalized = re.sub(r"(\d+)([a-zA-Z])", r"\1*\2", normalized)
-        normalized = re.sub(r"\s+", " ", normalized)
+    async def extract_code(self, text: str, bridge=None) -> list[str]:
+        """Delegate code extraction to T1 bridge.
 
-        # Attempt to normalize using sympy if available
+        Calls T1 with a short system prompt to extract code blocks in any
+        language. Falls back to [] if bridge unavailable.
+        """
+        if bridge is None or not getattr(bridge, "qwen_enabled", False):
+            return []
         try:
-            from sympy import sympify
-            if "=" in normalized:
-                parts = normalized.split("=")
-                lhs = str(sympify(parts[0].strip()))
-                rhs = str(sympify(parts[1].strip()))
-                return f"{lhs} = {rhs}"
-            else:
-                return str(sympify(normalized))
-        except Exception:
-            return normalized
-
-    def extract_code(self, text: str) -> List[str]:
-        # Extract markdown code blocks
-        code_blocks = re.findall(
-            r"```(?:python|javascript|typescript|c|cpp|json|csv|rust|go)?\s*(.*?)\s*```",
-            text,
-            re.DOTALL,
-        )
-        if code_blocks:
-            return [block.strip() for block in code_blocks if block.strip()]
-
-        # Fallback to searching for signature keywords at line boundaries
-        code_lines = []
-        lines = text.split("\n")
-        in_code = False
-        current_block = []
-        for line in lines:
-            if re.match(r"^\s*(def|class|import|from|function|const|let|var|if|for|while|return)\b", line):
-                current_block.append(line)
-                in_code = True
-            elif in_code and (line.startswith(" ") or line.startswith("\t") or line.strip() == ""):
-                current_block.append(line)
-            else:
-                if in_code:
-                    code_lines.append("\n".join(current_block).strip())
-                    current_block = []
-                    in_code = False
-        if current_block:
-            code_lines.append("\n".join(current_block).strip())
-        return [c for c in code_lines if c]
-
-    def detect_causal(self, text: str) -> List[Dict[str, str]]:
-        causal_signals = []
-        # Support common causal connectors
-        causal_pattern = re.compile(
-            r"(\w+)\s+(causes|triggers|leads to|results in|breaks|blocks|delays|forces)\s+(\w+)",
-            re.IGNORECASE,
-        )
-        for match in causal_pattern.finditer(text):
-            causal_signals.append({
-                "cause": match.group(1),
-                "signal": match.group(2),
-                "effect": match.group(3),
-            })
-        return causal_signals
+            system_prompt = (
+                "Extract all code blocks from the following text. "
+                "Return a JSON object with key 'code_blocks' containing a list of strings. "
+                "If no code is present, return {\"code_blocks\": []}."
+            )
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": text[:8000]},
+            ]
+            result = await bridge._call_t1(messages, max_tokens=400)
+            if not result:
+                return []
+            if isinstance(result, dict):
+                blocks = result.get("code_blocks", [])
+                if isinstance(blocks, list):
+                    return [str(b) for b in blocks if str(b).strip()]
+            return []
+        except Exception as exc:
+            logger.warning("extract_code bridge call failed: %s", repr(exc))
+            return []
 
 
 class AdaptiveHybridEncoder:
-    """
-    Encoder that fuses semantic, code, and technical embeddings.
-    Supports local sentence-transformers / transformers or falls back to remote
-    HTTP endpoint (/v1/embed) in serverless Lambda environments.
+    """Modal-only adaptive encoder.
+
+    No local model loading. Calls Modal embedding service for all embeddings.
     """
 
-    def __init__(self, artifact_path: str = None):
-        self.current_version = "v1.0"
+    def __init__(
+        self,
+        bridge=None,
+        embedding_url: Optional[str] = None,
+        embedding_token: Optional[str] = None,
+    ) -> None:
+        self.bridge = bridge
+        self.embedding_url = (
+            embedding_url
+            or os.environ.get("JIMS_EMBEDDING_SERVICE_URL", "")
+        ).rstrip("/")
+        self.embedding_token = (
+            embedding_token
+            or os.environ.get("JIMS_MODAL_API_KEY", "")
+            or os.environ.get("JIMS_EMBEDDING_SERVICE_TOKEN", "")
+        )
         self.symbolic = SymbolicAugmenter()
-        
-        # Weights: 50% Multilingual E5 Semantic, 25% CodeBERT, 25% Jina v3 Technical
-        if torch is not None:
-            self.fusion_weights = torch.tensor([0.5, 0.25, 0.25], dtype=torch.float32)
-        else:
-            self.fusion_weights = None
+        self.current_version = "v2.0-modal"
 
-        self.local_mode = True
-        try:
-            from sentence_transformers import SentenceTransformer
-            from transformers import AutoModel, AutoTokenizer
-
-            # 1. Multilingual E5
-            self.semantic = SentenceTransformer("intfloat/multilingual-e5-small")
-            # 2. CodeBERT
-            self.code_model = AutoModel.from_pretrained("microsoft/codebert-base")
-            self.code_tokenizer = AutoTokenizer.from_pretrained("microsoft/codebert-base")
-            # 3. Jina Embeddings v3
-            self.technical = SentenceTransformer("jinaai/jina-embeddings-v3", trust_remote_code=True)
-
-            logger.info("✓ AdaptiveHybridEncoder: Local models loaded successfully.")
-        except Exception as e:
-            logger.warning(
-                f"⚠️ AdaptiveHybridEncoder: Local models unavailable ({e}). "
-                f"Configuring remote HTTP embedding endpoints."
-            )
-            self.local_mode = False
-            self.api_url = os.environ.get(
-                "JIMS_EMBEDDING_SERVICE_URL", "https://huggingface.co/spaces/jimsai/embeddings"
-            )
-            self.api_token = os.environ.get("JIMS_EMBEDDING_SERVICE_TOKEN", "")
-
-    def encode(self, raw_text: str, metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    async def encode(
+        self,
+        raw_text: str,
+        metadata: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
         if metadata is None:
             metadata = {}
 
-        # 1. Parallel / sequential embedding extraction
-        if self.local_mode:
-            try:
-                semantic_emb = self.semantic.encode(raw_text, normalize_embeddings=True)
-                code_emb = self._encode_code_local(raw_text)
-                tech_emb = self.technical.encode(raw_text, normalize_embeddings=True)
-            except Exception as e:
-                logger.error(f"Local encoding failed: {e}. Attempting remote fallback.")
-                semantic_emb, code_emb, tech_emb = self._encode_remote(raw_text)
-        else:
-            semantic_emb, code_emb, tech_emb = self._encode_remote(raw_text)
+        # Symbolic augmentation via T1
+        symbolic = await self.symbolic.augment(raw_text, self.bridge)
 
-        # 2. Extract symbolic structures
-        symbolic_features = self.symbolic.augment(raw_text)
+        # Choose model based on content type
+        is_code_heavy = bool(symbolic.get("code_snippets"))
+        model = "codebert" if is_code_heavy else "multilingual-e5-small"
 
-        # 3. Embedding Fusion
-        fused = self._fuse_embeddings([semantic_emb, code_emb, tech_emb])
+        # Embed via Modal
+        vector = await self._call_modal_embed(raw_text, model)
 
-        # 4. Structured extraction via parent extractors
-        structured = self._extract_structured(raw_text, metadata, symbolic_features)
+        # Structured extraction via T1
+        structured = await self._extract_structured(raw_text, metadata, symbolic)
 
-        # 5. ID Generation
-        signature_id = hashlib.sha256(f"{raw_text}:{str(structured)}".encode()).hexdigest()[:32]
+        # ID
+        signature_id = hashlib.sha256(
+            f"{raw_text}:{str(structured)}".encode()
+        ).hexdigest()[:32]
 
         return {
             "id": signature_id,
-            "latent_embedding": fused.tolist() if hasattr(fused, "tolist") else list(fused),
+            "latent_embedding": vector,
             "structured": structured,
-            "abstraction_tags": self._generate_tags(structured, symbolic_features),
+            "abstraction_tags": self._generate_tags(structured, symbolic),
             "encoder_version": self.current_version,
             "source_trust": metadata.get("source_trust", 0.75),
             "provenance": {
-                "ingestion_time": metadata.get("timestamp") or datetime.utcnow().isoformat(),
+                "ingestion_time": (
+                    metadata.get("timestamp") or datetime.utcnow().isoformat()
+                ),
                 "batch_id": metadata.get("batch_id"),
             },
         }
 
-    def _fuse_embeddings(self, embeddings: List[Any]):
-        if torch is not None and self.fusion_weights is not None:
-            try:
-                stacked = torch.tensor(embeddings, dtype=torch.float32)
-                # Norm normalization
-                norms = torch.norm(stacked, p=2, dim=1, keepdim=True)
-                norms = torch.clamp(norms, min=1e-9)
-                normalized_stacked = stacked / norms
-                fused = torch.sum(normalized_stacked * self.fusion_weights.unsqueeze(1), dim=0)
-                # Final normalization
-                fused_norm = torch.norm(fused, p=2)
-                if fused_norm > 1e-9:
-                    fused = fused / fused_norm
-                return fused
-            except Exception:
-                pass
-
-        # NumPy fallback
-        import numpy as np
-        stacked = np.array(embeddings, dtype=np.float32)
-        weights = np.array([0.5, 0.25, 0.25], dtype=np.float32)
-        # Apply normalization to each row
-        norms = np.linalg.norm(stacked, axis=1, keepdims=True)
-        norms = np.clip(norms, 1e-9, None)
-        normalized_stacked = stacked / norms
-        fused = np.sum(normalized_stacked * weights[:, np.newaxis], axis=0)
-        norm = np.linalg.norm(fused) or 1.0
-        return fused / norm
-
-    def _encode_code_local(self, text: str):
-        try:
-            inputs = self.code_tokenizer(text, return_tensors="pt", max_length=512, truncation=True)
-            with torch.no_grad():
-                outputs = self.code_model(**inputs)
-            embeddings = outputs[0].mean(dim=1).squeeze(0)
-            norm = torch.norm(embeddings, p=2)
-            if norm > 1e-9:
-                embeddings = embeddings / norm
-            return embeddings.cpu().numpy()
-        except Exception as e:
-            logger.error(f"Local CodeBERT encoding error: {e}")
-            import numpy as np
-            return np.zeros(768, dtype=np.float32)
-
-    def _encode_remote(self, text: str) -> Tuple[List[float], List[float], List[float]]:
-        headers = {}
-        if self.api_token:
-            headers["Authorization"] = f"Bearer {self.api_token}"
-
-        try:
-            semantic_vec = self._fetch_remote_vector(text, "intfloat/multilingual-e5-small", headers)
-            code_vec = self._fetch_remote_vector(text, "microsoft/codebert-base", headers)
-            tech_vec = self._fetch_remote_vector(text, "jinaai/jina-embeddings-v3", headers)
-
-            # Project all vectors to standard 768 dimensions for unified stacked fusion
-            return (
-                self._project_vector(semantic_vec, 768),
-                self._project_vector(code_vec, 768),
-                self._project_vector(tech_vec, 768),
-            )
-        except Exception as e:
-            logger.error(f"Remote HTTP embedding call failed: {e}. Projecting deterministic hash vectors.")
-            
-            # Deterministic hash fallback
-            try:
-                from .dual_encoder import hash_embedding
-                h1 = hash_embedding(text + "::semantic", 768)
-                h2 = hash_embedding(text + "::code", 768)
-                h3 = hash_embedding(text + "::technical", 768)
-                return h1, h2, h3
-            except ImportError:
-                return ([0.0] * 768, [0.0] * 768, [0.0] * 768)
-
-    def _fetch_remote_vector(self, text: str, model_id: str, headers: Dict[str, str]) -> List[float]:
-        import httpx
-        # Map full HF model names to Modal service short names
-        _MODEL_NAME_MAP = {
-            "intfloat/multilingual-e5-small": "multilingual-e5-small",
-            "microsoft/codebert-base": "codebert",
-            "jinaai/jina-embeddings-v3": "jina-v3",
+    async def _call_modal_embed(self, text: str, model: str) -> list[float]:
+        """POST to {embedding_url}/embed and return vector. Returns [] on failure."""
+        if not self.embedding_url:
+            return []
+        headers: dict[str, str] = {"Content-Type": "application/json"}
+        if self.embedding_token:
+            headers["Authorization"] = f"Bearer {self.embedding_token}"
+        timeout = float(os.environ.get("JIMS_MULTIMODAL_ENCODER_TIMEOUT", "30"))
+        payload = {
+            "texts": [text[:16000]],
+            "model": model,
+            "purpose": "document",
         }
-        modal_model = _MODEL_NAME_MAP.get(model_id, model_id)
-        url = f"{self.api_url}/embed"
-        payload = {"texts": [text], "model": modal_model, "purpose": "document"}
         try:
-            timeout = float(os.environ.get("JIMS_MULTIMODAL_ENCODER_TIMEOUT", "30"))
-            response = httpx.post(url, json=payload, headers=headers, timeout=timeout)
-            if response.status_code == 200:
-                data = response.json()
-                # Modal returns {"vectors": [[...]], "model": ..., "dimension": ...}
-                vec = None
-                if isinstance(data.get("vectors"), list) and data["vectors"]:
-                    first = data["vectors"][0]
-                    vec = first if isinstance(first, list) else None
-                if vec is None and isinstance(data.get("embeddings"), list) and data["embeddings"]:
-                    first = data["embeddings"][0]
-                    vec = first if isinstance(first, list) else None
-                if vec is None and isinstance(data.get("data"), list) and data["data"]:
-                    first = data["data"][0]
-                    vec = first.get("embedding") if isinstance(first, dict) else (first if isinstance(first, list) else None)
-                if vec is None and isinstance(data.get("embedding"), list):
-                    vec = data["embedding"]
-                return vec if isinstance(vec, list) else []
-        except Exception:
-            pass
-        return []
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                r = await client.post(
+                    f"{self.embedding_url}/embed",
+                    headers=headers,
+                    json=payload,
+                )
+            r.raise_for_status()
+            data = r.json()
+            # Modal returns {"vectors": [[...]], ...}
+            vec = None
+            if isinstance(data.get("vectors"), list) and data["vectors"]:
+                first = data["vectors"][0]
+                vec = first if isinstance(first, list) else None
+            if vec is None and isinstance(data.get("embeddings"), list) and data["embeddings"]:
+                first = data["embeddings"][0]
+                vec = first if isinstance(first, list) else None
+            if vec is None and isinstance(data.get("embedding"), list):
+                vec = data["embedding"]
+            return vec if isinstance(vec, list) else []
+        except Exception as exc:
+            logger.warning("AdaptiveHybridEncoder._call_modal_embed failed: %s", repr(exc))
+            return []
 
-    def _project_vector(self, vector: List[float], target_dim: int) -> List[float]:
-        if not vector:
-            return [0.0] * target_dim
-        current_dim = len(vector)
-        if current_dim == target_dim:
-            return vector
-        elif current_dim < target_dim:
-            return vector + [0.0] * (target_dim - current_dim)
-        else:
-            return vector[:target_dim]
+    async def _extract_structured(
+        self,
+        text: str,
+        metadata: dict[str, Any],
+        symbolic: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Extract structured relations via T1 bridge.
 
-    def _extract_structured(self, text: str, metadata: Dict[str, Any], symbolic: Dict[str, Any]) -> Dict[str, Any]:
-        entities = []
-        relations = []
-        causal_chain = []
+        Returns dict with entities, relations, causal_chain, is_mathematical.
+        No regex imports from dual_encoder.
+        """
+        entities: list[dict] = []
+        relations: list[dict] = []
+        causal_chain: list[dict] = []
+        is_mathematical = bool(symbolic.get("math_normalized"))
 
-        try:
-            from .dual_encoder import extract_entity_names, extract_sentence_relations, infer_entity_type, stable_id
-            for name in extract_entity_names(text):
-                entities.append({
-                    "id": stable_id("ent", name),
-                    "name": name,
-                    "type": infer_entity_type(name),
-                })
-            for subject, predicate, obj, confidence in extract_sentence_relations(text):
-                relations.append({
-                    "subject": subject,
-                    "predicate": predicate,
-                    "object": obj,
-                    "confidence": confidence,
-                })
-                if predicate == "causes":
-                    causal_chain.append({
-                        "cause": subject,
-                        "effect": obj,
-                        "confidence": confidence,
-                    })
-        except ImportError:
-            # Fallback when running completely outside package imports
-            for sig in symbolic.get("causal_signals", []):
-                causal_chain.append({
-                    "cause": sig["cause"],
-                    "effect": sig["effect"],
-                    "confidence": 0.85,
-                })
+        if self.bridge is not None and getattr(self.bridge, "qwen_enabled", False):
+            try:
+                t1_data = await self.bridge.extract_structured_relations(text, "text")
+                if t1_data:
+                    for ent in t1_data.get("entities", []):
+                        if isinstance(ent, dict) and ent.get("name"):
+                            entities.append(
+                                {"name": str(ent["name"]), "type": ent.get("type", "concept")}
+                            )
+                        elif isinstance(ent, str) and ent.strip():
+                            entities.append({"name": ent.strip(), "type": "concept"})
+                    for rel in t1_data.get("relations", []):
+                        if isinstance(rel, dict):
+                            relations.append(rel)
+                    for link in t1_data.get("causal", []):
+                        if isinstance(link, dict) and link.get("cause") and link.get("effect"):
+                            causal_chain.append(link)
+            except Exception as exc:
+                logger.warning(
+                    "_extract_structured bridge call failed: %s", repr(exc)
+                )
 
         return {
             "entities": entities,
             "relations": relations,
             "causal_chain": causal_chain,
-            "is_mathematical": bool(symbolic.get("math_normalized")),
+            "is_mathematical": is_mathematical,
         }
 
-    def _generate_tags(self, structured: Dict[str, Any], symbolic: Dict[str, Any]) -> List[str]:
+    def _generate_tags(
+        self,
+        structured: dict[str, Any],
+        symbolic: dict[str, Any],
+    ) -> list[str]:
         tags = ["general"]
         if symbolic.get("math_normalized"):
             tags.append("mathematical")

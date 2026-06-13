@@ -421,7 +421,7 @@ async def run_benchmark(base_url: str) -> None:
             confidence = 0.0
             gaps: list[str] = []
             sources: list[str] = []
-            used_groq = False
+            used_llm = False
             capability_kind = ""
             target_ir = ""
             layer_count = 0
@@ -442,7 +442,7 @@ async def run_benchmark(base_url: str) -> None:
                     confidence = data.get("confidence", 0.0)
                     gaps = data.get("gaps", [])
                     sources = data.get("sources", [])
-                    used_groq = data.get("used_groq", False)
+                    used_llm = data.get("used_llm", False)
                     cap_plan = data.get("capability_plan") or {}
                     capability_kind = cap_plan.get("kind", "unknown") if cap_plan else "unknown"
                     ir = data.get("ir") or {}
@@ -472,7 +472,7 @@ async def run_benchmark(base_url: str) -> None:
                 "confidence": round(confidence, 4),
                 "gaps": gaps,
                 "sources": sources,
-                "used_groq": used_groq,
+                "used_llm": used_llm,
                 "capability_kind": capability_kind,
                 "target_ir": target_ir,
                 "layer_count": layer_count,
@@ -496,7 +496,7 @@ async def run_benchmark(base_url: str) -> None:
             # Console output
             status = "❌" if error else "✅"
             gap_str = f"  gaps={len(gaps)}" if gaps else ""
-            groq_str = "  [T2/groq]" if used_groq else ""
+            groq_str = "  [T2/LLM]" if used_llm else ""
             print(f"          {status}  {elapsed*1000:.0f}ms  conf={confidence:.2f}  "
                   f"cap={capability_kind}  ir={target_ir}{gap_str}{groq_str}")
             if response_text:
@@ -516,7 +516,7 @@ async def run_benchmark(base_url: str) -> None:
     errors = sum(1 for r in results if r["error"])
     avg_ms = sum(r["elapsed_ms"] for r in results) / total if total else 0
     avg_conf = sum(r["confidence"] for r in results if not r["error"]) / max(total - errors, 1)
-    groq_used = sum(1 for r in results if r["used_groq"])
+    llm_used = sum(1 for r in results if r["used_llm"])
     total_gaps = sum(len(r["gaps"]) for r in results)
 
     lines = [
@@ -530,7 +530,7 @@ async def run_benchmark(base_url: str) -> None:
         f"  Errors           : {errors}",
         f"  Avg response time: {avg_ms:.0f}ms",
         f"  Avg confidence   : {avg_conf:.3f}",
-        f"  T2/Groq used     : {groq_used} ({groq_used/total*100:.0f}%)",
+        f"  T2/LLM used      : {llm_used} ({llm_used/total*100:.0f}%)",
         f"  Total gaps       : {total_gaps}",
         "",
         "  BY TIER",
@@ -564,7 +564,7 @@ async def run_benchmark(base_url: str) -> None:
         lines.append(f"  Time       : {r['elapsed_ms']:.0f}ms")
         lines.append(f"  Confidence : {r['confidence']}")
         lines.append(f"  Capability : {r['capability_kind']}  |  IR: {r['target_ir']}")
-        lines.append(f"  T2/Groq    : {'yes' if r['used_groq'] else 'no'}")
+        lines.append(f"  T2/LLM     : {'yes' if r['used_llm'] else 'no'}")
         lines.append(f"  Layers     : {r['layer_count']} ({r['deterministic_layers']} deterministic)")
         if r["sources"]:
             lines.append(f"  Sources    : {len(r['sources'])}")

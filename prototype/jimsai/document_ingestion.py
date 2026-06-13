@@ -4,7 +4,7 @@ import re
 import unicodedata
 from dataclasses import dataclass
 
-from .encoder import hash_embedding, stable_id
+from .encoder import stable_id
 from .models import Confidence, Entity, MemorySignature, Relation, SignatureIntent, StructuredSignature
 
 
@@ -263,4 +263,7 @@ def _object_entities(value: str) -> list[Entity]:
 
 
 def _fact_embedding(fact: DocumentFact) -> list[float]:
-    return hash_embedding(f"{fact.subject} {fact.predicate} {fact.object}")
+    # Hash embeddings removed — document fact signatures are stored with
+    # latent_embedding=[] and flagged reembedding_required=True until
+    # the autonomous re-embedding loop processes them via Modal.
+    return []
