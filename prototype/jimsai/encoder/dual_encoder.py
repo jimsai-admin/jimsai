@@ -59,24 +59,18 @@ DEPENDENCY_VERBS = {
     "emits": "emits",
 }
 CAUSAL_VERBS = {
+    # Unambiguous causal verbs only — words that are also common nouns (force, block,
+    # break, trigger, delay) are excluded to prevent the regex from matching
+    # "net force causes acceleration" as subject="net", verb="force", object="causes".
     "causes",
     "cause",
-    "triggers",
-    "trigger",
     "invalidates",
     "invalidate",
-    "breaks",
-    "break",
-    "blocks",
-    "block",
-    "delays",
-    "delay",
-    "forces",
-    "force",
     "leads to",
     "results in",
     "produces",
     "produce",
+    "triggers",  # kept as verb only — "triggers" is rarely a standalone noun
 }
 ENTITY_TYPE_HINTS = [
     ("service", re.compile(r"(Service|Controller|Gateway|Repository|Worker|Queue|API)$", re.IGNORECASE)),
