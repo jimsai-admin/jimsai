@@ -360,7 +360,7 @@ async def main() -> None:
                     data = r.json()
                     response_text = data.get("response", "")[:150]
                     confidence    = data.get("confidence", "?")
-                    used_groq     = data.get("used_groq", "?")
+                    used_llm      = data.get("used_llm", "?")
                     gaps          = data.get("gaps", [])
                     sources       = data.get("sources", [])
                     wm_acts       = data.get("world_model_activations", [])
@@ -374,7 +374,7 @@ async def main() -> None:
                     print(f"\n  [{label}] {status} ({elapsed:.0f}ms)")
                     print(f"     query:      {query_text}")
                     print(f"     response:   {response_text}")
-                    print(f"     confidence: {confidence}  used_groq: {used_groq}  gaps: {len(gaps)}  sources: {len(sources)}  wm_acts: {len(wm_acts)}")
+                    print(f"     confidence: {confidence}  used_llm: {used_llm}  gaps: {len(gaps)}  sources: {len(sources)}  wm_acts: {len(wm_acts)}")
                     if gaps:
                         print(f"     gaps: {gaps[0][:100]}")
                     if wm_acts:
@@ -479,15 +479,15 @@ async def main() -> None:
                 elapsed = (time.monotonic() - t0) * 1000
                 if r.status_code == 200:
                     data = r.json()
-                    used_groq = data.get("used_groq", "?")
+                    used_llm = data.get("used_llm", "?")
                     confidence = data.get("confidence", "?")
                     response = data.get("response", "")[:200]
                     layer_names = [lr.get("layer") for lr in data.get("layer_results", [])]
-                    fast_hit = "world_model_fast_path" in str(layer_names) or not used_groq
+                    fast_hit = "world_model_fast_path" in str(layer_names) or not used_llm
                     if fast_hit and elapsed < 2000:
-                        ok(f"⚡ FAST-PATH HIT ({elapsed:.0f}ms) used_groq={used_groq} conf={confidence}")
+                        ok(f"⚡ FAST-PATH HIT ({elapsed:.0f}ms) used_llm={used_llm} conf={confidence}")
                     else:
-                        warn(f"Full pipeline ({elapsed:.0f}ms) used_groq={used_groq} conf={confidence}")
+                        warn(f"Full pipeline ({elapsed:.0f}ms) used_llm={used_llm} conf={confidence}")
                     print(f"     response: {response}")
                 else:
                     warn("Fast-path query HTTP", r.status_code)

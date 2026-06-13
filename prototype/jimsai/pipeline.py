@@ -574,7 +574,6 @@ class JimsAIPipeline:
             )
         )
         obj.layer_results = layer_results
-        used_llm_render = used_llm_render  # True when Qwen3-4B rendered the response
         # Strip any leaked Qwen3 <think>...</think> reasoning blocks from the final response.
         # These can appear when the model doesn't wrap its output in JSON as instructed.
         clean_response = re.sub(r"<think>.*?</think>", "", response, flags=re.DOTALL).strip()

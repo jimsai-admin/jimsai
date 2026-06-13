@@ -12,38 +12,6 @@ import httpx
 
 
 class QwenBridge:
-    """Bounded local Qwen adapter for T1/T2/Canvas/Invention/Ingest interfaces.
-
-    All LLM calls route to Modal-hosted AI services:
-      - Intent_Service (qwen-1.7b): T1 intent/routing via JIMS_INTENT_SERVICE_URL
-      - Renderer_Service (qwen-4b): T2 render/canvas/invention via JIMS_RENDERER_SERVICE_URL
-      - Reasoning_Service (qwen-8b): deep reasoning via JIMS_REASONING_SERVICE_URL
-
-    The bridge is deliberately not a reasoning engine. It interprets messy input
-    into candidate JSON, or renders an already-verified cognitive object into natural
-    language. The deterministic runtime remains authoritative; the bridge only
-    activates when the local Qwen service is available and reachable.
-
-    ── Modal service env vars ────────────────────────────────────────────────
-
-    T1 intent path → JIMS_INTENT_SERVICE_URL     (Modal Intent_Service)
-    T2 render path → JIMS_RENDERER_SERVICE_URL   (Modal Renderer_Service)
-    Auth key       → JIMS_MODAL_API_KEY           (shared Bearer token)
-
-    ── Model env vars ────────────────────────────────────────────────────────
-
-    T1 model (intent/routing/math extraction — Qwen3-1.7B):
-      JIMS_LOCAL_INFERENCE_MODEL / JIMS_QWEN_MODEL — model name tag
-      JIMS_QWEN_CONTEXT      — context window    (default 4096)
-
-    T2 model (render/canvas/invention — Qwen3-4B):
-      JIMS_LOCAL_RENDER_MODEL / JIMS_RENDER_MODEL_NAME — model name tag
-      JIMS_RENDER_CONTEXT    — context window    (default 8192)
-
-    ────────────────────────────────────────────────────────────────────────────
-    """
-
-class QwenBridge:
     """Bounded Modal AI bridge for T1/T2/Canvas/Invention/Ingest interfaces.
 
     All LLM calls route to Modal-hosted services exclusively:
@@ -542,42 +510,6 @@ class QwenBridge:
             sort_keys=True,
         )
         return await self._chat_json(self.local_model, system, user, max_tokens=300)
-
-    async def extract_structured_relations(
-        self, text: str, modality: str = "text"
-    ) -> dict[str, Any] | None:
-        """Extract entities, relations, and causal links from text in ANY language using T1.
-
-        Replaces regex-based extract_sentence_relations. Returns:
-          {"entities": [...], "relations": [...], "causal": [...]}
-        or None if the bridge is unavailable or T1 times out / returns non-JSON.
-
-        Caller must surface None as an explicit extraction gap — never silently
-        fall back to regex or hash when this returns None.
-        """
-        if not self.qwen_enabled:
-            return None
-        system = (
-            "You are a structured-extraction engine for JimsAI. Return only JSON. "
-            "Read the text in ANY language and extract: "
-            "(1) entities — named things (services, people, chemicals, concepts, code symbols), "
-            "(2) relations — subject-predicate-object triples using snake_case predicates "
-            "(depends_on, is_a, has_field, means, etc.), "
-            "(3) causal — ONLY explicit cause-effect pairs where one stated thing "
-            "directly causes another stated thing. Do not extract a causal pair from "
-            "a sentence fragment, a single noun phrase, or a partial match — both "
-            "cause and effect must be complete, meaningful entities/concepts as they "
-            "appear in the text. If a sentence has no clear causal claim, emit nothing "
-            "for it, even if it contains a word like 'causes'. "
-            "confidence 0.0-1.0 per item. "
-            "Example: 'A net force causes acceleration. Friction causes deceleration.' -> "
-            "causal: [{\"cause\": \"net force\", \"effect\": \"acceleration\", \"confidence\": 0.92}, "
-            "{\"cause\": \"friction\", \"effect\": \"deceleration\", \"confidence\": 0.94}] "
-            "NOT {\"cause\": \"net\", \"effect\": \"causes\"} or {\"cause\": \"force\", \"effect\": \"causes\"}."
-        )
-        import json as _json
-        user = _json.dumps({"text": text[:4000], "modality": modality}, sort_keys=True)
-        return await self._chat_json(self.local_model, system, user, max_tokens=800)
 
     async def canvas_synthesis(self, content: str) -> dict[str, Any] | None:
         """Bounded Active Canvas synthesis — returns JSON patterns only."""

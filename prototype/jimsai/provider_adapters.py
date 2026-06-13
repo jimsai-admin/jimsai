@@ -1026,6 +1026,7 @@ class ExternalMultimodalEncoderAdapter:
                 )
                 return []
         return []
+
     def embed_batch(
         self,
         texts: list[str],
