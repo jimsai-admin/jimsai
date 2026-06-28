@@ -107,7 +107,8 @@ _svc_metrics = create_metrics("intent")
     image=image,
     volumes={"/vol/models": volume},
     secrets=[secret],
-    min_containers=0,    max_containers=3,
+    min_containers=1,
+    max_containers=3,
     memory=4096,
     timeout=600,
 )

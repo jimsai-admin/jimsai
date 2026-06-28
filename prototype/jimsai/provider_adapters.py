@@ -6,6 +6,7 @@
 import json
 import math
 import os
+import time
 from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass
 from typing import Any
@@ -1153,6 +1154,13 @@ class ProductionRuntime:
         # This cuts Lambda cold start from 60â€“150s to <5s.
         self._initialized = False
         self._checked_adapters: set[str] = set()
+        # Circuit breaker: monotonic timestamp of the last failed check per provider.
+        # While within the cooldown window we skip re-probing a known-down provider
+        # so a persistently unavailable mirror does not add its connect/DNS timeout
+        # to every single request. After the cooldown it is retried, so recovery is
+        # automatic when the provider comes back.
+        self._provider_failed_at: dict[str, float] = {}
+        self._provider_retry_cooldown = float(os.getenv("JIMS_PROVIDER_RETRY_COOLDOWN", "60") or "60")
         # Pre-populate statuses as "not yet checked" so readiness() always works
         for name in ("r2", "vectorize", "supabase_postgres", "neo4j_aura", "redis_celery", "multimodal_encoders"):
             self.statuses[name] = ProviderStatus(
@@ -1166,18 +1174,32 @@ class ProductionRuntime:
         self._initialized = True
         self._initialize()
 
-    def _ensure_adapter(self, name: str, adapter: Any | None) -> None:
+    def _ensure_adapter(self, name: str, adapter: Any | None, enforce_strict: bool = False) -> None:
         """Connect one provider without blocking hot paths on unrelated providers.
 
         Successfully checked adapters are cached permanently.
         Failed adapters are retried on subsequent calls so transient startup
         errors (e.g. first-request cold-start) don't permanently disable a provider.
+
+        ``enforce_strict`` only applies to the explicit startup/readiness path
+        (``_initialize``). When set with ``JIMS_STRICT_PROVIDER_STARTUP=true`` a
+        provider check failure is fatal — a deliberate *deploy-time* gate. Runtime
+        request paths call this with enforce_strict=False so a non-critical mirror
+        provider that pauses mid-life (e.g. an auto-paused Neo4j Aura / Vectorize
+        instance) degrades gracefully to in-memory operation instead of failing the
+        whole request. Availability-first is the correct posture for a runtime that
+        must keep handling tasks even while a secondary provider is unreachable.
         """
         # Always skip if already confirmed available
         if name in self._checked_adapters and self.statuses.get(name) and self.statuses[name].available:
             return
         # Also skip if adapter is None (will never change)
         if name in self._checked_adapters and adapter is None:
+            return
+        # Circuit breaker: if this provider failed recently, stay degraded without
+        # paying its connect/DNS timeout again until the cooldown elapses.
+        failed_at = self._provider_failed_at.get(name)
+        if failed_at is not None and (time.monotonic() - failed_at) < self._provider_retry_cooldown:
             return
         self._checked_adapters.add(name)
         if adapter is None:
@@ -1187,11 +1209,18 @@ class ProductionRuntime:
         try:
             detail = adapter.check()
             self.statuses[name] = ProviderStatus(name=name, configured=configured, available=configured, detail=detail)
+            self._provider_failed_at.pop(name, None)  # recovered — clear breaker
         except Exception as exc:
             self.statuses[name] = ProviderStatus(name=name, configured=configured, available=False, detail=str(exc))
-            # Remove from checked set so failed adapters are retried next call
+            # Remove from checked set so failed adapters are retried after cooldown
             self._checked_adapters.discard(name)
-            if self.settings.strict_provider_startup:
+            self._provider_failed_at[name] = time.monotonic()
+            # Only the authoritative store (Supabase signatures) may be fatal under
+            # strict mode. Secondary mirrors/indexes (Neo4j graph, Vectorize, R2,
+            # Redis) always degrade gracefully — a paused mirror must never take the
+            # whole runtime down, otherwise the system cannot keep handling tasks
+            # while a non-critical provider is unreachable.
+            if enforce_strict and self.settings.strict_provider_startup and name == "supabase_postgres":
                 raise
 
     @property
@@ -1217,7 +1246,8 @@ class ProductionRuntime:
             ("redis_celery", self.celery),
             ("multimodal_encoders", self.multimodal),
         ]:
-            self._ensure_adapter(name, adapter)
+            # Startup/readiness path honors JIMS_STRICT_PROVIDER_STARTUP as a deploy gate.
+            self._ensure_adapter(name, adapter, enforce_strict=True)
 
     def readiness(self) -> dict[str, str | bool]:
         # Trigger lazy init so readiness() always reflects actual state

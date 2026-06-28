@@ -138,6 +138,8 @@ class JimsAIPipeline:
         self.reasoning_layer = self.reasoning_bridge_layer
         self.render_layer = TransformerRenderInterface(self.csse, self.bridge)
         self.sessions: dict[str, dict[str, str]] = {}
+        # Streaming render hand-off: trace_id -> (VerifiedCognitiveObject, deterministic_render)
+        self._stream_ctx: dict[str, tuple] = {}
         self.feedback_events: list[FeedbackRequest] = []
         self.feedback_history: list[dict[str, object]] = []
         self.training_history: list[TrainingIngestResponse] = []
@@ -270,7 +272,12 @@ class JimsAIPipeline:
         else:
             self.sessions[session_key] = session
 
-    async def run(self, request: PipelineRequest) -> PipelineResponse:
+    async def run(self, request: PipelineRequest, skip_llm_render: bool = False) -> PipelineResponse:
+        # When skip_llm_render is True (streaming path), the blocking T2 LLM render
+        # is skipped: run() returns the verified object rendered deterministically
+        # (fast) and stashes (obj, deterministic_render) on self._stream_ctx keyed
+        # by trace_id, so run_stream() can stream the bounded render separately
+        # without paying for the render twice.
         self._reset_request_cache()
 
         # Safety gate — check before any processing
@@ -553,7 +560,20 @@ class JimsAIPipeline:
         }
         self._apply_capability_gates(obj)
 
-        response, used_llm_render, render_layer_result = await self.render_layer.render(obj)
+        if skip_llm_render:
+            deterministic_render = self.csse.render(obj)
+            response = deterministic_render
+            used_llm_render = False
+            render_layer_result = LayerResult(
+                layer="T2_transformer_render_interface",
+                activated=True,
+                deterministic=True,
+                summary="Deferred bounded render to streaming path; returned CSSE render inline.",
+                data={"mode": "deferred_stream"},
+            )
+            self._stream_ctx[ir.trace_id] = (obj, deterministic_render)
+        else:
+            response, used_llm_render, render_layer_result = await self.render_layer.render(obj)
         record(render_layer_result)
         record(
             LayerResult(
@@ -625,6 +645,58 @@ class JimsAIPipeline:
             user_id=request.user_id,
         )
         return pipeline_response
+
+    async def run_stream(self, request: PipelineRequest):
+        """Async generator for streaming responses (SSE).
+
+        Yields dicts:
+          {"type": "meta",  ...}   once, after verification (confidence/gaps/sources/trace)
+          {"type": "token", "text": "..."}  repeatedly, as the bounded T2 render streams
+          {"type": "done",  "response": "<full text>"}  once at the end
+
+        The verification phase (compile → retrieve → reason) runs first and is not
+        streamed; the user-visible answer (T2 render) then streams token-by-token,
+        so first-token latency is the time-to-verified-object plus one model TTFT,
+        not the full render duration.
+        """
+        verified = await self.run(request, skip_llm_render=True)
+        obj, deterministic_render = self._stream_ctx.pop(
+            verified.ir.trace_id, (None, verified.response)
+        )
+        yield {
+            "type": "meta",
+            "trace_id": verified.ir.trace_id,
+            "confidence": verified.confidence,
+            "gaps": verified.gaps,
+            "sources": verified.sources,
+            "used_llm": bool(obj is not None and self.bridge.qwen_enabled),
+        }
+        parts: list[str] = []
+        if obj is None:
+            parts.append(verified.response)
+            yield {"type": "token", "text": verified.response}
+        else:
+            async for delta in self.bridge.stream_render(obj, deterministic_render):
+                if not delta:
+                    continue
+                parts.append(delta)
+                yield {"type": "token", "text": delta}
+        full = re.sub(r"<think>.*?</think>", "", "".join(parts), flags=re.DOTALL).strip() or "".join(parts)
+        # Persist the streamed answer so chat history reflects what the user saw.
+        try:
+            self.production.save_chat_exchange(
+                user_id=request.user_id,
+                workspace_id=request.workspace_id,
+                thread_id=request.thread_id or "default",
+                query=request.query,
+                answer=full,
+                trace_id=verified.ir.trace_id,
+                confidence=verified.confidence,
+                sources=verified.sources,
+            )
+        except Exception:
+            pass
+        yield {"type": "done", "response": full}
 
     def _build_suggestions(self, response_text: str, obj: VerifiedCognitiveObject) -> list[str]:
         """Generate actionable suggestions for low-confidence or incomplete responses."""
@@ -1631,25 +1703,33 @@ class JimsAIPipeline:
     async def ingest_training(self, request: TrainingIngestRequest) -> TrainingIngestResponse:
         tracer = ExecutionTracer()
         intent_type = request.domain_hint or "training_ingestion"
-        signature = await self.encoder.encode(
-            request.content,
-            modality=request.modality,
-            intent_type=intent_type,
-            provenance="training_pipeline",
-            workspace_id=request.workspace_id,
-            user_id=request.user_id,
+        # Encoding (embedding + T1 structured extraction) and the bounded T2
+        # ingestion overlay both read only the raw content and are independent of
+        # each other, so run them concurrently. This halves the per-document model
+        # round-trip latency, which matters when an autonomous ingestion service is
+        # streaming a high volume of documents.
+        import asyncio as _asyncio_ing
+        signature, groq_overlay = await _asyncio_ing.gather(
+            self.encoder.encode(
+                request.content,
+                modality=request.modality,
+                intent_type=intent_type,
+                provenance="training_pipeline",
+                workspace_id=request.workspace_id,
+                user_id=request.user_id,
+            ),
+            self.bridge.extract_ingestion_memory(
+                request.content,
+                {
+                    "modality": request.modality.value,
+                    "domain_hint": request.domain_hint,
+                    "source_trust": request.source_trust,
+                    "workspace_id": request.workspace_id,
+                },
+            ),
         )
         signature.confidence.score = round(min(signature.confidence.score, request.source_trust), 4)
         signature.confidence.source = "training_ingestion_source_trust"
-        groq_overlay = await self.bridge.extract_ingestion_memory(
-            request.content,
-            {
-                "modality": request.modality.value,
-                "domain_hint": request.domain_hint,
-                "source_trust": request.source_trust,
-                "workspace_id": request.workspace_id,
-            },
-        )
         groq_used = self._apply_ingestion_overlay(signature, groq_overlay, request.source_trust)
         
         # Causal and Relational Conflict Detection & Downgrading for older/stale memory signatures
@@ -1816,10 +1896,17 @@ class JimsAIPipeline:
             {"entries": invalidated, "reason": "training_ingest_memory_write"},
             user_id=request.user_id,
         )
+        # Real-time learning: keep the freshly-learned signature in the local hot
+        # store (write-through cache) so it is immediately recall-able on this
+        # instance — no cloud round-trip, no waiting for vector-index consistency.
+        # The cloud copy remains the durable, cross-instance source of truth and
+        # rehydrates other instances on cold start. Previously this branch DELETED
+        # the just-written signature from local memory, which made same-instance
+        # real-time recall impossible whenever the vector index was cold, lagging,
+        # or degraded — defeating the purpose of online learning. Local growth is
+        # bounded by the hot-cache cap below.
         if self.cloud_authoritative:
-            for item in [signature, *document_signatures]:
-                self.memory.delete(item.id)
-                self.graph.remove_signature(item.id)
+            self.memory.enforce_hot_cache_cap()
         return response
 
     def _apply_ingestion_overlay(self, signature, overlay: dict[str, Any] | None, source_trust: float) -> bool:

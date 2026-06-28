@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from collections import defaultdict
 
 from .models import MemorySignature
@@ -15,6 +16,13 @@ class FourLayerMemoryStore:
         self.temporal_index: dict[str, set[str]] = defaultdict(set)
         self.causal_index: dict[str, set[str]] = defaultdict(set)
         self.importance_index: dict[str, float] = {}
+        # Upper bound on the local hot cache so a long-running, high-volume
+        # instance does not grow without limit. Evicted (cold) signatures remain
+        # in the durable cloud store and are rehydrated on demand per query.
+        try:
+            self.hot_cache_max = max(0, int(os.getenv("JIMS_LOCAL_HOTCACHE_MAX", "50000") or "50000"))
+        except ValueError:
+            self.hot_cache_max = 50000
 
     def insert(self, signature: MemorySignature) -> MemorySignature:
         self.delete(signature.id)
@@ -37,6 +45,25 @@ class FourLayerMemoryStore:
     def all_signatures(self) -> list[MemorySignature]:
         merged = {**self.sensory, **self.working, **self.episodic, **self.semantic}
         return list(merged.values())
+
+    def enforce_hot_cache_cap(self) -> int:
+        """Evict the oldest signatures when the hot cache exceeds its cap.
+
+        Dict insertion order is preserved, so the earliest-inserted ids in
+        ``sensory`` are the coldest. Evicted signatures stay in the durable cloud
+        store and are rehydrated on demand, so this only bounds local memory — it
+        never loses learned knowledge. Returns the number of signatures evicted.
+        """
+        if self.hot_cache_max <= 0:
+            return 0
+        overflow = len(self.sensory) - self.hot_cache_max
+        if overflow <= 0:
+            return 0
+        # Oldest ids first (dict preserves insertion order).
+        stale_ids = list(self.sensory.keys())[:overflow]
+        for sid in stale_ids:
+            self.delete(sid)
+        return len(stale_ids)
 
     def visible_signatures(self, workspace_id: str | None = None, user_id: str | None = None) -> list[MemorySignature]:
         return [

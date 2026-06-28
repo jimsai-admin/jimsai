@@ -34,7 +34,7 @@ PASSWORD = "Irekanmi@231"
 USER_ID  = "test-live-runner"
 WS_ID    = "jimsai-live-test"
 
-TIMEOUT  = httpx.Timeout(180.0)  # Modal cold-starts can be slow
+TIMEOUT  = httpx.Timeout(420.0)  # T1 cold-start can take 3-4 min on first call
 
 # Give the embedding service more time so real vectors are stored (not hash fallback)
 # This is set via env var before the server starts — we patch it in the test payload
@@ -92,13 +92,38 @@ async def get_token(client: httpx.AsyncClient) -> str:
     data = r.json()
     token = data.get("access_token") or data.get("token") or ""
     if not token:
-        # Try nested
         token = (data.get("data") or {}).get("access_token", "")
     if not token:
         fail("No access_token in response", json.dumps(data)[:200])
         sys.exit(1)
     ok("Authenticated", f"token prefix: {token[:20]}...")
     return token
+
+
+async def refresh_token_if_needed(
+    client: httpx.AsyncClient,
+    token: str,
+    last_auth_time: float,
+) -> tuple[str, float]:
+    """Re-authenticate if the token is more than 45 minutes old."""
+    elapsed = time.monotonic() - last_auth_time
+    if elapsed < 2700:  # 45 minutes
+        return token, last_auth_time
+    print("\n  ↻  Token approaching expiry — re-authenticating...")
+    try:
+        r = await client.post(f"{BASE_URL}/v1/auth/signin",
+                              json={"email": EMAIL, "password": PASSWORD})
+        if r.status_code == 200:
+            data = r.json()
+            new_token = data.get("access_token") or data.get("token") or ""
+            if not new_token:
+                new_token = (data.get("data") or {}).get("access_token", "")
+            if new_token:
+                ok("Token refreshed")
+                return new_token, time.monotonic()
+    except Exception as exc:
+        warn("Token refresh failed", str(exc)[:100])
+    return token, last_auth_time
 
 
 # ── Training data ─────────────────────────────────────────────────────────────
@@ -311,7 +336,7 @@ async def main() -> None:
                     else:
                         warn(f"  [{doc['domain']:12}] HTTP {r.status_code}", r.text[:200])
                 except Exception as exc:
-                    warn(f"  [{doc['domain']:12}] exception", str(exc)[:200])
+                    warn(f"  [{doc['domain']:12}] exception", str(exc)[:300])
 
         ok(f"Ingestion complete — {len(ingest_results)} successful ingest calls")
 

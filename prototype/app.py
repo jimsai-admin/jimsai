@@ -165,6 +165,32 @@ async def query(request: PipelineRequest):
     return await pipeline.run(request)
 
 
+@app.post("/v1/query/stream", dependencies=[Depends(require_scope("runtime:query"))])
+async def query_stream(request: PipelineRequest):
+    """Server-Sent Events streaming of a query response.
+
+    Emits `meta` (verification result), a sequence of `token` events as the
+    bounded T2 render streams, then `done` with the full text. Lets clients show
+    the answer progressively instead of waiting for the full render to complete.
+    """
+    import json as _json
+
+    from fastapi.responses import StreamingResponse
+
+    async def event_source():
+        try:
+            async for event in pipeline.run_stream(request):
+                yield f"data: {_json.dumps(event, ensure_ascii=False)}\n\n"
+        except Exception as exc:  # surface errors to the client as a terminal event
+            yield f"data: {_json.dumps({'type': 'error', 'detail': str(exc)})}\n\n"
+
+    return StreamingResponse(
+        event_source(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
 @app.post("/v1/training/ingest", dependencies=[Depends(require_scope("training:write"))])
 async def training_ingest(request: TrainingIngestRequest):
     return await pipeline.ingest_training(request)

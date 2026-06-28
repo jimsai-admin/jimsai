@@ -43,11 +43,62 @@ class QwenBridge:
         self.last_t1_skip_reason = ""
         self.last_t2_skip_reason = ""
 
+        # ── Configurable LLM provider ─────────────────────────────────────────
+        # The default backend is the Modal-hosted Qwen services (T1 Intent / T2
+        # Renderer). Setting JIMS_LLM_PROVIDER — or simply supplying NVIDIA_API_KEY —
+        # routes the same bounded T1/T2/Canvas/Invention/Ingest calls to an
+        # OpenAI-compatible endpoint instead (e.g. NVIDIA NIM serving Llama 3.3 70B).
+        # The cognitive flow above this bridge is unchanged; only the HTTP backend
+        # and request/response shape differ.
+        provider = get_env("JIMS_LLM_PROVIDER", "").lower()
+        if not provider:
+            provider = "nvidia" if get_env("NVIDIA_API_KEY") else "modal"
+        self.provider = provider
+
+        self.openai_compatible = provider in {"nvidia", "openai", "openai_compatible"}
+        if self.openai_compatible:
+            if provider == "nvidia":
+                self.openai_base_url = get_env(
+                    "NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1"
+                ).rstrip("/")
+                self.openai_api_key = get_env("NVIDIA_API_KEY")
+                self.openai_model = get_env("NVIDIA_MODEL", "meta/llama-3.3-70b-instruct")
+            else:
+                self.openai_base_url = get_env(
+                    "JIMS_OPENAI_BASE_URL", "https://api.openai.com/v1"
+                ).rstrip("/")
+                self.openai_api_key = get_env("JIMS_OPENAI_API_KEY")
+                self.openai_model = get_env("JIMS_OPENAI_MODEL", "gpt-4o-mini")
+            self.openai_chat_path = get_env("JIMS_OPENAI_CHAT_PATH", "/chat/completions") or "/chat/completions"
+            # Many OpenAI-compatible servers support strict JSON mode, but not all
+            # models do. Default off and rely on the prompt + the JSON-extraction
+            # fallback below; opt in with JIMS_OPENAI_JSON_MODE=true.
+            self.openai_json_mode = get_env("JIMS_OPENAI_JSON_MODE", "false").lower() in {"1", "true", "yes", "on"}
+            # Surface the active model under the same attribute names the rest of
+            # the runtime reads for both tiers (single model serves T1 and T2).
+            self.local_model = self.openai_model
+            self.local_render_model = self.openai_model
+        else:
+            self.openai_base_url = ""
+            self.openai_api_key = ""
+            self.openai_model = ""
+            self.openai_chat_path = "/chat/completions"
+            self.openai_json_mode = False
+
     # ── Availability ──────────────────────────────────────────────────────────
 
     @property
     def qwen_enabled(self) -> bool:
-        """True when Modal services are configured (both Intent and Renderer URLs set)."""
+        """True when the active LLM backend is configured.
+
+        Modal backend: requires both Intent and Renderer URLs plus the shared key.
+        OpenAI-compatible backend (e.g. NVIDIA NIM): requires base URL, API key,
+        and model name. The name is kept for backward compatibility — every
+        existing call site checks ``qwen_enabled`` to decide whether the bounded
+        transformer overlay can run, regardless of which backend serves it.
+        """
+        if self.openai_compatible:
+            return bool(self.openai_base_url and self.openai_api_key and self.openai_model)
         return bool(self.local_url and self.render_url and self.local_api_key)
 
     @property
@@ -57,6 +108,16 @@ class QwenBridge:
 
     def describe(self) -> dict[str, str]:
         """Return current model configuration for dashboard / observability."""
+        if self.openai_compatible:
+            endpoint = f"{self.openai_base_url}{self.openai_chat_path}"
+            return {
+                "backend": self.provider,
+                "t1_model": self.openai_model,
+                "t2_model": self.openai_model,
+                "t1_endpoint": endpoint,
+                "t2_endpoint": endpoint,
+                "qwen_enabled": str(self.qwen_enabled),
+            }
         return {
             "backend": "modal" if self.qwen_enabled else "none",
             "t1_model": self.local_model,
@@ -101,19 +162,89 @@ class QwenBridge:
             return None
         return await self._local_chat_json(system, user, max_tokens=max_tokens)
 
+    async def _openai_chat(
+        self, system: str, user: str, max_tokens: int, wrap_text: bool
+    ) -> dict[str, Any] | None:
+        """Call an OpenAI-compatible chat endpoint (e.g. NVIDIA NIM / Llama 3.3 70B).
+
+        Shared by the T1 (structured) and T2 (render) paths when an
+        OpenAI-compatible provider is configured. T1 passes wrap_text=False so a
+        non-JSON reply falls through to the deterministic path; T2 passes
+        wrap_text=True so a plain-text answer is wrapped as {"response": ...},
+        matching the Modal renderer's contract.
+        """
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.openai_api_key}",
+        }
+        payload: dict[str, Any] = {
+            "model": self.openai_model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "temperature": 0,
+            "max_tokens": max_tokens,
+        }
+        if self.openai_json_mode:
+            payload["response_format"] = {"type": "json_object"}
+        try:
+            timeout = float(os.getenv("JIMS_GENERATION_TIMEOUT", "120") or "120")
+            async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+                response = await client.post(
+                    f"{self.openai_base_url}{self.openai_chat_path}",
+                    headers=headers,
+                    json=payload,
+                    follow_redirects=True,
+                )
+                response.raise_for_status()
+            data = response.json()
+            raw_content = ""
+            choices = data.get("choices")
+            if choices:
+                raw_content = (choices[0].get("message") or {}).get("content") or ""
+            if not raw_content:
+                raw_content = data.get("response") or data.get("content") or ""
+            if not raw_content:
+                return None
+            # Strip any reasoning/think blocks reasoning models may emit
+            raw_content = re.sub(r"<think>.*?</think>", "", raw_content, flags=re.DOTALL).strip()
+            raw_content = re.sub(r"(?i)think.*?done", "", raw_content, flags=re.DOTALL).strip()
+            if not raw_content:
+                return None
+            start, end = raw_content.find("{"), raw_content.rfind("}")
+            if start != -1 and end > start:
+                try:
+                    return json.loads(raw_content[start:end + 1])
+                except json.JSONDecodeError:
+                    pass
+            # Plain-text reply: T2 wraps it; T1 must stay strict (deterministic fallback)
+            if wrap_text:
+                return {"response": raw_content}
+            return None
+        except Exception as exc:
+            import logging as _log
+            _log.getLogger(__name__).warning("_openai_chat failed: %s", repr(exc))
+            return None
+
     async def _render_chat_json(
         self, system: str, user: str, max_tokens: int = 800
     ) -> dict[str, Any] | None:
-        """Route to T2 Modal Renderer_Service.
+        """Route to T2 Renderer.
 
-        Modal returns: {"response": "<model output>", "model": ..., "usage": ..., "finish_reason": ...}
+        For the Modal backend the renderer returns:
+        {"response": "<model output>", "model": ..., "usage": ..., "finish_reason": ...}
         The model output may be:
           - A JSON string:  '{"response": "markdown text"}'  → parse → {"response": "markdown text"}
           - A JSON string:  '{"candidate_steps": [...]}'     → parse → {"candidate_steps": [...]}
           - Plain markdown: 'Here is your answer...'         → wrap  → {"response": "Here is your answer..."}
+        When an OpenAI-compatible provider is configured, the call is delegated to
+        _openai_chat with the same wrap-as-{"response": ...} contract.
         """
         if not self.qwen_enabled:
             return None
+        if self.openai_compatible:
+            return await self._openai_chat(system, user, max_tokens, wrap_text=True)
         headers = {"Content-Type": "application/json", "Authorization": f"Bearer {self.local_api_key}"}
         payload = {
             "model": self.local_render_model,
@@ -171,12 +302,16 @@ class QwenBridge:
         model: str | None = None,
         timeout: float | None = None,
     ) -> dict[str, Any] | None:
-        """Route to T1 Modal Intent_Service.
+        """Route to T1 Intent service.
 
         Modal returns: {"response": "<model output>", "model": ..., "usage": ..., "finish_reason": ...}
         The model output must be a JSON object (T1 is always structured). If parsing
         fails, return None so the deterministic path takes over gracefully.
+        When an OpenAI-compatible provider is configured, the call is delegated to
+        _openai_chat (strict: a non-JSON reply yields None, not wrapped text).
         """
+        if self.openai_compatible:
+            return await self._openai_chat(system, user, max_tokens, wrap_text=False)
         headers = {"Content-Type": "application/json"}
         if self.local_api_key:
             headers["Authorization"] = f"Bearer {self.local_api_key}"
@@ -691,6 +826,108 @@ class QwenBridge:
             return None
         rendered = data.get("response")
         return rendered if isinstance(rendered, str) and rendered.strip() else None
+
+    async def stream_render(
+        self, obj: VerifiedCognitiveObject, deterministic_render: str
+    ):
+        """Stream the bounded T2 render token-by-token for low first-token latency.
+
+        Yields plain-text Markdown deltas as the model generates them. The render
+        contract is identical to ``render`` — never add claims, preserve gaps,
+        never fabricate a failed/unexecuted result — but the model is asked for
+        Markdown directly (no JSON wrapper) so each delta is immediately
+        displayable. Falls back to a single yield of the best available render
+        when streaming does not apply (Modal backend, T2 skipped, or no LLM), so
+        callers can always iterate this uniformly.
+        """
+        # Not an OpenAI-compatible streaming backend, or T2 should be skipped:
+        # emit the best single-shot render once (still correct, just not streamed).
+        if not self.qwen_enabled or not self.openai_compatible or self._should_skip_t2(obj):
+            if self.qwen_enabled and not self.openai_compatible and not self._should_skip_t2(obj):
+                rendered = await self.render(obj, deterministic_render)
+                yield rendered or deterministic_render
+            else:
+                yield deterministic_render
+            return
+
+        self.last_t2_skip_reason = ""
+        system = (
+            "You are the bounded T2 render interface for JIMS-AI. "
+            "Render the verified cognitive object as a natural, helpful answer for the user. "
+            "Return the answer as Markdown text ONLY — do not wrap it in JSON or quotes. "
+            "Use concise paragraphs, short lists only when useful, and a warm professional tone. "
+            "Do not expose internal layer names, raw trace IDs, or robotic phrases. "
+            "Do not add claims, facts, sources, code, or conclusions not present in the object. "
+            "If a gap is present, preserve it explicitly. "
+            "If any reasoning_chain step or capability result has status='failed', executed=false, "
+            "or solver_status!='solved', you MUST NOT invent, complete, or approximate a numeric, "
+            "symbolic, or code result for it — state plainly it could not be completed. "
+            "If any reasoning_chain step has relation='CODE_GENERATION', present its claim verbatim in a "
+            "fenced code block with the correct language tag; never rewrite or truncate the code."
+        )
+        user = json.dumps(
+            {
+                "verified_cognitive_object": obj.model_dump(mode="json"),
+                "deterministic_render": deterministic_render,
+                "style_signature": obj.style_signature,
+                "response_requirements": [
+                    "Markdown text only (no JSON wrapper)",
+                    "natural fluent language",
+                    "follow explicit language and format requests from style_signature.user_prompt",
+                    "no unsupported facts",
+                    "include the verified result directly when present",
+                ],
+            },
+            sort_keys=True,
+        )
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.openai_api_key}",
+        }
+        payload = {
+            "model": self.openai_model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "temperature": 0,
+            "max_tokens": 2400,
+            "stream": True,
+        }
+        emitted_any = False
+        try:
+            timeout = float(os.getenv("JIMS_GENERATION_TIMEOUT", "120") or "120")
+            async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+                async with client.stream(
+                    "POST",
+                    f"{self.openai_base_url}{self.openai_chat_path}",
+                    headers=headers,
+                    json=payload,
+                ) as response:
+                    response.raise_for_status()
+                    async for line in response.aiter_lines():
+                        if not line or not line.startswith("data:"):
+                            continue
+                        data = line[len("data:"):].strip()
+                        if data == "[DONE]":
+                            break
+                        try:
+                            chunk = json.loads(data)
+                        except json.JSONDecodeError:
+                            continue
+                        choices = chunk.get("choices") or []
+                        if not choices:
+                            continue
+                        delta = (choices[0].get("delta") or {}).get("content")
+                        if delta:
+                            emitted_any = True
+                            yield delta
+        except Exception as exc:
+            import logging as _log
+            _log.getLogger(__name__).warning("stream_render failed: %s", repr(exc))
+        # If the stream produced nothing (early error), fall back to a usable render.
+        if not emitted_any:
+            yield deterministic_render
 
     # ── MCTS node evaluation ──────────────────────────────────────────────────
 
