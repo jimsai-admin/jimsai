@@ -153,7 +153,7 @@ To ensure JIMS-AI remains robust under edge conditions across different domains,
   * Output reasoning traceback blocks containing clickable source links at the end of the text.
 
 #### [MODIFY] [model_bridge.py](file:///c:/Users/ajibe/Jims-AI/prototype/jimsai/model_bridge.py)
-- **T2 Bypassing Rules:** Refine `_should_skip_t2` to prevent skipping rendering when the query involves conversational styles, typos, or low-resource languages.
+- **T2 Rendering Contract:** Query rendering must go through the bounded T2 renderer; renderer unavailability is surfaced as a service error instead of using a deterministic bypass.
 - **Prompt Translation & Style Match:** Update the system prompt in `render()` to instruct Qwen to translate the verified cognitive object facts to match the user query's language and style, prepending the structured Provenance Label at the top of the output.
 - **Candidate Node Scoring:** Add a method `evaluate_candidate_node` to let the local model score the logical consistency of alternative branches during MCTS node expansion.
 

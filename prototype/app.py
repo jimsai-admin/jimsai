@@ -9,14 +9,15 @@ try:
 except ImportError:
     pass
 
-from fastapi import Depends, FastAPI
+from fastapi import BackgroundTasks, Depends, FastAPI
 from fastapi import HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel
 
 from .jimsai.auth import AuthSettings, require_scope, supabase_auth_configured, supabase_password_auth, supabase_refresh_auth
 from .jimsai.env_config import get_config
+from .jimsai.errors import CriticalServiceUnavailable
 from .jimsai.models import (
     CanvasRunRequest,
     FeedbackRequest,
@@ -49,6 +50,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 pipeline = JimsAIPipeline()
+
+
+@app.exception_handler(CriticalServiceUnavailable)
+async def critical_service_unavailable_handler(request, exc: CriticalServiceUnavailable):
+    return JSONResponse(status_code=503, content={"detail": str(exc)})
 
 
 @app.on_event("startup")
@@ -162,7 +168,10 @@ async def metrics() -> str:
 
 @app.post("/v1/query", dependencies=[Depends(require_scope("runtime:query"))])
 async def query(request: PipelineRequest):
-    return await pipeline.run(request)
+    try:
+        return await pipeline.run(request)
+    except CriticalServiceUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @app.post("/v1/query/stream", dependencies=[Depends(require_scope("runtime:query"))])
@@ -178,11 +187,14 @@ async def query_stream(request: PipelineRequest):
     from fastapi.responses import StreamingResponse
 
     async def event_source():
+        yield f"data: {_json.dumps({'type': 'accepted'}, ensure_ascii=False)}\n\n"
         try:
             async for event in pipeline.run_stream(request):
                 yield f"data: {_json.dumps(event, ensure_ascii=False)}\n\n"
+        except CriticalServiceUnavailable as exc:
+            yield f"data: {_json.dumps({'type': 'error', 'status_code': 503, 'detail': str(exc)}, ensure_ascii=False)}\n\n"
         except Exception as exc:  # surface errors to the client as a terminal event
-            yield f"data: {_json.dumps({'type': 'error', 'detail': str(exc)})}\n\n"
+            yield f"data: {_json.dumps({'type': 'error', 'detail': str(exc)}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(
         event_source(),
@@ -191,9 +203,19 @@ async def query_stream(request: PipelineRequest):
     )
 
 
-@app.post("/v1/training/ingest", dependencies=[Depends(require_scope("training:write"))])
-async def training_ingest(request: TrainingIngestRequest):
-    return await pipeline.ingest_training(request)
+@app.post("/v1/training/ingest", status_code=202, dependencies=[Depends(require_scope("training:write"))])
+async def training_ingest(request: TrainingIngestRequest, background_tasks: BackgroundTasks):
+    job = pipeline.queue_training_ingest(request)
+    background_tasks.add_task(pipeline.process_training_ingest_job, job["job_id"], request)
+    return job
+
+
+@app.get("/v1/training/ingest/{job_id}", dependencies=[Depends(require_scope("training:read"))])
+async def training_ingest_status(job_id: str):
+    job = pipeline.training_ingest_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="training ingest job not found")
+    return job
 
 
 @app.post("/v1/feedback", dependencies=[Depends(require_scope("feedback:write"))])

@@ -75,7 +75,6 @@ class RequiredConfig:
         self.reasoning_confidence_threshold: float = float(get_env("JIMS_REASONING_CONFIDENCE_THRESHOLD", "0.6"))
         self.reasoning_depth_threshold: int = int(get_env("JIMS_REASONING_DEPTH_THRESHOLD", "3"))
         self.t1_skip_confidence: float = float(get_env("JIMS_T1_SKIP_CONFIDENCE", "0.60"))
-        self.t2_skip_confidence: float = float(get_env("JIMS_T2_SKIP_CONFIDENCE", "0.95"))
         self.embedding_dimensions: int = int(get_env("JIMS_EMBEDDING_DIMENSIONS", "768"))
         self.cf_vectorize_dimensions: int = int(get_env("CF_VECTORIZE_DIMENSIONS", "768"))
         self.redis_url: str = get_env("REDIS_URL", "")

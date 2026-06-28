@@ -100,58 +100,36 @@ class TransformerIntentInterface:
         self.bridge = bridge
 
     async def infer(self, request: PipelineRequest, session: dict[str, Any]) -> tuple[SemanticIR, LayerResult]:
-        deterministic_ir = await asyncio.to_thread(
-            self.compiler.compile,
-            request.query,
-            namespace="TECHNICAL",
-            session=session,
-        )
-        local_overlay = await self.bridge.infer_intent(request.query, deterministic_ir.model_dump(mode="json"))
+        base_ir = self.compiler.base_ir(request.query, namespace="TECHNICAL")
         used_local_model = False
-        ir = deterministic_ir
-
-        # Enhanced processing for chaotic and multilingual prompts
-        # Remove the ASCII-only restriction and enhance for better multilingual support
-        typo_correction_enabled = (
-            os.getenv("JIMS_TYPO_CORRECTION_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
-        )
-        # Enhanced intent processing for multilingual and chaotic inputs
-        if (
-            typo_correction_enabled
-            and self.bridge.qwen_enabled
-            and 0.20 <= deterministic_ir.confidence < 0.50
-            and deterministic_ir.target_ir == "OP_ESCAPE_TO_SANDBOX"
-        ):
-            # Remove ASCII restriction to better handle multilingual prompts
-            clean_query = await self.bridge.rewrite_for_clarity(request.query)
-            if clean_query and clean_query.strip().lower() != request.query.strip().lower():
-                rewritten_ir = await asyncio.to_thread(
-                    self.compiler.compile,
-                    clean_query,
-                    namespace="TECHNICAL",
-                    session=session,
-                )
-                if rewritten_ir.confidence > deterministic_ir.confidence:
-                    # Use rewritten classification but keep original query text visible
-                    deterministic_ir = rewritten_ir.model_copy(
-                        update={"scope_constraints": {**rewritten_ir.scope_constraints, "typo_corrected_query": clean_query}}
-                    )
-                    ir = deterministic_ir
-
+        ir = base_ir
+        local_overlay = await self.bridge.infer_intent(request.query, base_ir.model_dump(mode="json"))
         if local_overlay:
-            candidate = self._overlay_to_ir(deterministic_ir, local_overlay)
-            if candidate:
+            candidate = self._overlay_to_ir(base_ir, local_overlay)
+            if candidate and candidate.target_ir != "OP_ESCAPE_TO_SANDBOX" and candidate.confidence >= 0.55:
                 ir = candidate
                 used_local_model = True
+
+        embedding_ir: SemanticIR | None = None
+        if not used_local_model:
+            embedding_ir = await asyncio.to_thread(
+                self.compiler.compile,
+                request.query,
+                namespace="TECHNICAL",
+                session=session,
+            )
+            ir = embedding_ir
+
         data = {
             "target_ir": ir.target_ir,
             "confidence": ir.confidence,
-            "used_llm": False,
+            "used_llm": used_local_model,
             "used_local_model": used_local_model,
+            "used_embedding_classifier": embedding_ir is not None,
             "local_model_skip_reason": self.bridge.last_t1_skip_reason,
-            "deterministic_target_ir": deterministic_ir.target_ir,
+            "base_target_ir": base_ir.target_ir,
         }
-        return ir, _layer("T1_transformer_intent_interface", True, "Compiled input into bounded Semantic IR.", data, deterministic=not used_local_model)
+        return ir, _layer("T1_transformer_intent_interface", True, "Compiled input into bounded Semantic IR.", data, deterministic=False)
 
     def _overlay_to_ir(self, deterministic_ir: SemanticIR, overlay: dict[str, Any]) -> SemanticIR | None:
         target = str(overlay.get("target_ir") or overlay.get("intent") or "").strip().upper()
@@ -1123,18 +1101,16 @@ class TransformerRenderInterface:
         self.bridge = bridge
 
     async def render(self, obj: VerifiedCognitiveObject) -> tuple[str, bool, LayerResult]:
-        deterministic_render = self.csse.render(obj)
-        local_render = await self.bridge.render(obj, deterministic_render)
-        used_local_model = bool(local_render)
-        response = local_render or deterministic_render
-        return response, used_local_model, _layer(
+        csse_basis = self.csse.render(obj)
+        response = await self.bridge.render(obj, csse_basis)
+        return response, True, _layer(
             "T2_transformer_render_interface",
             True,
-            "Rendered Verified Cognitive Object through CSSE with optional bounded local model phrasing.",
+            "Rendered Verified Cognitive Object through the bounded T2 model.",
             {
-                "used_local_model": used_local_model,
-                "mode": "local_bounded" if used_local_model else "csse",
+                "used_local_model": True,
+                "mode": "t2_bounded",
                 "local_model_skip_reason": self.bridge.last_t2_skip_reason,
             },
-            deterministic=not used_local_model,
+            deterministic=False,
         )

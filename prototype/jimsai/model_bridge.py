@@ -5,6 +5,7 @@ import os
 import re
 from typing import Any
 
+from .errors import CriticalServiceUnavailable
 from .env_config import get_env
 from .models import VerifiedCognitiveObject
 
@@ -19,11 +20,11 @@ class QwenBridge:
       - Renderer_Service (Qwen3-4B):  T2 render/canvas/invention via JIMS_RENDERER_SERVICE_URL
       - Reasoning_Service (Qwen3-8B): deep reasoning via JIMS_REASONING_SERVICE_URL
 
-    Auth: JIMS_MODAL_API_KEY — shared Bearer token for all Modal services.
+    Auth: JIMS_MODAL_API_KEY â€” shared Bearer token for all Modal services.
     """
 
     def __init__(self) -> None:
-        # ── Modal service URLs ────────────────────────────────────────────────
+        # â”€â”€ Modal service URLs â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         self.local_url = get_env("JIMS_INTENT_SERVICE_URL").rstrip("/")
         self.render_url = get_env("JIMS_RENDERER_SERVICE_URL").rstrip("/")
         self.local_api_key = get_env("JIMS_MODAL_API_KEY")
@@ -36,16 +37,15 @@ class QwenBridge:
         self.local_chat_path = get_env("JIMS_LOCAL_INFERENCE_CHAT_PATH", "/generate") or "/generate"
         self.local_render_path = get_env("JIMS_LOCAL_RENDER_CHAT_PATH", "/generate") or "/generate"
 
-        # LLM thinning — skip T1/T2 overlay when deterministic confidence is high
+        # LLM thinning â€” skip T1/T2 overlay when deterministic confidence is high
         self.adaptive_thinning = get_env("JIMS_ADAPTIVE_TRANSFORMER_THINNING", "true").lower() in {"1", "true", "yes", "on"}
         self.t1_skip_confidence = float(get_env("JIMS_T1_SKIP_CONFIDENCE", "0.60") or "0.60")
-        self.t2_skip_confidence = float(get_env("JIMS_T2_SKIP_CONFIDENCE", "0.95") or "0.95")
         self.last_t1_skip_reason = ""
         self.last_t2_skip_reason = ""
 
-        # ── Configurable LLM provider ─────────────────────────────────────────
+        # â”€â”€ Configurable LLM provider â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         # The default backend is the Modal-hosted Qwen services (T1 Intent / T2
-        # Renderer). Setting JIMS_LLM_PROVIDER — or simply supplying NVIDIA_API_KEY —
+        # Renderer). Setting JIMS_LLM_PROVIDER â€” or simply supplying NVIDIA_API_KEY â€”
         # routes the same bounded T1/T2/Canvas/Invention/Ingest calls to an
         # OpenAI-compatible endpoint instead (e.g. NVIDIA NIM serving Llama 3.3 70B).
         # The cognitive flow above this bridge is unchanged; only the HTTP backend
@@ -71,8 +71,8 @@ class QwenBridge:
                 self.openai_model = get_env("JIMS_OPENAI_MODEL", "gpt-4o-mini")
             self.openai_chat_path = get_env("JIMS_OPENAI_CHAT_PATH", "/chat/completions") or "/chat/completions"
             # Many OpenAI-compatible servers support strict JSON mode, but not all
-            # models do. Default off and rely on the prompt + the JSON-extraction
-            # fallback below; opt in with JIMS_OPENAI_JSON_MODE=true.
+            # models do. Default off and rely on the prompt plus JSON extraction;
+            # opt in with JIMS_OPENAI_JSON_MODE=true.
             self.openai_json_mode = get_env("JIMS_OPENAI_JSON_MODE", "false").lower() in {"1", "true", "yes", "on"}
             # Surface the active model under the same attribute names the rest of
             # the runtime reads for both tiers (single model serves T1 and T2).
@@ -85,7 +85,7 @@ class QwenBridge:
             self.openai_chat_path = "/chat/completions"
             self.openai_json_mode = False
 
-    # ── Availability ──────────────────────────────────────────────────────────
+    # â”€â”€ Availability â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     @property
     def qwen_enabled(self) -> bool:
@@ -93,7 +93,7 @@ class QwenBridge:
 
         Modal backend: requires both Intent and Renderer URLs plus the shared key.
         OpenAI-compatible backend (e.g. NVIDIA NIM): requires base URL, API key,
-        and model name. The name is kept for backward compatibility — every
+        and model name. The name is kept for backward compatibility â€” every
         existing call site checks ``qwen_enabled`` to decide whether the bounded
         transformer overlay can run, regardless of which backend serves it.
         """
@@ -103,7 +103,7 @@ class QwenBridge:
 
     @property
     def available(self) -> bool:
-        """Alias for qwen_enabled — kept for backward compatibility."""
+        """Alias for qwen_enabled â€” kept for backward compatibility."""
         return self.qwen_enabled
 
     def describe(self) -> dict[str, str]:
@@ -127,32 +127,7 @@ class QwenBridge:
             "qwen_enabled": str(self.qwen_enabled),
         }
 
-    async def rewrite_for_clarity(self, raw_input: str) -> str | None:
-        """Enhanced rewrite for clarity that handles multilingual and chaotic inputs better.
-
-        Rewrite a chaotic/typo-heavy query into clear form without changing meaning.
-        This enhanced version better handles multilingual inputs and chaotic prompts.
-
-        Used by SemanticCompilerRuntime when embedding confidence is low (0.20–0.49)
-        and JIMS_TYPO_CORRECTION_ENABLED=true. Only activates when qwen_enabled.
-
-        Returns: cleaned query string, or None if Qwen is unavailable or no change needed.
-        """
-        if not self.qwen_enabled:
-            return None
-        system = (
-            "You are an advanced text normalizer for JimsAI. "
-            "Fix spelling mistakes, typos, and normalize input for better processing while preserving the original meaning. "
-            "Handle multilingual inputs appropriately - preserve the original language but fix structural issues. "
-            "Return JSON only: {\"clean\": \"corrected text here\"}"
-        )
-        data = await self._chat_json(self.local_model, system, raw_input[:512], max_tokens=120)
-        if not data:
-            return None
-        clean = str(data.get("clean") or "").strip()
-        return clean if clean and clean.lower() != raw_input.strip().lower() else None
-
-    # ── Low-level HTTP ────────────────────────────────────────────────────────
+    # â”€â”€ Low-level HTTP â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     async def _chat_json(
         self, _model_hint: str, system: str, user: str, max_tokens: int = 800
@@ -218,7 +193,7 @@ class QwenBridge:
                     return json.loads(raw_content[start:end + 1])
                 except json.JSONDecodeError:
                     pass
-            # Plain-text reply: T2 wraps it; T1 must stay strict (deterministic fallback)
+            # Plain text is valid only for T2. T1 must remain strict JSON.
             if wrap_text:
                 return {"response": raw_content}
             return None
@@ -235,9 +210,9 @@ class QwenBridge:
         For the Modal backend the renderer returns:
         {"response": "<model output>", "model": ..., "usage": ..., "finish_reason": ...}
         The model output may be:
-          - A JSON string:  '{"response": "markdown text"}'  → parse → {"response": "markdown text"}
-          - A JSON string:  '{"candidate_steps": [...]}'     → parse → {"candidate_steps": [...]}
-          - Plain markdown: 'Here is your answer...'         → wrap  → {"response": "Here is your answer..."}
+          - A JSON string:  '{"response": "markdown text"}'  â†’ parse â†’ {"response": "markdown text"}
+          - A JSON string:  '{"candidate_steps": [...]}'     â†’ parse â†’ {"candidate_steps": [...]}
+          - Plain markdown: 'Here is your answer...'         â†’ wrap  â†’ {"response": "Here is your answer..."}
         When an OpenAI-compatible provider is configured, the call is delegated to
         _openai_chat with the same wrap-as-{"response": ...} contract.
         """
@@ -284,7 +259,7 @@ class QwenBridge:
                     return json.loads(raw_content[start:end + 1])
                 except json.JSONDecodeError:
                     pass
-            # Model returned plain text instead of JSON — wrap it as {"response": ...}
+            # Model returned plain text instead of JSON â€” wrap it as {"response": ...}
             # This handles cases where the model ignores the JSON instruction but
             # still gives a useful answer (common with T2 long renders)
             return {"response": raw_content}
@@ -398,7 +373,7 @@ class QwenBridge:
                     return json.loads(raw_content[start:end + 1])
                 except json.JSONDecodeError:
                     pass
-            # T1 must be JSON — if we can't parse it, fall back to deterministic path
+            # T1 must be JSON â€” if we can't parse it, fall back to deterministic path
             import logging as _log
             _log.getLogger(__name__).debug(
                 "_local_chat_json: model returned non-JSON T1 response (len=%d): %s",
@@ -410,12 +385,12 @@ class QwenBridge:
             _log.getLogger(__name__).warning("_local_chat_json failed: %s", repr(exc))
             return None
 
-    # ── T1: Intent / routing / math ───────────────────────────────────────────
+    # â”€â”€ T1: Intent / routing / math â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     async def infer_intent(
         self, raw_input: str, deterministic_ir: dict[str, Any]
     ) -> dict[str, Any] | None:
-        """Bounded T1 intent overlay — only refines, never overrides a high-confidence IR."""
+        """Bounded T1 intent overlay â€” only refines, never overrides a high-confidence IR."""
         self.last_t1_skip_reason = ""
         if not self.qwen_enabled:
             self.last_t1_skip_reason = "qwen_unavailable"
@@ -461,7 +436,7 @@ class QwenBridge:
     async def classify_capability(
         self, raw_input: str, deterministic_context: dict[str, Any]
     ) -> dict[str, Any] | None:
-        """Bounded capability router — supplements the zero-shot classifier."""
+        """Bounded capability router â€” supplements the zero-shot classifier."""
         enabled = os.getenv("JIMS_ENABLE_LLM_CAPABILITY_ROUTER", "").lower()
         if enabled not in {"1", "true", "yes", "on"} and not (
             self.qwen_enabled and enabled != "false"
@@ -574,8 +549,8 @@ class QwenBridge:
     ) -> dict[str, Any] | None:
         """Extract subject-predicate-object facts the user stated about themselves.
 
-        Works for any language and phrasing — e.g. "My name is Celestine",
-        "Je m'appelle Kofi", "اسمي عمر", "I'm a backend developer", "I'm building
+        Works for any language and phrasing â€” e.g. "My name is Celestine",
+        "Je m'appelle Kofi", "Ø§Ø³Ù…ÙŠ Ø¹Ù…Ø±", "I'm a backend developer", "I'm building
         a podcast app". Returns relations in the same shape the deterministic
         regex extractor produces (subject="user", predicate snake_case, object,
         confidence), so callers can merge results from either source uniformly.
@@ -588,27 +563,27 @@ class QwenBridge:
         system = (
             "You are a user-fact extractor for JimsAI. Return only JSON. "
             "Read the user's message in ANY language and extract facts the user "
-            "stated ABOUT THEMSELVES — name, role/occupation, preferences, projects "
+            "stated ABOUT THEMSELVES â€” name, role/occupation, preferences, projects "
             "they are building, locations, or similar personal facts. "
             "Do NOT extract facts about other people, the world, or general knowledge. "
             "Always set subject to the literal string 'user'. "
             "predicate must be snake_case and start with 'has_' or 'is_' "
             "(e.g. has_name, has_role, has_preference, is_building, has_location). "
-            "object is the fact value, written in its original language/script — "
+            "object is the fact value, written in its original language/script â€” "
             "do not translate names. "
             "confidence is 0.0-1.0 reflecting how explicitly the user stated this. "
             "If the message contains no self-referential facts, return an empty "
             "relations list. "
             "Examples:\n"
-            "  'My name is Celestine.' → relations: [{subject: 'user', predicate: "
+            "  'My name is Celestine.' â†’ relations: [{subject: 'user', predicate: "
             "'has_name', object: 'Celestine', confidence: 0.96}]\n"
-            "  \"Je m'appelle Kofi.\" → relations: [{subject: 'user', predicate: "
+            "  \"Je m'appelle Kofi.\" â†’ relations: [{subject: 'user', predicate: "
             "'has_name', object: 'Kofi', confidence: 0.96}]\n"
-            "  'اسمي عمر.' → relations: [{subject: 'user', predicate: 'has_name', "
-            "object: 'عمر', confidence: 0.96}]\n"
-            "  'I am a backend developer.' → relations: [{subject: 'user', "
+            "  'Ø§Ø³Ù…ÙŠ Ø¹Ù…Ø±.' â†’ relations: [{subject: 'user', predicate: 'has_name', "
+            "object: 'Ø¹Ù…Ø±', confidence: 0.96}]\n"
+            "  'I am a backend developer.' â†’ relations: [{subject: 'user', "
             "predicate: 'has_role', object: 'backend developer', confidence: 0.9}]\n"
-            "  'What is my name?' → relations: []"
+            "  'What is my name?' â†’ relations: []"
         )
         user = json.dumps(
             {
@@ -630,7 +605,7 @@ class QwenBridge:
         return await self._chat_json(self.local_model, system, user, max_tokens=300)
 
     async def canvas_synthesis(self, content: str) -> dict[str, Any] | None:
-        """Bounded Active Canvas synthesis — returns JSON patterns only."""
+        """Bounded Active Canvas synthesis â€” returns JSON patterns only."""
         if not self.qwen_enabled:
             return None
         system = (
@@ -644,7 +619,7 @@ class QwenBridge:
     ) -> dict[str, Any] | None:
         """Generate runnable code candidates for any programming language or design task.
 
-        The system prompt deliberately avoids hardcoding any language name — the
+        The system prompt deliberately avoids hardcoding any language name â€” the
         model infers language from the goal/context and produces actual implementation
         code.  This covers all programming languages, query languages, markup, config
         formats, and system-design tasks without any per-language special-casing.
@@ -653,7 +628,7 @@ class QwenBridge:
             return None
 
         # Determine what kind of generation is needed from the context.
-        # 'failed_code' in context means a sandbox error occurred — we need a fix.
+        # 'failed_code' in context means a sandbox error occurred â€” we need a fix.
         # 'context' (deeper stage) means we need to expand an existing solution.
         # Default: produce a complete working implementation for the goal.
         stage = str(context.get("stage") or "initial")
@@ -692,7 +667,7 @@ class QwenBridge:
             }, sort_keys=True)
         else:
             # Initial generation: produce a full working implementation
-            # The language and framework are inferred entirely from the goal —
+            # The language and framework are inferred entirely from the goal â€”
             # no language is hardcoded here, so Python, JavaScript, TypeScript,
             # Rust, SQL, Go, Bash, YAML, Terraform, etc. all work the same way.
             system = (
@@ -755,15 +730,12 @@ class QwenBridge:
 
     async def render(
         self, obj: VerifiedCognitiveObject, deterministic_render: str
-    ) -> str | None:
-        """Bounded T2 render — rephrase the CSSE output into natural Markdown."""
+    ) -> str:
+        """Bounded T2 render â€” rephrase the CSSE output into natural Markdown."""
         self.last_t2_skip_reason = ""
         if not self.qwen_enabled:
             self.last_t2_skip_reason = "qwen_unavailable"
-            return None
-        if self._should_skip_t2(obj):
-            self.last_t2_skip_reason = f"verified_confidence_{obj.confidence:.2f}"
-            return None
+            raise CriticalServiceUnavailable("T2 renderer service unavailable")
         system = (
             "You are the bounded T2 render interface for JIMS-AI. "
             "Render the verified cognitive object as a natural, helpful, Markdown-friendly answer for the user. "
@@ -772,7 +744,7 @@ class QwenBridge:
             "'Here's what I can verify from memory' unless the user asks for internals. "
             "Do not add claims, facts, sources, code, or conclusions not present in the object. "
             "If a gap is present, preserve it explicitly. "
-            "IMPORTANT — Failed or unexecuted capability results: "
+            "IMPORTANT â€” Failed or unexecuted capability results: "
             "If any reasoning_chain step or capability result has status='failed', "
             "executed=false, or solver_status!='solved', you MUST NOT invent, complete, "
             "approximate, or partially render a numeric, symbolic, or code result for it. "
@@ -780,7 +752,7 @@ class QwenBridge:
             "an error message is present in the data, summarise it briefly in plain language. "
             "Never output bare formula fragments (e.g. '{d}{dx}', partial LaTeX, dangling "
             "expressions) as if they were an answer. "
-            "IMPORTANT — Code generation rules: "
+            "IMPORTANT â€” Code generation rules: "
             "If any reasoning_chain step has relation='CODE_GENERATION', treat its claim as "
             "the complete implementation. Present it in a fenced code block with the correct "
             "language tag inferred from the code content (python, javascript, typescript, sql, "
@@ -806,9 +778,11 @@ class QwenBridge:
         )
         data = await self._render_chat_json(system, user, max_tokens=2400)
         if not data:
-            return None
+            raise CriticalServiceUnavailable("T2 renderer returned no usable response")
         rendered = data.get("response")
-        return rendered if isinstance(rendered, str) and rendered.strip() else None
+        if not isinstance(rendered, str) or not rendered.strip():
+            raise CriticalServiceUnavailable("T2 renderer response missing text")
+        return rendered
 
     async def stream_render(
         self, obj: VerifiedCognitiveObject, deterministic_render: str
@@ -816,35 +790,33 @@ class QwenBridge:
         """Stream the bounded T2 render token-by-token for low first-token latency.
 
         Yields plain-text Markdown deltas as the model generates them. The render
-        contract is identical to ``render`` — never add claims, preserve gaps,
-        never fabricate a failed/unexecuted result — but the model is asked for
+        contract is identical to ``render`` â€” never add claims, preserve gaps,
+        never fabricate a failed/unexecuted result â€” but the model is asked for
         Markdown directly (no JSON wrapper) so each delta is immediately
-        displayable. Falls back to a single yield of the best available render
-        when streaming does not apply (Modal backend, T2 skipped, or no LLM), so
-        callers can always iterate this uniformly.
+        displayable. If true streaming is unavailable for a configured backend,
+        this yields one bounded single-shot T2 render. Missing or failed renderer
+        services raise CriticalServiceUnavailable instead of falling back.
         """
-        # Not an OpenAI-compatible streaming backend, or T2 should be skipped:
-        # emit the best single-shot render once (still correct, just not streamed).
-        if not self.qwen_enabled or not self.openai_compatible or self._should_skip_t2(obj):
-            if self.qwen_enabled and not self.openai_compatible and not self._should_skip_t2(obj):
-                rendered = await self.render(obj, deterministic_render)
-                yield rendered or deterministic_render
-            else:
-                yield deterministic_render
+        if not self.qwen_enabled:
+            self.last_t2_skip_reason = "qwen_unavailable"
+            raise CriticalServiceUnavailable("T2 renderer service unavailable")
+        if not self.openai_compatible:
+            rendered = await self.render(obj, deterministic_render)
+            yield rendered
             return
 
         self.last_t2_skip_reason = ""
         system = (
             "You are the bounded T2 render interface for JIMS-AI. "
             "Render the verified cognitive object as a natural, helpful answer for the user. "
-            "Return the answer as Markdown text ONLY — do not wrap it in JSON or quotes. "
+            "Return the answer as Markdown text ONLY â€” do not wrap it in JSON or quotes. "
             "Use concise paragraphs, short lists only when useful, and a warm professional tone. "
             "Do not expose internal layer names, raw trace IDs, or robotic phrases. "
             "Do not add claims, facts, sources, code, or conclusions not present in the object. "
             "If a gap is present, preserve it explicitly. "
             "If any reasoning_chain step or capability result has status='failed', executed=false, "
             "or solver_status!='solved', you MUST NOT invent, complete, or approximate a numeric, "
-            "symbolic, or code result for it — state plainly it could not be completed. "
+            "symbolic, or code result for it â€” state plainly it could not be completed. "
             "If any reasoning_chain step has relation='CODE_GENERATION', present its claim verbatim in a "
             "fenced code block with the correct language tag; never rewrite or truncate the code."
         )
@@ -908,16 +880,16 @@ class QwenBridge:
         except Exception as exc:
             import logging as _log
             _log.getLogger(__name__).warning("stream_render failed: %s", repr(exc))
-        # If the stream produced nothing (early error), fall back to a usable render.
+            raise CriticalServiceUnavailable("T2 streaming renderer failed") from exc
         if not emitted_any:
-            yield deterministic_render
+            raise CriticalServiceUnavailable("T2 streaming renderer emitted no text")
 
-    # ── MCTS node evaluation ──────────────────────────────────────────────────
+    # â”€â”€ MCTS node evaluation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     async def evaluate_candidate_node(
         self, goal: str, parent_context: str, candidate_node: str
     ) -> float:
-        """Score a candidate invention step for logical consistency (0.0–1.0)."""
+        """Score a candidate invention step for logical consistency (0.0â€“1.0)."""
         if not self.qwen_enabled:
             return 0.5
         system = (
@@ -946,7 +918,7 @@ class QwenBridge:
                 pass
         return 0.5
 
-    # ── Thinning helpers ──────────────────────────────────────────────────────
+    # â”€â”€ Thinning helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     def _should_skip_t1(self, deterministic_ir: dict[str, Any], raw_input: str = "") -> bool:
         """Skip T1 overlay when the deterministic compiler is already high-confidence."""
@@ -976,46 +948,3 @@ class QwenBridge:
             return False
         return confidence >= self.t1_skip_confidence
 
-    def _should_skip_t2(self, obj: VerifiedCognitiveObject) -> bool:
-        """Skip T2 Qwen render only for near-perfect verified results.
-
-        We want Qwen3-4B to run in almost all cases — it makes responses
-        dramatically more natural. Only skip when the symbolic solver has
-        produced a 100%-certain result (e.g. a verified math calculation)
-        and there are no gaps to explain.
-        """
-        if not self.adaptive_thinning:
-            return False
-        # Never skip when there are knowledge gaps — they need natural explanation
-        if obj.knowledge_gaps:
-            return False
-        # Never skip for non-FACT modes (creative, code, etc need natural language)
-        if obj.generation_mode != "FACT":
-            return False
-        # Never skip when no sources — nothing verified to render tersely
-        if not obj.sources:
-            return False
-        style = obj.style_signature or {}
-        # Always run T2 for non-default language or format requests
-        if str(style.get("language_hint") or "default") != "default":
-            return False
-        if str(style.get("format_hint") or "default") != "default":
-            return False
-
-        # Preserve T2 for conversational / low-resource / multilingual prompts
-        raw_prompt = str(style.get("user_prompt") or "").lower()
-        words = set(raw_prompt.split())
-        conversational_signals = {
-            "hello", "hi", "howdy", "please", "stressed", "help",
-            "thanks", "thank you", "nibo", "bawo", "kedu", "sannu", "lafiya", "nagode",
-        }
-        if words & conversational_signals:
-            return False
-
-        # Preserve T2 when mixed digit/letter typos are present
-        if any(re.search(r"[A-Za-z]\d|\d[A-Za-z]", word) for word in words):
-            return False
-
-        # Only skip T2 at very high confidence threshold (default 0.95, was 0.82)
-        # This means T2 renders all but the most certain symbolic solver outputs
-        return obj.confidence >= self.t2_skip_confidence

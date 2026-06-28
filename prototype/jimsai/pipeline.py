@@ -8,6 +8,7 @@ from typing import Any
 from .capability_router import CapabilityAdapterRegistry, CapabilityRouter
 from .csse import ConstrainedSemanticSynthesisEngine
 from .document_ingestion import extract_document_facts, fact_to_signature, is_document_like
+from .errors import CriticalServiceUnavailable
 from .encoder import DualRepresentationEncoder, stable_id
 from .event_store import AuditEventStore, VerifiedResultCache
 from .execution_runtime import DeterministicSandbox, SymbolicMathSolver
@@ -101,7 +102,7 @@ TRAINING_PANEL_IDS = {
 class JimsAIPipeline:
     def __init__(self) -> None:
         self.production = ProductionRuntime()
-        # Lazy fields — instantiated on first access via @property
+        # Lazy fields â€” instantiated on first access via @property
         self._training: ModalTrainingOrchestrator | None = None
         self._compiler: SemanticCompilerRuntime | None = None
         self.bridge = QwenBridge()
@@ -143,6 +144,7 @@ class JimsAIPipeline:
         self.feedback_events: list[FeedbackRequest] = []
         self.feedback_history: list[dict[str, object]] = []
         self.training_history: list[TrainingIngestResponse] = []
+        self.training_ingest_jobs: dict[str, dict[str, Any]] = {}
         self.world_model_candidates: list[WorldModelCandidate] = []
         self.ambiguity_queue: list[dict[str, object]] = []
         self.canvas_sessions: dict[str, CanvasRunResponse] = {}
@@ -260,6 +262,21 @@ class JimsAIPipeline:
         safe_thread_id = (thread_id or "default").strip() or "default"
         return f"{user_id}:thread:{safe_thread_id}"
 
+    def _query_cache_key(self, request: PipelineRequest) -> str:
+        return self.result_cache.key(
+            "query",
+            {
+                "runtime_cache_version": os.getenv("JIMS_RUNTIME_CACHE_VERSION", "2026-06-06-latency-math-v3"),
+                "user_id": request.user_id,
+                "workspace_id": request.workspace_id,
+                "thread_id": request.thread_id or "default",
+                "query": request.query.strip(),
+                "modality": request.modality.value,
+                "canvas_hint": request.canvas_hint,
+                "invention_hint": request.invention_hint,
+            },
+        )
+
     def _load_session(self, user_id: str, thread_id: str | None = None) -> dict[str, str]:
         session_key = self._thread_session_key(user_id, thread_id)
         if self.cloud_authoritative:
@@ -281,7 +298,7 @@ class JimsAIPipeline:
         # without paying for the render twice.
         self._reset_request_cache()
 
-        # Safety gate — check before any processing
+        # Safety gate â€” check before any processing
         safety_refusal = self._safety_check(request.query)
         if safety_refusal:
             self.event_store.append(
@@ -310,19 +327,7 @@ class JimsAIPipeline:
                 trace=[],
             )
 
-        cache_key = self.result_cache.key(
-            "query",
-            {
-                "runtime_cache_version": os.getenv("JIMS_RUNTIME_CACHE_VERSION", "2026-06-06-latency-math-v3"),
-                "user_id": request.user_id,
-                "workspace_id": request.workspace_id,
-                "thread_id": request.thread_id or "default",
-                "query": request.query.strip(),
-                "modality": request.modality.value,
-                "canvas_hint": request.canvas_hint,
-                "invention_hint": request.invention_hint,
-            },
-        )
+        cache_key = self._query_cache_key(request)
         cached = self.result_cache.get(cache_key)
         if cached:
             self.event_store.append(
@@ -370,6 +375,7 @@ class JimsAIPipeline:
         now_time = datetime.now(timezone.utc)
         last_activity_str = session.get("last_activity")
         clear_context = False
+        logger.debug("Context decoupling check: last_activity=%s", last_activity_str)
         if last_activity_str:
             try:
                 last_activity = datetime.fromisoformat(last_activity_str)
@@ -394,7 +400,7 @@ class JimsAIPipeline:
         session.pop("_prevent_active_object", None)
         self._save_session(request.user_id, session, request.thread_id)
 
-        # ── World-model fast-path ────────────────────────────────────────────
+        # â”€â”€ World-model fast-path â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         # If the query is a causal lookup ("X causes Y") and we have an accepted
         # rule for the queried entity, return a deterministic answer immediately
         # without invoking retrieval, reasoning, or render layers.
@@ -574,9 +580,9 @@ class JimsAIPipeline:
             render_layer_result = LayerResult(
                 layer="T2_transformer_render_interface",
                 activated=True,
-                deterministic=True,
-                summary="Deferred bounded render to streaming path; returned CSSE render inline.",
-                data={"mode": "deferred_stream"},
+                deterministic=False,
+                summary="Prepared verified render basis for the streaming T2 renderer.",
+                data={"mode": "deferred_t2_stream"},
             )
             self._stream_ctx[ir.trace_id] = (obj, deterministic_render)
         else:
@@ -626,18 +632,19 @@ class JimsAIPipeline:
             used_llm=used_llm_render,
             suggestions=self._build_suggestions(response, obj),
         )
-        self._learn_from_resolved_prompt(request, pipeline_response)
-        self.result_cache.set(cache_key, pipeline_response.model_dump(mode="json"))
-        self.production.save_chat_exchange(
-            user_id=request.user_id,
-            workspace_id=request.workspace_id,
-            thread_id=request.thread_id or "default",
-            query=request.query,
-            answer=response,
-            trace_id=ir.trace_id,
-            confidence=obj.confidence,
-            sources=obj.sources,
-        )
+        if not skip_llm_render:
+            self._learn_from_resolved_prompt(request, pipeline_response)
+            self.result_cache.set(cache_key, pipeline_response.model_dump(mode="json"))
+            self.production.save_chat_exchange(
+                user_id=request.user_id,
+                workspace_id=request.workspace_id,
+                thread_id=request.thread_id or "default",
+                query=request.query,
+                answer=response,
+                trace_id=ir.trace_id,
+                confidence=obj.confidence,
+                sources=obj.sources,
+            )
         self.event_store.append(
             "query_completed",
             ir.trace_id,
@@ -661,7 +668,7 @@ class JimsAIPipeline:
           {"type": "token", "text": "..."}  repeatedly, as the bounded T2 render streams
           {"type": "done",  "response": "<full text>"}  once at the end
 
-        The verification phase (compile → retrieve → reason) runs first and is not
+        The verification phase (compile â†’ retrieve â†’ reason) runs first and is not
         streamed; the user-visible answer (T2 render) then streams token-by-token,
         so first-token latency is the time-to-verified-object plus one model TTFT,
         not the full render duration.
@@ -670,6 +677,8 @@ class JimsAIPipeline:
         obj, deterministic_render = self._stream_ctx.pop(
             verified.ir.trace_id, (None, verified.response)
         )
+        if obj is None:
+            raise CriticalServiceUnavailable("stream render context missing")
         yield {
             "type": "meta",
             "trace_id": verified.ir.trace_id,
@@ -679,16 +688,17 @@ class JimsAIPipeline:
             "used_llm": bool(obj is not None and self.bridge.qwen_enabled),
         }
         parts: list[str] = []
-        if obj is None:
-            parts.append(verified.response)
-            yield {"type": "token", "text": verified.response}
-        else:
-            async for delta in self.bridge.stream_render(obj, deterministic_render):
-                if not delta:
-                    continue
-                parts.append(delta)
-                yield {"type": "token", "text": delta}
+        async for delta in self.bridge.stream_render(obj, deterministic_render):
+            if not delta:
+                continue
+            parts.append(delta)
+            yield {"type": "token", "text": delta}
         full = re.sub(r"<think>.*?</think>", "", "".join(parts), flags=re.DOTALL).strip() or "".join(parts)
+        final_response = verified.model_copy(
+            update={"response": full, "used_llm": bool(obj is not None and self.bridge.qwen_enabled)}
+        )
+        self._learn_from_resolved_prompt(request, final_response)
+        self.result_cache.set(self._query_cache_key(request), final_response.model_dump(mode="json"))
         # Persist the streamed answer so chat history reflects what the user saw.
         try:
             self.production.save_chat_exchange(
@@ -709,7 +719,7 @@ class JimsAIPipeline:
         """Generate actionable suggestions for low-confidence or incomplete responses."""
         suggestions: list[str] = []
 
-        # Low confidence — suggest ways to improve
+        # Low confidence â€” suggest ways to improve
         if obj.confidence < 0.60:
             suggestions.append("Share more context to help me give a better answer.")
 
@@ -741,7 +751,7 @@ class JimsAIPipeline:
         if os.getenv("JIMS_ENABLE_RESOLUTION_LEARNING", "true").lower() not in {"1", "true", "yes", "on"}:
             return
 
-        # Only write back verified, executed, solver-backed results — no LLM-only threshold
+        # Only write back verified, executed, solver-backed results â€” no LLM-only threshold
         executed_results = [
             result
             for result in response.capability_results
@@ -749,7 +759,7 @@ class JimsAIPipeline:
         ]
 
         # Threshold: 0.90 minimum confidence (configurable), no knowledge gaps, must have executed results
-        # (Previously: 0.82 + used_groq — Groq removed, threshold raised to avoid noisy write-back)
+        # (Previously: 0.82 + used_groq â€” Groq removed, threshold raised to avoid noisy write-back)
         min_confidence = float(os.getenv("JIMS_RESOLUTION_LEARNING_MIN_CONFIDENCE", "0.90") or "0.90")
         high_confidence_verified = (
             response.confidence >= min_confidence
@@ -784,14 +794,23 @@ class JimsAIPipeline:
             loop = _asyncio_lrp.get_running_loop()
 
             async def _write_resolved_mem() -> None:
-                sig = await self.encoder.encode(
-                    text,
-                    modality=Modality.TEXT,
-                    intent_type="resolved_prompt_memory",
-                    provenance=f"resolution:{response.ir.trace_id}",
-                    workspace_id=request.workspace_id,
-                    user_id=request.user_id,
-                )
+                try:
+                    sig = await self.encoder.encode(
+                        text,
+                        modality=Modality.TEXT,
+                        intent_type="resolved_prompt_memory",
+                        provenance=f"resolution:{response.ir.trace_id}",
+                        workspace_id=request.workspace_id,
+                        user_id=request.user_id,
+                    )
+                except CriticalServiceUnavailable as exc:
+                    self.event_store.append(
+                        "resolution_memory_write_failed",
+                        response.ir.trace_id,
+                        {"reason": str(exc)},
+                        user_id=request.user_id,
+                    )
+                    return
                 sig.confidence.score = min(0.98, max(response.confidence, 0.90))
                 sig.confidence.source = "resolution_learning_verified"
                 sig.metadata.update(content)
@@ -828,7 +847,7 @@ class JimsAIPipeline:
     ) -> list[CapabilityExecutionResult]:
         executed: list[CapabilityExecutionResult] = []
         for result in capability_results:
-            # ── WORLD_KNOWLEDGE: DuckDuckGo web search ───────────────────
+            # â”€â”€ WORLD_KNOWLEDGE: DuckDuckGo web search â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             if result.kind == CapabilityKind.WORLD_KNOWLEDGE and result.status == "available":
                 web_result = await self._execute_web_search(request, result)
                 executed.append(web_result)
@@ -963,13 +982,13 @@ class JimsAIPipeline:
     async def _extract_solver_expression_with_qwen(self, query: str, context: dict[str, Any]) -> tuple[str, str | None, str]:
         """Extract a mathematical expression from natural language using the T1 bridge.
 
-        Supports all mathematical domains — arithmetic, algebra, calculus, linear algebra,
+        Supports all mathematical domains â€” arithmetic, algebra, calculus, linear algebra,
         differential equations, statistics, geometry, physics. The bridge returns a
         sympy-compatible expression string that is passed directly to SymbolicMathSolver.solve().
-        No character-set validation — sympy expressions use letters, digits, and function names.
+        No character-set validation â€” sympy expressions use letters, digits, and function names.
 
         Returns (expression, solve_for, status), where status is a diagnostic string:
-        "ok", "bridge_unavailable_or_timeout" (bridge returned None — likely a Modal
+        "ok", "bridge_unavailable_or_timeout" (bridge returned None â€” likely a Modal
         timeout, cold start, or non-JSON response), or "empty_expression" (T1 ran but
         found no mathematical content).
         """
@@ -981,7 +1000,7 @@ class JimsAIPipeline:
             return "", None, "empty_expression"
         solve_for_value = data.get("solve_for")
         solve_for = str(solve_for_value).strip() if solve_for_value else None
-        # solve_for must be a single variable name (1+ chars) — no equations
+        # solve_for must be a single variable name (1+ chars) â€” no equations
         if solve_for and not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*", solve_for):
             solve_for = None
         # Compact whitespace but preserve function calls like diff(x**3, x)
@@ -996,11 +1015,8 @@ class JimsAIPipeline:
             and (relation.predicate.startswith("has_") or relation.predicate.startswith("is_"))
             and relation.object.strip()
         ]
-        # LLM fallback — the deterministic regex extractor only covers a handful
-        # of English phrasings (e.g. "my name is X"). When it finds nothing,
-        # ask the T1 bridge (Qwen3-1.7B) to extract self-referential facts from
-        # the raw input in ANY language. This keeps the system fully
-        # language-agnostic without adding per-language regex patterns.
+        # Focused T1 pass for self-referential facts when the general extraction
+        # did not emit subject=user relations.
         if not user_relations and self.bridge.qwen_enabled:
             try:
                 data = await self.bridge.extract_user_facts(
@@ -1079,50 +1095,50 @@ class JimsAIPipeline:
         if not obj.capability_plan:
             return
 
-        # ── CODING: generate code directly when Qwen/MCTS has no real output ────
-        # When bridge.qwen_enabled is False (no Qwen endpoint configured), MCTS
-        # produces only symbolic planner labels, not real code. In that case we
-        # call _generate_code_deterministic() to produce a working implementation
-        # from the query using the DeterministicSandbox's execution environment.
+        # CODING: use only model/provider output; never fabricate a stub.
         if obj.capability_plan.kind == CapabilityKind.CODING:
             invention = getattr(obj, "invention_result", None)
             code_step = None
 
-            # Check MCTS output first (present when Qwen IS available)
             if invention and invention.activated and invention.candidate_steps:
-                CODE_TOKENS = (
-                    "def ", "class ", "import ", "function ", "const ", "let ", "var ",
-                    "fn ", "pub ", "SELECT ", "CREATE ", "async ", "return ",
-                    "```", "#!", "#!/",
-                )
                 for step in reversed(invention.candidate_steps):
                     s = str(step).strip()
-                    if s and (len(s) > 100 or any(tok in s for tok in CODE_TOKENS)):
+                    if s:
                         code_step = s
                         break
 
-            # Qwen unavailable or produced no code — generate deterministically
             if not code_step:
-                code_step = self._generate_code_deterministic(
-                    getattr(obj, "style_signature", {}).get("user_prompt", "")
+                obj.knowledge_gaps.append(
+                    "Coding capability routed correctly, but no configured model/provider produced verified code."
                 )
-
-            if code_step:
                 obj.reasoning_chain = [
                     ReasoningStep(
-                        claim=code_step,
-                        confidence=0.82,
+                        claim="Coding provider unavailable or returned no verified code for this request.",
+                        confidence=0.0,
                         sources=[],
                         source_signature_ids=[],
-                        provenance_class=ProvenanceClass.SYMBOLIC_SOLVER,
-                        relation="CODE_GENERATION",
+                        provenance_class=ProvenanceClass.GAP_UNRESOLVED,
+                        relation="CAPABILITY_GATE",
                     )
                 ]
-                obj.confidence = max(obj.confidence, 0.72)
-                obj.knowledge_gaps = [g for g in obj.knowledge_gaps if "code" not in g.lower()]
+                obj.sources = []
+                obj.confidence = min(obj.confidence, 0.35)
                 return
 
-        # ── WORLD_KNOWLEDGE: inject web search results into reasoning chain ────
+            obj.reasoning_chain = [
+                ReasoningStep(
+                    claim=code_step,
+                    confidence=0.82,
+                    sources=[],
+                    source_signature_ids=[],
+                    provenance_class=ProvenanceClass.PLAUSIBLE_LEARNED,
+                    relation="CODE_GENERATION",
+                )
+            ]
+            obj.confidence = max(obj.confidence, 0.72)
+            obj.knowledge_gaps = [g for g in obj.knowledge_gaps if "code" not in g.lower()]
+            return
+        # â”€â”€ WORLD_KNOWLEDGE: inject web search results into reasoning chain â”€â”€â”€â”€
         # _execute_web_search() runs AFTER retrieval, so web content never makes
         # it into the retrieved set. We inject it here directly from the result data.
         for result in obj.capability_results:
@@ -1218,38 +1234,6 @@ class JimsAIPipeline:
             elif not obj.reasoning_chain:
                 obj.reasoning_chain.append(gate_step)
 
-    def _generate_code_deterministic(self, query: str) -> str:
-        """Last-resort code generation fallback when the Modal renderer is unavailable.
-
-        Produces a minimal universal stub. The full implementation is always
-        generated by the Modal Renderer (Qwen3-4B) via bridge.invention_candidates().
-        This path only fires when Modal is completely unreachable.
-
-        No hardcoded language detection — the stub works for any language and
-        the user can request their specific language explicitly in the next query.
-        """
-        if not query or not query.strip():
-            return ""
-
-        # Try the sandbox's code generator first (may have language-aware logic)
-        try:
-            code = self.sandbox.generate_code(query, "")
-            if code and code.strip():
-                return code
-        except (AttributeError, Exception):
-            pass
-
-        # Universal minimal stub — no language assumed
-        description = query.strip()[:200]
-        return (
-            f"# {description}\n"
-            f"# TODO: implement — Modal renderer unavailable\n"
-            f"# Re-send this request when the service is available.\n"
-        )
-
-    def _code_scaffold(self, query: str, lang: str) -> str:
-        """Kept for backward compatibility — delegates to universal stub."""
-        return self._generate_code_deterministic(query)
 
     def _response_language_hint(self, query: str) -> str:
         # Enhanced language detection without hardcoded language lists
@@ -1267,7 +1251,7 @@ class JimsAIPipeline:
         verbatim in queries regardless of the user's language.
         """
         lowered = query.lower()
-        # JSON and table are format names — they appear in any language
+        # JSON and table are format names â€” they appear in any language
         if "json" in lowered or "```json" in query:
             return "json"
         if "|" in query and re.search(r"\|\s*\w+\s*\|", query):
@@ -1299,7 +1283,7 @@ class JimsAIPipeline:
         self.production.save_user_feedback(record)
         self.production.save_panel_items([self._feedback_item(record, len(self.feedback_history))])
 
-        # ── Closed feedback loop ──────────────────────────────────────────────
+        # â”€â”€ Closed feedback loop â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         # Positive ratings reinforce graph edges on causal links in cited signatures.
         # Negative ratings decay confidence on cited signatures so they surface less.
         POSITIVE_RATINGS = {"positive", "accept", "thumbs_up", "learn_this", "helpful"}
@@ -1315,7 +1299,7 @@ class JimsAIPipeline:
                 if sig is None:
                     continue
                 if is_positive:
-                    # Reinforce causal edges — makes causal facts more retrievable
+                    # Reinforce causal edges â€” makes causal facts more retrievable
                     for link in sig.structured.causal_chain:
                         self.graph.reinforce(link.cause, link.effect, delta=0.05)
                     # Also reinforce relational edges
@@ -1386,7 +1370,7 @@ class JimsAIPipeline:
         import asyncio as _asyncio2
         try:
             loop = _asyncio2.get_running_loop()
-            # Running inside an async context — schedule as a background task
+            # Running inside an async context â€” schedule as a background task
             async def _write_mem() -> None:
                 mem_sig = await self.encoder.encode(
                     f"{kind} result {status}: {summary}",
@@ -1438,7 +1422,7 @@ class JimsAIPipeline:
                     "provenance": request.provenance,
                     "notes": request.notes,
                     "updated_panel_items": updated_panel_items,
-                    "persistent_fallback": True,
+                    "persisted_candidate_path": True,
                 }
                 self.event_store.append("review_action_recorded", stable_id("review", str(event_payload)), event_payload, user_id=request.user_id)
                 result = self._write_result_signature(
@@ -1941,16 +1925,102 @@ class JimsAIPipeline:
         )
         # Real-time learning: keep the freshly-learned signature in the local hot
         # store (write-through cache) so it is immediately recall-able on this
-        # instance — no cloud round-trip, no waiting for vector-index consistency.
+        # instance â€” no cloud round-trip, no waiting for vector-index consistency.
         # The cloud copy remains the durable, cross-instance source of truth and
         # rehydrates other instances on cold start. Previously this branch DELETED
         # the just-written signature from local memory, which made same-instance
         # real-time recall impossible whenever the vector index was cold, lagging,
-        # or degraded — defeating the purpose of online learning. Local growth is
+        # or degraded â€” defeating the purpose of online learning. Local growth is
         # bounded by the hot-cache cap below.
         if self.cloud_authoritative:
             self.memory.enforce_hot_cache_cap()
         return response
+
+    def queue_training_ingest(self, request: TrainingIngestRequest) -> dict[str, Any]:
+        now = utc_now()
+        job_id = stable_id(
+            "ingest_job",
+            f"{request.user_id}:{request.workspace_id}:{now.isoformat()}:{request.content[:512]}",
+        )
+        job = {
+            "job_id": job_id,
+            "accepted": True,
+            "status": "queued",
+            "created_at": now.isoformat(),
+            "updated_at": now.isoformat(),
+            "workspace_id": request.workspace_id,
+            "user_id": request.user_id,
+            "modality": request.modality.value,
+            "content_bytes": len(request.content.encode("utf-8")),
+        }
+        self.training_ingest_jobs[job_id] = job
+        self.event_store.append(
+            "training_ingest_queued",
+            job_id,
+            {k: v for k, v in job.items() if k != "user_id"},
+            user_id=request.user_id,
+        )
+        return job
+
+    async def process_training_ingest_job(self, job_id: str, request: TrainingIngestRequest) -> None:
+        job = self.training_ingest_jobs.setdefault(job_id, {"job_id": job_id})
+        job.update({"status": "running", "updated_at": utc_now().isoformat()})
+        try:
+            response = await self.ingest_training(request)
+        except CriticalServiceUnavailable as exc:
+            job.update(
+                {
+                    "status": "failed",
+                    "error_type": "critical_service_unavailable",
+                    "detail": str(exc),
+                    "updated_at": utc_now().isoformat(),
+                }
+            )
+            self.event_store.append(
+                "training_ingest_failed",
+                job_id,
+                {"error_type": "critical_service_unavailable", "detail": str(exc)},
+                user_id=request.user_id,
+            )
+            return
+        except Exception as exc:
+            job.update(
+                {
+                    "status": "failed",
+                    "error_type": type(exc).__name__,
+                    "detail": str(exc),
+                    "updated_at": utc_now().isoformat(),
+                }
+            )
+            self.event_store.append(
+                "training_ingest_failed",
+                job_id,
+                {"error_type": type(exc).__name__, "detail": str(exc)},
+                user_id=request.user_id,
+            )
+            return
+
+        job.update(
+            {
+                "status": "completed",
+                "signature_id": response.signature.id,
+                "world_model_candidates": len(response.world_model_candidates),
+                "accepted_training_pair": bool(response.sppe_training_pair.accepted),
+                "updated_at": utc_now().isoformat(),
+            }
+        )
+        self.event_store.append(
+            "training_ingest_completed",
+            job_id,
+            {
+                "signature_id": response.signature.id,
+                "world_model_candidates": len(response.world_model_candidates),
+            },
+            user_id=request.user_id,
+        )
+
+    def training_ingest_job(self, job_id: str) -> dict[str, Any] | None:
+        return self.training_ingest_jobs.get(job_id)
 
     def _apply_ingestion_overlay(self, signature, overlay: dict[str, Any] | None, source_trust: float) -> bool:
         if not overlay:

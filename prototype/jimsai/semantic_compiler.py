@@ -2,40 +2,10 @@ from __future__ import annotations
 
 import os
 import re
-import unicodedata
 from typing import Any
 
+from .errors import CriticalServiceUnavailable
 from .models import ExecutionMode, Hypothesis, IntentDomain, SemanticIR
-
-
-_STOP_WORDS = {
-    "a", "an", "and", "are", "as", "at", "be", "do", "does", "for", "from",
-    "how", "i", "in", "is", "it", "me", "my", "of", "on", "or", "over",
-    "please", "that", "the", "this", "to", "what", "when", "where", "who",
-    "why", "with", "you", "yo",
-}
-_QUESTION_WORDS = {"what", "when", "where", "who", "why", "how", "which"}
-_LEET_TRANSLATION = str.maketrans({"0": "o", "1": "i", "3": "e", "4": "a", "5": "s", "7": "t"})
-
-_CODE_CONCEPTS = {
-    "api", "class", "code", "function", "javascript", "method", "python",
-    "retry", "script", "test", "wrapper",
-}
-_FILE_CONCEPTS = {"attach", "document", "download", "file", "open", "retrieve", "upload"}
-_CANVAS_CONCEPTS = {"analysis", "analyze", "background", "codebase", "corpus", "deep", "full"}
-_IMAGE_CONCEPTS = {"draw", "generate", "image", "illustration", "photo", "picture"}
-_ARCHITECTURE_CONCEPTS = {
-    "adaptive", "architecture", "cost", "inference", "pipeline", "system",
-    "thinning", "transformer",
-}
-_AGENTIC_CONCEPTS = {"automated", "book", "deployment", "rollback", "schedule", "send", "task"}
-_PUBLIC_MEMORY_CONCEPTS = {
-    "assumption", "climate", "compound", "define", "evidence", "explain",
-    "interest", "support",
-}
-_CAUSAL_CONCEPTS = {"affect", "because", "cause", "change", "consequence", "effect", "happen", "impact"}
-_EMOTIONAL_CONCEPTS = {"anxious", "confused", "frustrated", "help", "overwhelmed", "sad", "stress", "stressed"}
-
 
 def _is_document_wide_relation(predicate: str) -> bool:
     """Return True if the predicate describes a document-wide fact.
@@ -47,78 +17,6 @@ def _is_document_wide_relation(predicate: str) -> bool:
     if not predicate:
         return False
     return predicate.startswith("has_") or predicate.startswith("uses_") or predicate.startswith("is_")
-
-
-def _normalise_token(token: str) -> str:
-    if any(ch.isalpha() for ch in token):
-        token = token.translate(_LEET_TRANSLATION)
-        token = re.sub(r"(.)\1{2,}", r"\1\1", token)
-    return token
-
-
-def normalize_language(text: str) -> str:
-    """Normalize noisy user text by shape, not phrase replacement."""
-    text = unicodedata.normalize("NFKC", text)
-    return re.sub(r"[\w@]+", lambda match: _normalise_token(match.group(0)), text, flags=re.UNICODE)
-
-
-def _stem(token: str) -> str:
-    for suffix in ("ingly", "edly", "ing", "ed"):
-        if len(token) > len(suffix) + 3 and token.endswith(suffix):
-            return token[: -len(suffix)]
-    if len(token) > 5 and token.endswith("es"):
-        return token[:-2]
-    if len(token) > 4 and token.endswith("s") and not token.endswith(("ss", "sis", "ous")):
-        return token[:-1]
-    return token
-
-
-def sanitize(raw: str) -> list[str]:
-    """Return normalized content tokens for deterministic fallback logic."""
-    normalized = normalize_language(raw).lower()
-    tokens = []
-    for token in re.findall(r"[\w\-.#@]+", normalized, flags=re.UNICODE):
-        token = token.strip("._-#@")
-        if not token or token in _STOP_WORDS:
-            continue
-        tokens.append(_stem(token))
-    return tokens
-
-
-def _edit_distance_at_most(left: str, right: str, limit: int) -> bool:
-    if left == right:
-        return True
-    if abs(len(left) - len(right)) > limit:
-        return False
-    previous = list(range(len(right) + 1))
-    for i, lchar in enumerate(left, start=1):
-        current = [i]
-        row_min = current[0]
-        for j, rchar in enumerate(right, start=1):
-            cost = 0 if lchar == rchar else 1
-            value = min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + cost)
-            current.append(value)
-            row_min = min(row_min, value)
-        if row_min > limit:
-            return False
-        previous = current
-    return previous[-1] <= limit
-
-
-def _matches_concept(token: str, concepts: set[str]) -> bool:
-    if token in concepts:
-        return True
-    if len(token) < 3:
-        return False
-    for concept in concepts:
-        limit = 1 if max(len(token), len(concept)) <= 6 else 2
-        if _edit_distance_at_most(token, concept, limit):
-            return True
-    return False
-
-
-def _count_concepts(tokens: set[str], concepts: set[str]) -> int:
-    return sum(1 for token in tokens if _matches_concept(token, concepts))
 
 
 def _raw_tokens(text: str) -> list[str]:
@@ -135,6 +33,21 @@ def _raw_tokens(text: str) -> list[str]:
         for tok in re.findall(r"[\w\-.#@]+", text, flags=re.UNICODE)
         if tok.strip("._-#@")
     ]
+
+
+def _looks_like_structural_identifier(value: str) -> bool:
+    """Return True for code-like identifiers without language word lists."""
+    cleaned = value.strip(".,:;!?")
+    if len(cleaned) <= 1:
+        return False
+    return (
+        "." in cleaned
+        or "_" in cleaned
+        or "#" in cleaned
+        or "@" in cleaned
+        or any(ch.isdigit() for ch in cleaned)
+        or any(ch.isupper() for ch in cleaned[1:])
+    )
 
 
 
@@ -326,17 +239,17 @@ class _FallbackClassifier:
                 return []
         return self._memory_recall_embedding
 
-    # ── Public interface ───────────────────────────────────────────────────
+    # Public interface
 
     def classify_intent(self, query: str) -> tuple[str, float]:
-        """Return (ir_target, confidence) for the given query."""
+        """Return (ir_target, confidence) from real embedding semantics only."""
         prototypes = self._get_prototype_embeddings()
         if not prototypes:
-            return "OP_ESCAPE_TO_SANDBOX", 0.0
+            raise CriticalServiceUnavailable("intent embedding prototypes unavailable")
 
         query_emb = self._fetch_embedding("query: " + query)
         if not query_emb or all(v == 0.0 for v in query_emb):
-            return "OP_ESCAPE_TO_SANDBOX", 0.0
+            raise CriticalServiceUnavailable("intent query embedding unavailable")
 
         best_ir = "OP_ESCAPE_TO_SANDBOX"
         best_score = 0.0
@@ -349,174 +262,55 @@ class _FallbackClassifier:
         return best_ir, round(max(0.0, min(1.0, best_score)), 4)
 
     def is_memory_recall_query(self, query: str, threshold: float = 0.55) -> bool:
-        """Return True if the query is asking to recall something from stored memory.
-
-        This covers all user-stored facts — profile, preferences, documents,
-        tasks, prior conversations — not just "what is my name?" style queries.
-        Works across all languages via embedding similarity.
-        """
-        self._get_prototype_embeddings()  # trigger quality check
         query_emb = self._fetch_embedding("query: " + query)
         if not query_emb or all(v == 0.0 for v in query_emb):
-            return False
+            raise CriticalServiceUnavailable("memory recall query embedding unavailable")
 
         recall_emb = self._get_memory_recall_embedding()
-        score = self._cosine(query_emb, recall_emb)
-        return score > threshold
+        if not recall_emb:
+            raise CriticalServiceUnavailable("memory recall prototype embedding unavailable")
+        return self._cosine(query_emb, recall_emb) > threshold
 
     def is_profile_query(self, query: str, threshold: float = 0.55) -> bool:
-        """Alias for is_memory_recall_query — kept for backward compatibility."""
         return self.is_memory_recall_query(query, threshold)
 
     def get_intent_scores(self, query: str) -> dict[str, float]:
-        """Return similarity scores against all IR prototype embeddings."""
         query_emb = self._fetch_embedding("query: " + query)
         if not query_emb or all(v == 0.0 for v in query_emb):
-            return {t: 0.0 for t in self.ir_prototypes}
+            raise CriticalServiceUnavailable("intent query embedding unavailable")
 
         prototypes = self._get_prototype_embeddings()
+        if not prototypes:
+            raise CriticalServiceUnavailable("intent embedding prototypes unavailable")
         return {
             t: round(max(0.0, min(1.0, self._cosine(query_emb, emb))), 4)
             for t, emb in prototypes.items()
         }
+
+
 class _LLMClassifier:
-    """Intent classifier using LLM (QwenBridge) for robust multilingual understanding.
-
-    Strategy (in order):
-    1. LLM via QwenBridge — handles any language, mixed intent, typos.
-    2. Embedding classifier (_FallbackClassifier) — semantic prototype matching,
-       language-agnostic, no hardcoded patterns.
-    3. Structural token analysis — lightweight fallback, Unicode-aware.
-
-    No hardcoded language-specific regex patterns. Everything is embedding or
-    semantics-based so it works equally well in English, French, Yoruba, Arabic,
-    Chinese, etc.
-    """
+    """Embedding-intent path used only when T1 did not produce a route."""
 
     def __init__(self, qwen_bridge: Any) -> None:
         self.qwen_bridge = qwen_bridge
-        # Lazy-init embedding classifier (shares Modal service, no extra cost)
-        self._embedding_classifier: "_FallbackClassifier | None" = None
+        self._embedding_classifier: _FallbackClassifier | None = None
 
     @property
-    def _embed_cls(self) -> "_FallbackClassifier":
+    def _embed_cls(self) -> _FallbackClassifier:
         if self._embedding_classifier is None:
             self._embedding_classifier = _FallbackClassifier()
         return self._embedding_classifier
 
     def classify_intent(self, query: str) -> tuple[str, float]:
-        """Return (ir_target, confidence) for any query in any language.
-
-        This is a synchronous method called from compile() which runs inside
-        an async context. The LLM overlay (Qwen 1.7B) is handled asynchronously
-        by TransformerIntentInterface.infer() AFTER compile() returns — so we
-        skip the LLM here and go straight to the embedding classifier.
-        The async T1 overlay then refines the result if confidence is low.
-        """
-        # Embedding classifier — language-agnostic, works synchronously
-        try:
-            return self._embed_cls.classify_intent(query)
-        except Exception:
-            pass
-
-        # Minimal structural fallback — Unicode-aware, no language assumptions
-        return self._structural_classify(query)
+        return self._embed_cls.classify_intent(query)
 
     def classify_intent_with_memory_check(self, query: str) -> tuple[str, float, bool]:
-        """Classify intent AND check memory recall in a single batch embedding call.
-
-        Sends the query + all prototypes + memory recall prototype in ONE batch
-        to the Modal embedding service. This minimises round-trips and handles
-        cold-start better — one call that can take 45s vs multiple 8s-timeout calls.
-        """
-        embed_cls = self._embed_cls
-        try:
-            prototypes = embed_cls._get_prototype_embeddings()
-            if not prototypes:
-                ir, conf = self._structural_classify(query)
-                return ir, conf, False
-
-            # Single batch: [query, memory_recall_proto, ...all IR protos already cached]
-            # Query embedding
-            query_emb = embed_cls._fetch_embedding("query: " + query)
-            if not query_emb or all(v == 0.0 for v in query_emb):
-                ir, conf = self._structural_classify(query)
-                return ir, conf, False
-
-            # Classify against IR prototypes
-            best_ir = "OP_ESCAPE_TO_SANDBOX"
-            best_score = 0.0
-            for ir_target, proto_emb in prototypes.items():
-                score = embed_cls._cosine(query_emb, proto_emb)
-                if score > best_score:
-                    best_score = score
-                    best_ir = ir_target
-
-            # Check memory recall similarity
-            recall_emb = embed_cls._get_memory_recall_embedding()
-            recall_score = embed_cls._cosine(query_emb, recall_emb)
-            is_memory = recall_score > 0.38
-
-            return best_ir, round(max(0.0, min(1.0, best_score)), 4), is_memory
-        except Exception:
-            ir, conf = self._structural_classify(query)
-            return ir, conf, False
+        target_ir, confidence = self._embed_cls.classify_intent(query)
+        is_memory = self._embed_cls.is_memory_recall_query(query, threshold=0.38)
+        return target_ir, confidence, is_memory
 
     def is_profile_query(self, query: str, threshold: float = 0.55) -> bool:
-        """Return True if query asks to recall something from stored memory.
-
-        Uses embedding similarity — no hardcoded language patterns.
-        Covers profile facts, preferences, stored notes, anything the user
-        previously shared with JimsAI.
-        """
-        try:
-            return self._embed_cls.is_memory_recall_query(query, threshold)
-        except Exception:
-            return False
-
-    def _structural_classify(self, query: str) -> tuple[str, float]:
-        """Minimal Unicode-aware structural classification — last resort only."""
-        normalized = normalize_language(query)
-        raw = normalized.lower()
-        token_list = sanitize(normalized)
-        tokens = set(token_list)
-        raw_tokens = {token.lower() for token in _raw_tokens(normalized)}
-
-        # Math: numbers + operators
-        if re.search(r"\d+\s*[\+\-\*/]\s*\d+|\d+", raw) and re.search(r"[\+\-\*/=]|solve|calculate|compute", raw):
-            return "GENERAL_FACT", 0.85
-
-        # Code: structural syntax signals that work across all languages
-        code_signals = {"def ", "class ", "import ", "function ", "return ", "```",
-                        "fn ", "const ", "let ", "var ", "func ", "fun ", "pub "}
-        if any(sig in raw for sig in code_signals) or _count_concepts(tokens, _CODE_CONCEPTS) >= 2:
-            return "CODE_GENERATE", 0.90
-
-        if _count_concepts(tokens, _CANVAS_CONCEPTS) >= 2:
-            return "RUN_CANVAS", 0.82
-
-        if _count_concepts(tokens, _FILE_CONCEPTS) >= 2:
-            return "FETCH_DOCUMENT", 0.65
-
-        if _count_concepts(tokens, _EMOTIONAL_CONCEPTS) >= 1:
-            return "EMOTIONAL_CATCH", 0.62
-
-        if (raw_tokens & _QUESTION_WORDS) and len(tokens) <= 1 and not _count_concepts(tokens, _PUBLIC_MEMORY_CONCEPTS | _CAUSAL_CONCEPTS):
-            return "EMOTIONAL_CATCH", 0.45
-
-        if _count_concepts(tokens, _IMAGE_CONCEPTS) >= 2:
-            return "WORKSPACE_QUERY", 0.66
-        if _count_concepts(tokens, _AGENTIC_CONCEPTS) >= 2:
-            return "WORKSPACE_QUERY", 0.66
-        if _count_concepts(tokens, _ARCHITECTURE_CONCEPTS) >= 2:
-            return "WORKSPACE_QUERY", 0.66
-        if _count_concepts(tokens, _PUBLIC_MEMORY_CONCEPTS) >= 1 or raw_tokens & _QUESTION_WORDS:
-            return "WORKSPACE_QUERY", 0.58
-
-        if tokens and all(not re.search(r"[aeiou]", token, flags=re.IGNORECASE) for token in tokens if token.isascii()):
-            return "OP_ESCAPE_TO_SANDBOX", 0.0
-
-        return "WORKSPACE_QUERY", 0.50
+        return self._embed_cls.is_memory_recall_query(query, threshold)
 
 
 class SemanticCompilerRuntime:
@@ -545,44 +339,17 @@ class SemanticCompilerRuntime:
         scope: dict[str, Any] = existing_scope or {}
         scope["raw_length"] = len(raw_input)
         scope["token_count"] = len(tokens)
-        token_set = set(tokens)
-        raw_token_set = {token.lower() for token in _raw_tokens(normalize_language(raw_input))}
-        # Entity extraction — PascalCase/CamelCase detection works for code/technical identifiers
-        # across all Latin-script languages. Non-Latin entities are extracted by the NLP layer.
         camel_entities = [
             entity.strip(".,:;!?")
-            for entity in re.findall(r"\b[A-Z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)*\b", raw_input)
-            if len(entity) > 1 and entity.lower() not in _QUESTION_WORDS
+            for entity in re.findall(r"\b[\w#@][\w\-.#@]*\b", raw_input, flags=re.UNICODE)
+            if _looks_like_structural_identifier(entity)
         ]
-        if any(_matches_concept(token, _CAUSAL_CONCEPTS) for token in token_set) or "if" in raw_token_set:
-            direction = "incoming" if "why" in raw_token_set and "if" not in raw_token_set else "outgoing"
-            scope["question_intent"] = {"relation": "causes", "direction": direction}
-        if any(_matches_concept(token, {"change"}) for token in token_set):
-            camel_entities.extend(f"{entity}_change" for entity in list(camel_entities) if "." in entity)
         if camel_entities:
             scope["entities"] = sorted(set(camel_entities))
         numbers = [int(n) for n in re.findall(r"\b\d+\b", raw_input)]
         if numbers:
             scope["numbers"] = numbers
-        self._apply_capability_hints(scope, token_set, raw_token_set)
         return scope
-
-    def _apply_capability_hints(self, scope: dict[str, Any], tokens: set[str], raw_tokens: set[str]) -> None:
-        if _count_concepts(tokens, _CODE_CONCEPTS) >= 2:
-            scope["v9_capability_hint"] = "coding"
-            return
-        if _count_concepts(tokens, _IMAGE_CONCEPTS) >= 2:
-            scope["v9_capability_hint"] = "image_generation"
-            return
-        if _count_concepts(tokens, _AGENTIC_CONCEPTS) >= 2:
-            scope["v9_capability_hint"] = "agentic_task"
-            return
-        if _count_concepts(tokens, _ARCHITECTURE_CONCEPTS) >= 2:
-            scope["v9_capability_hint"] = "system_architecture"
-            return
-        public_count = _count_concepts(tokens, _PUBLIC_MEMORY_CONCEPTS)
-        if public_count >= 1 and (raw_tokens & _QUESTION_WORDS or "explain" in tokens):
-            scope["v9_capability_hint"] = "public_memory"
 
     def _domain_for_ir(self, target_ir: str) -> IntentDomain:
         mapping = {
@@ -592,12 +359,27 @@ class SemanticCompilerRuntime:
         }
         return mapping.get(target_ir, IntentDomain.WORKSPACE_OPERATION)
 
+    def base_ir(self, raw_input: str, namespace: str = "TECHNICAL") -> SemanticIR:
+        tokens = _raw_tokens(raw_input)
+        scope = self._scope_from_tokens(tokens, raw_input, existing_scope={})
+        return SemanticIR(
+            target_ir="OP_ESCAPE_TO_SANDBOX",
+            system_action="UNCLASSIFIED",
+            confidence=0.0,
+            scope_constraints=scope,
+            execution_mode=ExecutionMode.GROQ_BOUNDED_INTERFACE,
+            domain_namespace=namespace,
+            intent_domain=IntentDomain.UNKNOWN,
+            tokens=tokens,
+            hypotheses=[],
+        )
+
     def compile(self, raw_input: str, namespace: str = "TECHNICAL", session: dict[str, Any] | None = None) -> SemanticIR:
         session = session or {}
         # Use raw text directly — no preprocessing pipeline, no normalisation.
         # The LLM (Qwen 1.7B) and embedding model handle all languages natively.
-        tokens = sanitize(raw_input)
-        scope: dict[str, Any] = {"raw_length": len(raw_input), "token_count": len(tokens)}
+        tokens = _raw_tokens(raw_input)
+        scope = self._scope_from_tokens(tokens, raw_input, existing_scope={})
 
         # 1. Classify intent AND check memory recall in a single embedding call.
         # Using one embedding avoids two Modal round-trips for every query.
@@ -608,27 +390,10 @@ class SemanticCompilerRuntime:
         if is_memory_query or target_ir == "WORKSPACE_QUERY":
             scope["profile_query"] = True
             target_ir = "WORKSPACE_QUERY"
-            confidence = max(confidence, 0.60)
+            confidence = max(confidence, self.confidence_threshold)
 
         # 3. Session context rescue — inherit active intent when classifier is uncertain
-        execution_mode = ExecutionMode.DETERMINISTIC_CORE
-        local_threshold = self.confidence_threshold
-        has_non_ascii = any(ord(c) > 127 for c in raw_input)
-        if has_non_ascii:
-            local_threshold = 0.30  # lower confidence bar for non-Latin scripts
-
-        if target_ir == "OP_ESCAPE_TO_SANDBOX" or confidence < local_threshold:
-            active_session_intent = session.get("ACTIVE_INTENT")
-            if (
-                active_session_intent
-                and active_session_intent != "OP_ESCAPE_TO_SANDBOX"
-                and confidence >= 0.20
-            ):
-                target_ir = active_session_intent
-                confidence = max(confidence, 0.35)
-                scope["session_intent_inherited"] = True
-            else:
-                execution_mode = ExecutionMode.AIR_GAPPED_CONTAINER
+        execution_mode = ExecutionMode.GROQ_BOUNDED_INTERFACE
 
         # 4. Scope enrichment — language-neutral entity + number extraction
         scope = self._scope_from_tokens(tokens, raw_input, existing_scope=scope)
@@ -638,28 +403,36 @@ class SemanticCompilerRuntime:
 
         # 6. Session object carry-forward
         context_inherited = False
-        context_boosted = False
         question_intent = scope.get("question_intent")
         relation = question_intent.get("relation") if isinstance(question_intent, dict) else None
         if "entities" not in scope and session.get("ACTIVE_OBJECT") and not _is_document_wide_relation(relation):
             scope["entities"] = [session["ACTIVE_OBJECT"]]
             context_inherited = True
 
-        if confidence < 0.8 and session.get("ACTIVE_INTENT") == target_ir:
-            confidence = min(confidence + 0.15, 1.0)
-            context_boosted = True
+        hypotheses: list[Hypothesis] = []
+        routed_target = target_ir
+        if target_ir == "OP_ESCAPE_TO_SANDBOX" or confidence < self.confidence_threshold:
+            hypotheses.append(
+                Hypothesis(
+                    target_ir=target_ir,
+                    score=round(confidence, 4),
+                    role="candidate",
+                    reason="service-backed intent score below routing threshold",
+                )
+            )
+            routed_target = "OP_ESCAPE_TO_SANDBOX"
+            execution_mode = ExecutionMode.AIR_GAPPED_CONTAINER
 
-        domain = self._domain_for_ir(target_ir)
+        domain = IntentDomain.UNKNOWN if routed_target == "OP_ESCAPE_TO_SANDBOX" else self._domain_for_ir(routed_target)
         return SemanticIR(
-            target_ir=target_ir,
-            system_action=target_ir,
+            target_ir=routed_target,
+            system_action=routed_target,
             confidence=round(confidence, 4),
             scope_constraints=scope,
             execution_mode=execution_mode,
             domain_namespace=namespace,
             intent_domain=domain,
             tokens=tokens,
-            hypotheses=[],
+            hypotheses=hypotheses,
             context_inherited=context_inherited,
-            context_boosted=context_boosted,
         )

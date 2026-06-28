@@ -182,12 +182,9 @@ $envVars["JIMS_ENABLE_GROQ_T2"] = "false"
 $envVars["JIMS_ENABLE_GROQ_CANVAS"] = "false"
 $envVars["JIMS_ENABLE_GROQ_INVENTION"] = "false"
 $envVars["JIMS_ALLOW_EXTERNAL_GROQ"] = "false"
-# T1/T2 thresholds: T1 runs more aggressively, T2 only skipped for near-perfect solver results
+# T1 threshold: T2 remains required for query rendering.
 $envVars["JIMS_T1_SKIP_CONFIDENCE"] = "0.60"
-$envVars["JIMS_T2_SKIP_CONFIDENCE"] = "0.95"
 $envVars["JIMS_ADAPTIVE_TRANSFORMER_THINNING"] = "true"
-# Prompt robustness (Tasks 25)
-$envVars["JIMS_TYPO_CORRECTION_ENABLED"] = "true"
 $envVars["JIMS_CAUSAL_TRAVERSAL_DEPTH"] = "4"
 # Resolution learning: only write back verified high-quality results
 $envVars["JIMS_ENABLE_RESOLUTION_LEARNING"] = "true"

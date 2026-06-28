@@ -1,4 +1,4 @@
-"""Dual-representation encoder — T1-backed structured extraction.
+"""Dual-representation encoder â€” T1-backed structured extraction.
 
 Every regex-based "understanding" path has been removed:
   - No CAUSAL_VERBS / DEPENDENCY_VERBS / QUESTION_SUBJECTS / STOP_TAGS lists
@@ -10,15 +10,14 @@ Structured extraction (entities, relations, causal links) routes through T1
   - Works in any language
   - Handles misspellings and grammatical errors (LLM normalises intent, not surface form)
   - Produces complete cause/effect phrase pairs, not single-token regex captures
-  - Never guesses — returns None when unavailable; caller surfaces as explicit gap
+  - Never guesses â€” returns None when unavailable; caller surfaces as explicit gap
 
 Code structure extraction (tree-sitter / regex on formal grammar tokens) is kept
 because those are parsers of formal grammars, not English heuristics.
 JSON/CSV schema extraction is kept for the same reason.
 
 Embeddings are real-vector-only. If the embedding service is unavailable or times out,
-the signature is stored with latent_embedding=[] and flagged reembedding_required=True.
-It is excluded from vector similarity retrieval (lexical hydration only) until re-embedded.
+the active pipeline raises CriticalServiceUnavailable instead of storing degraded memory.
 """
 
 from __future__ import annotations
@@ -32,13 +31,14 @@ from dataclasses import dataclass
 from io import StringIO
 from typing import Any
 
+from ..errors import CriticalServiceUnavailable
 from ..models import CausalLink, Confidence, Entity, MemorySignature, Modality, Relation, SignatureIntent, StructuredSignature
 
 logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Pure utilities — no heuristic lists
+# Pure utilities â€” no heuristic lists
 # ---------------------------------------------------------------------------
 
 def bounded_excerpt(text: str, max_chars: int = 1200) -> str:
@@ -79,7 +79,7 @@ class EncoderExtraction:
 
 
 # ---------------------------------------------------------------------------
-# Formal-grammar parsers (kept — these parse structure, not natural language)
+# Formal-grammar parsers (kept â€” these parse structure, not natural language)
 # ---------------------------------------------------------------------------
 
 def extract_code_structure(text: str) -> tuple[list[tuple[str, str]], list[tuple[str, str, str, float]], set[str], dict[str, Any]]:
@@ -224,7 +224,7 @@ class DualRepresentationEncoder:
         bridge: object | None = None,
     ) -> None:
         self.multimodal_adapter = multimodal_adapter
-        self.bridge = bridge  # QwenBridge — required for T1 extraction
+        self.bridge = bridge  # QwenBridge â€” required for T1 extraction
 
     async def encode(
         self,
@@ -259,15 +259,7 @@ class DualRepresentationEncoder:
             signature.metadata["latent_embedding_source"] = "external_service"
             signature.metadata["reembedding_required"] = False
         else:
-            # No fallback — real embedding or nothing.
-            # Signature is stored with empty latent_embedding and flagged.
-            # Vectorize similarity retrieval will not find it; lexical hydration only.
-            signature.latent_embedding = []
-            signature.confidence.score = min(signature.confidence.score, 0.4)
-            signature.confidence.source = "embedding_unavailable"
-            signature.metadata["latent_embedding_source"] = "none"
-            signature.metadata["reembedding_required"] = True
-            signature.metadata["reembedding_reason"] = "embedding_service_unavailable_or_timeout"
+            raise CriticalServiceUnavailable("embedding service unavailable for L1 encoder")
 
         return signature
 
@@ -283,30 +275,7 @@ class DualRepresentationEncoder:
         extraction = await self._extract(text, modality)
 
         if extraction is None:
-            # T1 unavailable or timed out — surface explicitly, never silently degrade.
-            return MemorySignature(
-                id=stable_id("sig", f"{provenance}:{intent_type}:{modality.value}:{text}"),
-                provenance=provenance,
-                structured=StructuredSignature(
-                    entities=[],
-                    relations=[],
-                    causal_chain=[],
-                    intent=SignatureIntent(type=intent_type, certainty="extraction_failed"),
-                ),
-                latent_embedding=[],
-                abstraction_tags=["extraction_failed", modality.value],
-                confidence=Confidence(score=0.0, source="t1_extraction_unavailable"),
-                modality=modality,
-                linked_signatures=[],
-                raw_excerpt=bounded_excerpt(text),
-                workspace_id=workspace_id,
-                user_id=user_id,
-                metadata={
-                    "error": "structured_extraction_failed",
-                    "reason": "t1_bridge_unavailable_or_timeout_or_non_json",
-                    "encoder_version": "layer1_v9_t1_extraction",
-                },
-            )
+            raise CriticalServiceUnavailable("T1 structured extraction unavailable for L1 encoder")
 
         structured = StructuredSignature(
             entities=extraction.entities,
@@ -336,7 +305,7 @@ class DualRepresentationEncoder:
     async def _extract(self, text: str, modality: Modality) -> EncoderExtraction | None:
         """Extract structured knowledge via T1 (Qwen3-1.7B).
 
-        Returns None if the bridge is unavailable — caller surfaces as explicit gap.
+        Returns None if the bridge is unavailable â€” caller surfaces as explicit gap.
         Never falls back to regex.
         """
         entity_names: dict[str, str] = {}
@@ -370,7 +339,7 @@ class DualRepresentationEncoder:
                 if link not in causal:
                     causal.append(link)
 
-        # ── T1 structured extraction (all natural language, any language) ──
+        # â”€â”€ T1 structured extraction (all natural language, any language) â”€â”€
         t1_data: dict[str, Any] | None = None
         if self.bridge is not None and getattr(self.bridge, "qwen_enabled", False):
             try:
@@ -380,7 +349,7 @@ class DualRepresentationEncoder:
                 t1_data = None
 
         if t1_data is None:
-            return None  # Caller surfaces as extraction_failed gap
+            return None
 
         for ent in t1_data.get("entities", []):
             if isinstance(ent, dict) and ent.get("name"):
@@ -414,7 +383,7 @@ class DualRepresentationEncoder:
                     conf = 0.8
                 add_relation(cause, "causes", effect, max(0.0, min(1.0, conf)))
 
-        # ── Code/Data structural extraction (formal parsers, not NLP) ──
+        # â”€â”€ Code/Data structural extraction (formal parsers, not NLP) â”€â”€
         if modality == Modality.CODE:
             metadata["structured_extractors"].append("code_structure_parser")
             code_entities, code_relations, code_tags, code_meta = extract_code_structure(text)
@@ -487,7 +456,7 @@ class DualRepresentationEncoder:
         return f"{prefix} training asset {stable_id('asset', content)}"
 
     async def _external_embedding(self, content: str, modality: Modality) -> list[float]:
-        """Call the real embedding service. Returns [] on any failure — no fallback."""
+        """Call the real embedding service and return [] on transport failure."""
         adapter = self.multimodal_adapter
         if adapter and hasattr(adapter, "encode"):
             try:
