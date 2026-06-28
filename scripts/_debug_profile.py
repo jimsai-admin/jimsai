@@ -2,7 +2,7 @@
 from __future__ import annotations
 import asyncio, sys, os
 
-# Force short timeouts so Modal calls fail fast → hash fallback → sync execution
+# Force short timeouts so unavailable Modal calls fail fast during local debugging.
 os.environ.setdefault("JIMS_INTENT_EMBEDDING_TIMEOUT", "2")
 os.environ.setdefault("JIMS_GENERATION_TIMEOUT", "4")
 os.environ.setdefault("JIMS_CAPABILITY_EMBEDDING_TIMEOUT", "2")

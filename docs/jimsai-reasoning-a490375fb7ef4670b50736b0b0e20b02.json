@@ -44,7 +44,7 @@
           "jimsai",
           "text"
         ],
-        "latent_source": "hash_projection"
+        "latent_source": "reembedding_required"
       }
     },
     {
@@ -312,7 +312,7 @@
           "jimsai",
           "text"
         ],
-        "latent_source": "hash_projection"
+        "latent_source": "reembedding_required"
       },
       "timestamp": "2026-06-01T01:29:26.950465Z"
     },

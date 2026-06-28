@@ -8,6 +8,35 @@ from typing import Any
 from .models import ExecutionMode, Hypothesis, IntentDomain, SemanticIR
 
 
+_STOP_WORDS = {
+    "a", "an", "and", "are", "as", "at", "be", "do", "does", "for", "from",
+    "how", "i", "in", "is", "it", "me", "my", "of", "on", "or", "over",
+    "please", "that", "the", "this", "to", "what", "when", "where", "who",
+    "why", "with", "you", "yo",
+}
+_QUESTION_WORDS = {"what", "when", "where", "who", "why", "how", "which"}
+_LEET_TRANSLATION = str.maketrans({"0": "o", "1": "i", "3": "e", "4": "a", "5": "s", "7": "t"})
+
+_CODE_CONCEPTS = {
+    "api", "class", "code", "function", "javascript", "method", "python",
+    "retry", "script", "test", "wrapper",
+}
+_FILE_CONCEPTS = {"attach", "document", "download", "file", "open", "retrieve", "upload"}
+_CANVAS_CONCEPTS = {"analysis", "analyze", "background", "codebase", "corpus", "deep", "full"}
+_IMAGE_CONCEPTS = {"draw", "generate", "image", "illustration", "photo", "picture"}
+_ARCHITECTURE_CONCEPTS = {
+    "adaptive", "architecture", "cost", "inference", "pipeline", "system",
+    "thinning", "transformer",
+}
+_AGENTIC_CONCEPTS = {"automated", "book", "deployment", "rollback", "schedule", "send", "task"}
+_PUBLIC_MEMORY_CONCEPTS = {
+    "assumption", "climate", "compound", "define", "evidence", "explain",
+    "interest", "support",
+}
+_CAUSAL_CONCEPTS = {"affect", "because", "cause", "change", "consequence", "effect", "happen", "impact"}
+_EMOTIONAL_CONCEPTS = {"anxious", "confused", "frustrated", "help", "overwhelmed", "sad", "stress", "stressed"}
+
+
 def _is_document_wide_relation(predicate: str) -> bool:
     """Return True if the predicate describes a document-wide fact.
 
@@ -18,6 +47,78 @@ def _is_document_wide_relation(predicate: str) -> bool:
     if not predicate:
         return False
     return predicate.startswith("has_") or predicate.startswith("uses_") or predicate.startswith("is_")
+
+
+def _normalise_token(token: str) -> str:
+    if any(ch.isalpha() for ch in token):
+        token = token.translate(_LEET_TRANSLATION)
+        token = re.sub(r"(.)\1{2,}", r"\1\1", token)
+    return token
+
+
+def normalize_language(text: str) -> str:
+    """Normalize noisy user text by shape, not phrase replacement."""
+    text = unicodedata.normalize("NFKC", text)
+    return re.sub(r"[\w@]+", lambda match: _normalise_token(match.group(0)), text, flags=re.UNICODE)
+
+
+def _stem(token: str) -> str:
+    for suffix in ("ingly", "edly", "ing", "ed"):
+        if len(token) > len(suffix) + 3 and token.endswith(suffix):
+            return token[: -len(suffix)]
+    if len(token) > 5 and token.endswith("es"):
+        return token[:-2]
+    if len(token) > 4 and token.endswith("s") and not token.endswith(("ss", "sis", "ous")):
+        return token[:-1]
+    return token
+
+
+def sanitize(raw: str) -> list[str]:
+    """Return normalized content tokens for deterministic fallback logic."""
+    normalized = normalize_language(raw).lower()
+    tokens = []
+    for token in re.findall(r"[\w\-.#@]+", normalized, flags=re.UNICODE):
+        token = token.strip("._-#@")
+        if not token or token in _STOP_WORDS:
+            continue
+        tokens.append(_stem(token))
+    return tokens
+
+
+def _edit_distance_at_most(left: str, right: str, limit: int) -> bool:
+    if left == right:
+        return True
+    if abs(len(left) - len(right)) > limit:
+        return False
+    previous = list(range(len(right) + 1))
+    for i, lchar in enumerate(left, start=1):
+        current = [i]
+        row_min = current[0]
+        for j, rchar in enumerate(right, start=1):
+            cost = 0 if lchar == rchar else 1
+            value = min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + cost)
+            current.append(value)
+            row_min = min(row_min, value)
+        if row_min > limit:
+            return False
+        previous = current
+    return previous[-1] <= limit
+
+
+def _matches_concept(token: str, concepts: set[str]) -> bool:
+    if token in concepts:
+        return True
+    if len(token) < 3:
+        return False
+    for concept in concepts:
+        limit = 1 if max(len(token), len(concept)) <= 6 else 2
+        if _edit_distance_at_most(token, concept, limit):
+            return True
+    return False
+
+
+def _count_concepts(tokens: set[str], concepts: set[str]) -> int:
+    return sum(1 for token in tokens if _matches_concept(token, concepts))
 
 
 def _raw_tokens(text: str) -> list[str]:
@@ -115,19 +216,15 @@ class _FallbackClassifier:
 
         self._prototype_embeddings: dict[str, list[float]] = {}
         self._memory_recall_embedding: list[float] | None = None
-        self._use_hash_fallback = False
 
     # ── Embedding helpers ──────────────────────────────────────────────────
 
     def _fetch_embedding(self, text: str) -> list[float]:
         """Embed a single text via the Modal Embedding Service.
 
-        Falls back to a hash projection when the service is unavailable.
-        Hash projections are low-quality — callers should check _use_hash_fallback.
+        Real embeddings only: failures return [] so semantic routing is skipped
+        until the real embedding service recovers.
         """
-        if self._use_hash_fallback:
-            return self._hash_embed(text, 256)
-
         import httpx
         url = f"{self.api_url}/embed"
         headers = {}
@@ -147,15 +244,12 @@ class _FallbackClassifier:
                     return vectors[0]
         except Exception:
             pass
-        return self._hash_embed(text, 256)
+        return []
 
     def _fetch_embeddings(self, texts: list[str]) -> list[list[float]]:
         """Embed a batch of texts via the Modal Embedding Service."""
         if not texts:
             return []
-        if self._use_hash_fallback:
-            return [self._hash_embed(t, 256) for t in texts]
-
         import httpx
         headers = {}
         if self.api_token:
@@ -174,14 +268,7 @@ class _FallbackClassifier:
                     return vectors
         except Exception:
             pass
-        return [self._hash_embed(t, 256) for t in texts]
-
-    @staticmethod
-    def _hash_embed(text: str, dim: int) -> list[float]:
-        # hash_embedding removed — return zero vector so semantic prototype
-        # matching is skipped and classification falls to structural rules.
-        # Real embeddings are obtained via Modal embedding service at query time.
-        return [0.0] * dim
+        return []
 
     @staticmethod
     def _cosine(v1: list[float], v2: list[float]) -> float:
@@ -201,12 +288,15 @@ class _FallbackClassifier:
         # Use "passage: " prefix for asymmetric retrieval (document side)
         texts = ["passage: " + self.ir_prototypes[t] for t in targets]
         vectors = self._fetch_embeddings(texts)
+        if len(vectors) != len(texts):
+            return self._prototype_embeddings
 
         for target, vec in zip(targets, vectors):
-            self._prototype_embeddings[target] = vec
+            if vec and any(value != 0.0 for value in vec):
+                self._prototype_embeddings[target] = vec
 
-        # Quality check — if embeddings are all near-identical, the service
-        # returned garbage. Fall back to hash projections.
+        # Quality check: if embeddings are all near-identical, disable semantic
+        # prototype routing until real embeddings recover.
         if len(self._prototype_embeddings) >= 4:
             embs = list(self._prototype_embeddings.values())
             high_sim = sum(
@@ -218,21 +308,22 @@ class _FallbackClassifier:
             if total_pairs and high_sim / total_pairs > 0.5:
                 import logging
                 logging.getLogger("jimsai.classifier").warning(
-                    "Embedding service returned near-identical vectors — switching to hash fallback."
+                    "Embedding service returned near-identical vectors; disabling semantic prototype routing until real embeddings recover."
                 )
                 self._prototype_embeddings.clear()
-                self._use_hash_fallback = True
-                for target, text in self.ir_prototypes.items():
-                    self._prototype_embeddings[target] = self._hash_embed("passage: " + text, 256)
 
         return self._prototype_embeddings
 
     def _get_memory_recall_embedding(self) -> list[float]:
         if self._memory_recall_embedding is None:
             self._get_prototype_embeddings()  # trigger quality check first
-            self._memory_recall_embedding = self._fetch_embedding(
+            vector = self._fetch_embedding(
                 "passage: " + self.memory_recall_prototype
             )
+            if vector and any(value != 0.0 for value in vector):
+                self._memory_recall_embedding = vector
+            else:
+                return []
         return self._memory_recall_embedding
 
     # ── Public interface ───────────────────────────────────────────────────
@@ -265,15 +356,13 @@ class _FallbackClassifier:
         Works across all languages via embedding similarity.
         """
         self._get_prototype_embeddings()  # trigger quality check
-        effective_threshold = 0.20 if self._use_hash_fallback else threshold
-
         query_emb = self._fetch_embedding("query: " + query)
         if not query_emb or all(v == 0.0 for v in query_emb):
             return False
 
         recall_emb = self._get_memory_recall_embedding()
         score = self._cosine(query_emb, recall_emb)
-        return score > effective_threshold
+        return score > threshold
 
     def is_profile_query(self, query: str, threshold: float = 0.55) -> bool:
         """Alias for is_memory_recall_query — kept for backward compatibility."""
@@ -366,9 +455,7 @@ class _LLMClassifier:
             # Check memory recall similarity
             recall_emb = embed_cls._get_memory_recall_embedding()
             recall_score = embed_cls._cosine(query_emb, recall_emb)
-            # Use lower threshold when hash fallback is active
-            effective_threshold = 0.20 if embed_cls._use_hash_fallback else 0.38
-            is_memory = recall_score > effective_threshold
+            is_memory = recall_score > 0.38
 
             return best_ir, round(max(0.0, min(1.0, best_score)), 4), is_memory
         except Exception:
@@ -389,8 +476,11 @@ class _LLMClassifier:
 
     def _structural_classify(self, query: str) -> tuple[str, float]:
         """Minimal Unicode-aware structural classification — last resort only."""
-        raw = query.lower()
-        tokens = set(re.findall(r"[\w\.]+", raw, flags=re.UNICODE))
+        normalized = normalize_language(query)
+        raw = normalized.lower()
+        token_list = sanitize(normalized)
+        tokens = set(token_list)
+        raw_tokens = {token.lower() for token in _raw_tokens(normalized)}
 
         # Math: numbers + operators
         if re.search(r"\d+\s*[\+\-\*/]\s*\d+|\d+", raw) and re.search(r"[\+\-\*/=]|solve|calculate|compute", raw):
@@ -399,13 +489,32 @@ class _LLMClassifier:
         # Code: structural syntax signals that work across all languages
         code_signals = {"def ", "class ", "import ", "function ", "return ", "```",
                         "fn ", "const ", "let ", "var ", "func ", "fun ", "pub "}
-        if any(sig in query for sig in code_signals):
+        if any(sig in raw for sig in code_signals) or _count_concepts(tokens, _CODE_CONCEPTS) >= 2:
             return "CODE_GENERATE", 0.90
 
-        # File operations: universal verbs
-        file_tokens = {"fetch", "download", "upload", "attach", "file", "document", "read", "open", "import", "load"}
-        if tokens & file_tokens:
+        if _count_concepts(tokens, _CANVAS_CONCEPTS) >= 2:
+            return "RUN_CANVAS", 0.82
+
+        if _count_concepts(tokens, _FILE_CONCEPTS) >= 2:
             return "FETCH_DOCUMENT", 0.65
+
+        if _count_concepts(tokens, _EMOTIONAL_CONCEPTS) >= 1:
+            return "EMOTIONAL_CATCH", 0.62
+
+        if (raw_tokens & _QUESTION_WORDS) and len(tokens) <= 1 and not _count_concepts(tokens, _PUBLIC_MEMORY_CONCEPTS | _CAUSAL_CONCEPTS):
+            return "EMOTIONAL_CATCH", 0.45
+
+        if _count_concepts(tokens, _IMAGE_CONCEPTS) >= 2:
+            return "WORKSPACE_QUERY", 0.66
+        if _count_concepts(tokens, _AGENTIC_CONCEPTS) >= 2:
+            return "WORKSPACE_QUERY", 0.66
+        if _count_concepts(tokens, _ARCHITECTURE_CONCEPTS) >= 2:
+            return "WORKSPACE_QUERY", 0.66
+        if _count_concepts(tokens, _PUBLIC_MEMORY_CONCEPTS) >= 1 or raw_tokens & _QUESTION_WORDS:
+            return "WORKSPACE_QUERY", 0.58
+
+        if tokens and all(not re.search(r"[aeiou]", token, flags=re.IGNORECASE) for token in tokens if token.isascii()):
+            return "OP_ESCAPE_TO_SANDBOX", 0.0
 
         return "WORKSPACE_QUERY", 0.50
 
@@ -436,19 +545,44 @@ class SemanticCompilerRuntime:
         scope: dict[str, Any] = existing_scope or {}
         scope["raw_length"] = len(raw_input)
         scope["token_count"] = len(tokens)
+        token_set = set(tokens)
+        raw_token_set = {token.lower() for token in _raw_tokens(normalize_language(raw_input))}
         # Entity extraction — PascalCase/CamelCase detection works for code/technical identifiers
         # across all Latin-script languages. Non-Latin entities are extracted by the NLP layer.
         camel_entities = [
             entity.strip(".,:;!?")
             for entity in re.findall(r"\b[A-Z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)*\b", raw_input)
-            if len(entity) > 1
+            if len(entity) > 1 and entity.lower() not in _QUESTION_WORDS
         ]
+        if any(_matches_concept(token, _CAUSAL_CONCEPTS) for token in token_set) or "if" in raw_token_set:
+            direction = "incoming" if "why" in raw_token_set and "if" not in raw_token_set else "outgoing"
+            scope["question_intent"] = {"relation": "causes", "direction": direction}
+        if any(_matches_concept(token, {"change"}) for token in token_set):
+            camel_entities.extend(f"{entity}_change" for entity in list(camel_entities) if "." in entity)
         if camel_entities:
             scope["entities"] = sorted(set(camel_entities))
         numbers = [int(n) for n in re.findall(r"\b\d+\b", raw_input)]
         if numbers:
             scope["numbers"] = numbers
+        self._apply_capability_hints(scope, token_set, raw_token_set)
         return scope
+
+    def _apply_capability_hints(self, scope: dict[str, Any], tokens: set[str], raw_tokens: set[str]) -> None:
+        if _count_concepts(tokens, _CODE_CONCEPTS) >= 2:
+            scope["v9_capability_hint"] = "coding"
+            return
+        if _count_concepts(tokens, _IMAGE_CONCEPTS) >= 2:
+            scope["v9_capability_hint"] = "image_generation"
+            return
+        if _count_concepts(tokens, _AGENTIC_CONCEPTS) >= 2:
+            scope["v9_capability_hint"] = "agentic_task"
+            return
+        if _count_concepts(tokens, _ARCHITECTURE_CONCEPTS) >= 2:
+            scope["v9_capability_hint"] = "system_architecture"
+            return
+        public_count = _count_concepts(tokens, _PUBLIC_MEMORY_CONCEPTS)
+        if public_count >= 1 and (raw_tokens & _QUESTION_WORDS or "explain" in tokens):
+            scope["v9_capability_hint"] = "public_memory"
 
     def _domain_for_ir(self, target_ir: str) -> IntentDomain:
         mapping = {
@@ -462,7 +596,7 @@ class SemanticCompilerRuntime:
         session = session or {}
         # Use raw text directly — no preprocessing pipeline, no normalisation.
         # The LLM (Qwen 1.7B) and embedding model handle all languages natively.
-        tokens = _raw_tokens(raw_input)
+        tokens = sanitize(raw_input)
         scope: dict[str, Any] = {"raw_length": len(raw_input), "token_count": len(tokens)}
 
         # 1. Classify intent AND check memory recall in a single embedding call.
@@ -498,7 +632,6 @@ class SemanticCompilerRuntime:
 
         # 4. Scope enrichment — language-neutral entity + number extraction
         scope = self._scope_from_tokens(tokens, raw_input, existing_scope=scope)
-
         # 5. Mark profile write in scope
         if scope.get("profile_write"):
             scope["profile_query"] = True
@@ -530,4 +663,3 @@ class SemanticCompilerRuntime:
             context_inherited=context_inherited,
             context_boosted=context_boosted,
         )
-

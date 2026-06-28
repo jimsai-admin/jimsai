@@ -367,7 +367,7 @@ class ConstrainedSemanticSynthesisEngine:
         The filter uses substring checks on gap content — not hardcoded response text.
         """
         internal_substrings = (
-            "sympy", "adapter", "hash_projection", "signature", "ontology",
+            "sympy", "adapter", "reembedding_required", "embedding_unavailable", "signature", "ontology",
             "internal", "solver could not solve", "solver failed",
             "source signatures matched", "deterministic",
         )

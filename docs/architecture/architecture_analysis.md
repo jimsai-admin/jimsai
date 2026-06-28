@@ -35,8 +35,8 @@ they must not retrieve, reason, plan, simulate, validate, or remember.
 
 ## Conservative Assumptions
 
-- The Phase 1 prototype uses deterministic hash vectors instead of heavyweight encoders to preserve local
-  development and low compute. The model names from the PDF remain in configuration for MVP replacement.
+- The prototype stores real embeddings only. When the embedding service is unavailable, signatures are
+  marked for re-embedding and retrieval falls back to exact, structured, and graph signals.
 - External LLM/Groq calls are represented as optional adapters only. They are not in the deterministic runtime
   path and are not required to run tests.
 - Neo4j, Redis, PostgreSQL, Vectorize, R2, and Supabase are scaffolded for Phase 2. Phase 1 uses in-memory

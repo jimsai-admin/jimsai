@@ -272,20 +272,19 @@ Render endpoints:
 /v1/autonomous/plan
 /v1/autonomous/report
 /v1/autonomous/kaggle/package
-/v1/autonomous/reembed-hash
+/v1/autonomous/reembed-required
 ```
 
-## Hash Fallback Recovery
+## Real Embedding Recovery
 
-Sentence-transformer embedding should be the normal path. Hash fallback is rare and recoverable.
+Sentence-transformer embedding is the only semantic-vector path. Hash embeddings are not used as semantic fallback.
 
 If embedding fails:
 
 ```text
 Lambda continues with exact, structured, and graph retrieval
-hash vector may be used as degraded fallback
 signature metadata marks reembedding_required=true
-Render /v1/autonomous/reembed-hash later replaces it with a real vector
+Render /v1/autonomous/reembed-required later stores a real vector
 ```
 
 ## Human UI

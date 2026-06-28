@@ -3,7 +3,7 @@
 Every regex-based "understanding" path has been removed:
   - No CAUSAL_VERBS / DEPENDENCY_VERBS / QUESTION_SUBJECTS / STOP_TAGS lists
   - No extract_sentence_relations / extract_entity_names / infer_entity_type / infer_code_language
-  - No hash_embedding (hash vectors are not semantic; removed entirely)
+  - No synthetic token-projection embeddings; real vectors only
 
 Structured extraction (entities, relations, causal links) routes through T1
 (Qwen3-1.7B via QwenBridge.extract_structured_relations), which:
@@ -212,7 +212,7 @@ class DualRepresentationEncoder:
     Structured extraction (entities, relations, causal links) is T1-only via
     QwenBridge.extract_structured_relations. No regex-based NLP extraction.
 
-    Embedding is real-vector-only. No hash fallback.
+    Embedding is real-vector-only; unavailable vectors are queued for re-embedding.
 
     Both encode() and encode_text() are async because T1 extraction and
     embedding are async network calls.

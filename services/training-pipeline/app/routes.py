@@ -26,7 +26,7 @@ SERVICE_CONTRACT = {
         "/v1/autonomous/discover",
         "/v1/autonomous/evaluate",
         "/v1/autonomous/plan",
-        "/v1/autonomous/reembed-hash",
+        "/v1/autonomous/reembed-required",
         "/v1/autonomous/report",
         "/v1/autonomous/modal/training/package",
         "/v1/autonomous/modal/training/run",
@@ -311,9 +311,9 @@ async def autonomous_evaluate(request: AutonomousGenericRequest = Body(default_f
     return {"accepted": True, "run": run, "report": report}
 
 
-@router.post("/v1/autonomous/reembed-hash")
-async def autonomous_reembed_hash(request: AutonomousGenericRequest = Body(default_factory=AutonomousGenericRequest), authorization: str | None = Header(default=None)):
-    """Replace recoverable hash vectors with sentence-transformer vectors when the embedding service is healthy."""
+@router.post("/v1/autonomous/reembed-required")
+async def autonomous_reembed_required(request: AutonomousGenericRequest = Body(default_factory=AutonomousGenericRequest), authorization: str | None = Header(default=None)):
+    """Replace signatures missing real embeddings when the embedding service is healthy."""
     require_agent_token(authorization)
     active_pipeline = get_pipeline()
     candidates = []
@@ -323,7 +323,7 @@ async def autonomous_reembed_hash(request: AutonomousGenericRequest = Body(defau
             continue
         seen.add(signature.id)
         metadata = signature.metadata or {}
-        if metadata.get("reembedding_required") or metadata.get("latent_embedding_source") == "hash_projection":
+        if metadata.get("reembedding_required") or metadata.get("latent_embedding_source") != "external_service":
             candidates.append(signature)
         if len(candidates) >= request.limit:
             break
@@ -331,7 +331,7 @@ async def autonomous_reembed_hash(request: AutonomousGenericRequest = Body(defau
     updated = []
     skipped = []
     for signature in candidates:
-        vector = active_pipeline.encoder._external_embedding(signature.raw_excerpt, signature.modality)
+        vector = await active_pipeline.encoder._external_embedding(signature.raw_excerpt, signature.modality)
         if not vector:
             skipped.append(signature.id)
             continue
@@ -348,12 +348,12 @@ async def autonomous_reembed_hash(request: AutonomousGenericRequest = Body(defau
         updated.append(signature.id)
 
     metrics = {"candidates": len(candidates), "updated": len(updated), "skipped": len(skipped)}
-    run = record_autonomous_run(active_pipeline, "reembed-hash", "completed", metrics)
+    run = record_autonomous_run(active_pipeline, "reembed-required", "completed", metrics)
     save_panel_item(
         active_pipeline,
         autonomous_item(
             "reembedding_run",
-            "Hash fallback re-embedding",
+            "Required re-embedding",
             {"id": run["id"], "status": "completed", "updated": updated, "skipped": skipped, "metrics": metrics},
         ),
     )

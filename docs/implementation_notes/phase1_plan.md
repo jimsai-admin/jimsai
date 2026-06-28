@@ -12,7 +12,7 @@ Constraint Validator -> Symbolic Planner -> CSSE -> auditable response.
 - Typed Pydantic data structures for IR, signatures, traces, plans, simulations, constraints, and verified
   cognitive objects.
 - Semantic Compiler with sanitizer, deterministic matcher, multi-hypothesis resolver, and context inheritance.
-- Deterministic local encoder with symbolic extraction and hash-vector embeddings.
+- Deterministic local encoder with symbolic extraction and real-vector-only embedding metadata.
 - In-memory four-layer memory store with indexes.
 - Bounded causal graph engine with reinforcement and edge decay hooks.
 - Retrieval engine merging entity, semantic, temporal, causal, and importance signals.

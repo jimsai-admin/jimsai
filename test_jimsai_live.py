@@ -36,7 +36,7 @@ WS_ID    = "jimsai-live-test"
 
 TIMEOUT  = httpx.Timeout(420.0)  # T1 cold-start can take 3-4 min on first call
 
-# Give the embedding service more time so real vectors are stored (not hash fallback)
+# Give the embedding service more time so real vectors are stored.
 # This is set via env var before the server starts — we patch it in the test payload
 INGEST_SOURCE_TRUST_HIGH = 0.92  # High confidence forces real embedding attempt
 

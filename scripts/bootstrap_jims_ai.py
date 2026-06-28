@@ -503,8 +503,8 @@ def docs() -> None:
 
         ## Conservative Assumptions
 
-        - The Phase 1 prototype uses deterministic hash vectors instead of heavyweight encoders to preserve local
-          development and low compute. The model names from the PDF remain in configuration for MVP replacement.
+        - The prototype stores real embeddings only. When the embedding service is unavailable, signatures are
+          marked for re-embedding and retrieval falls back to exact, structured, and graph signals.
         - External LLM/Groq calls are represented as optional adapters only. They are not in the deterministic runtime
           path and are not required to run tests.
         - Neo4j, Redis, PostgreSQL, Vectorize, R2, and Supabase are scaffolded for Phase 2. Phase 1 uses in-memory
@@ -635,7 +635,7 @@ def docs() -> None:
         - Typed Pydantic data structures for IR, signatures, traces, plans, simulations, constraints, and verified
           cognitive objects.
         - Semantic Compiler with sanitizer, deterministic matcher, multi-hypothesis resolver, and context inheritance.
-        - Deterministic local encoder with symbolic extraction and hash-vector embeddings.
+        - Deterministic local encoder with symbolic extraction and real-vector-only embedding metadata.
         - In-memory four-layer memory store with indexes.
         - Bounded causal graph engine with reinforcement and edge decay hooks.
         - Retrieval engine merging entity, semantic, temporal, causal, and importance signals.
@@ -1161,17 +1161,6 @@ def prototype_files() -> None:
             return f"{prefix}_{hashlib.sha256(text.encode('utf-8')).hexdigest()[:16]}"
 
 
-        def hash_embedding(text: str, dimensions: int = 64) -> list[float]:
-            vector = [0.0] * dimensions
-            for token in re.findall(r"[A-Za-z0-9_\.]+", text.lower()):
-                digest = hashlib.sha256(token.encode("utf-8")).digest()
-                idx = int.from_bytes(digest[:2], "big") % dimensions
-                sign = 1.0 if digest[2] % 2 == 0 else -1.0
-                vector[idx] += sign
-            norm = math.sqrt(sum(v * v for v in vector)) or 1.0
-            return [round(v / norm, 6) for v in vector]
-
-
         class DualRepresentationEncoder:
             def encode_text(self, text: str, intent_type: str = "workspace_query", provenance: str = "local_extraction") -> MemorySignature:
                 entity_names = sorted({clean_ref(name) for name in re.findall(r"\b[A-Z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)?\b", text)})
@@ -1199,11 +1188,16 @@ def prototype_files() -> None:
                     id=sig_id,
                     provenance=provenance,
                     structured=structured,
-                    latent_embedding=hash_embedding(text),
+                    latent_embedding=[],
                     abstraction_tags=tags,
-                    confidence=Confidence(score=0.86 if text.strip() else 0.0, source="deterministic_encoder"),
+                    confidence=Confidence(score=0.4 if text.strip() else 0.0, source="embedding_unavailable"),
                     modality=Modality.TEXT,
                     raw_excerpt=text[:500],
+                    metadata={
+                        "latent_embedding_source": "none",
+                        "reembedding_required": True,
+                        "reembedding_reason": "embedding_service_required",
+                    },
                 )
         ''',
     )
@@ -1373,18 +1367,8 @@ def prototype_files() -> None:
         """
         from __future__ import annotations
 
-        import math
-
-        from .encoder import hash_embedding
         from .memory import FourLayerMemoryStore
         from .models import RetrievalResult, SemanticIR
-
-
-        def cosine(left: list[float], right: list[float]) -> float:
-            dot = sum(a * b for a, b in zip(left, right))
-            lnorm = math.sqrt(sum(a * a for a in left)) or 1.0
-            rnorm = math.sqrt(sum(b * b for b in right)) or 1.0
-            return dot / (lnorm * rnorm)
 
 
         class MultiIndexRetrievalEngine:
@@ -1393,7 +1377,6 @@ def prototype_files() -> None:
 
             def retrieve(self, ir: SemanticIR, query: str, limit: int = 8, exclude_ids: set[str] | None = None) -> list[RetrievalResult]:
                 exclude_ids = exclude_ids or set()
-                query_vec = hash_embedding(query)
                 query_terms = set(ir.tokens) | {str(entity).lower() for entity in ir.scope_constraints.get("entities", [])}
                 results: dict[str, RetrievalResult] = {}
                 for sig in self.memory.all_signatures():
@@ -1405,10 +1388,6 @@ def prototype_files() -> None:
                     if entity_names & query_terms:
                         score += 0.35
                         reasons.append("entity_index")
-                    semantic = max(cosine(query_vec, sig.latent_embedding), 0.0)
-                    if semantic > 0:
-                        score += 0.35 * semantic
-                        reasons.append("semantic_index")
                     if sig.structured.causal_chain:
                         causal_terms = {c.cause.lower() for c in sig.structured.causal_chain} | {c.effect.lower() for c in sig.structured.causal_chain}
                         if causal_terms & query_terms:
@@ -2861,7 +2840,7 @@ def infra() -> None:
         )
     write("infrastructure/redis/README.md", "# Redis\n\nSession state, IR hot cache, graph shortcut cache, and ontology staging.\n")
     write("infrastructure/neo4j/README.md", "# Neo4j\n\nCausal graph, concept lattice, entity relationships, dependency graph, temporal links.\n")
-    write("infrastructure/vector-cache/README.md", "# Vector Cache\n\nVectorize-compatible embedding lookup layer. Phase 1 uses deterministic local hash vectors.\n")
+    write("infrastructure/vector-cache/README.md", "# Vector Cache\n\nVectorize-compatible embedding lookup layer. Real embeddings only; missing vectors are marked for re-embedding.\n")
 
 
 def sdk_cli_bench_tests() -> None:

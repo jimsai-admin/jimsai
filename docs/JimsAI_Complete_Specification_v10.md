@@ -18,8 +18,8 @@ The runtime rule is:
 
 1. Use the live sentence-transformer embedding service for semantic vectors.
 2. Use deterministic exact, structured, and graph retrieval alongside semantic retrieval.
-3. Use hash embedding only as a rare recoverable fallback.
-4. Mark fallback vectors as recoverable so the training service can later re-embed them through `/v1/autonomous/reembed-hash`.
+3. Do not use hash embeddings as semantic fallback.
+4. Mark missing vectors as recoverable so the training service can later re-embed them through `/v1/autonomous/reembed-required`.
 
 ## 3. Deployed Production Topology
 
@@ -173,7 +173,7 @@ GET  /v1/artifact/current
 POST /v1/reload-artifact
 ```
 
-Protected endpoints require bearer token auth. Hash fallback exists only for rare recovery cases and should set metadata that allows the training service to re-embed later.
+Protected endpoints require bearer token auth. If real embeddings are unavailable, signatures are marked reembedding_required so the training service can re-embed later.
 
 The live verification on June 1, 2026 returned a real sentence-transformer vector:
 
@@ -203,7 +203,7 @@ POST /v1/autonomous/evaluate
 POST /v1/autonomous/plan
 POST /v1/autonomous/report
 POST /v1/autonomous/kaggle/package
-POST /v1/autonomous/reembed-hash
+POST /v1/autonomous/reembed-required
 ```
 
 All autonomous endpoints require:
@@ -354,7 +354,7 @@ Every 30 minutes:
 
 ```text
 POST Render /v1/autonomous/ingest-batch
-POST Render /v1/autonomous/reembed-hash
+POST Render /v1/autonomous/reembed-required
 ```
 
 Every 6 hours:
@@ -383,8 +383,8 @@ If the embedding service is down, Lambda should:
 1. Use exact retrieval.
 2. Use structured retrieval.
 3. Use graph retrieval.
-4. Use recoverable hash fallback only when necessary.
-5. Log fallback state for later re-embedding.
+4. Mark signatures as reembedding_required when real embeddings are unavailable.
+5. Log reembedding_required state for later real-vector recovery.
 6. Return an answer instead of failing the chat.
 
 If Vectorize is down, Lambda should use Supabase and Neo4j context and lower retrieval confidence.
@@ -428,7 +428,7 @@ message order: user then assistant
 Lambda training ingest: passed
 Render autonomous report: passed
 Render autonomous ingest-batch: passed
-Render reembed-hash: passed
+Render reembed-required: passed
 coding sandbox valid execution: passed
 coding sandbox block policy: passed
 math solve validation: passed
@@ -471,7 +471,7 @@ Phase 2 immediate:
 ```text
 Add cron jobs
 Monitor sentence-transformer reachability
-Run reembed-hash on schedule
+Run reembed-required on schedule
 Push health readiness booleans to Render so /health reports secret/config presence
 ```
 

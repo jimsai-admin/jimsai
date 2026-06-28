@@ -146,7 +146,7 @@ async def run(base: str) -> None:
                     check(f"  → Embedding: {emb_src} {emb_dim}-dim",
                           emb_ok,
                           "✓ real 768-d Modal embedding" if emb_ok
-                          else f"⚠ {'hash fallback' if emb_src != 'external_service' else 'wrong dim — Vectorize mismatch'}")
+                          else f"⚠ {'needs reembedding' if emb_src != 'external_service' else 'wrong dim — Vectorize mismatch'}")
                 else:
                     check(f"Signature for '{test_name}' found in Supabase", False,
                           f"checked {len(rows)} rows")

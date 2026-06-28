@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import asyncio
 from typing import Any
 
 from .constraints import ConstraintValidator
@@ -99,7 +100,12 @@ class TransformerIntentInterface:
         self.bridge = bridge
 
     async def infer(self, request: PipelineRequest, session: dict[str, Any]) -> tuple[SemanticIR, LayerResult]:
-        deterministic_ir = self.compiler.compile(request.query, namespace="TECHNICAL", session=session)
+        deterministic_ir = await asyncio.to_thread(
+            self.compiler.compile,
+            request.query,
+            namespace="TECHNICAL",
+            session=session,
+        )
         local_overlay = await self.bridge.infer_intent(request.query, deterministic_ir.model_dump(mode="json"))
         used_local_model = False
         ir = deterministic_ir
@@ -119,7 +125,12 @@ class TransformerIntentInterface:
             # Remove ASCII restriction to better handle multilingual prompts
             clean_query = await self.bridge.rewrite_for_clarity(request.query)
             if clean_query and clean_query.strip().lower() != request.query.strip().lower():
-                rewritten_ir = self.compiler.compile(clean_query, namespace="TECHNICAL", session=session)
+                rewritten_ir = await asyncio.to_thread(
+                    self.compiler.compile,
+                    clean_query,
+                    namespace="TECHNICAL",
+                    session=session,
+                )
                 if rewritten_ir.confidence > deterministic_ir.confidence:
                     # Use rewritten classification but keep original query text visible
                     deterministic_ir = rewritten_ir.model_copy(
@@ -165,8 +176,15 @@ class TransformerIntentInterface:
         overlay_scope = overlay.get("scope_constraints")
         if isinstance(overlay_scope, dict):
             for key, value in overlay_scope.items():
-                if isinstance(value, (str, int, float, bool, list)):
-                    scope.setdefault(str(key), value)
+                if not isinstance(value, (str, int, float, bool, list, dict)):
+                    continue
+                key = str(key)
+                if key == "question_intent" and isinstance(value, dict):
+                    scope[key] = value
+                elif key == "entities" and isinstance(value, list) and value:
+                    scope[key] = value
+                else:
+                    scope.setdefault(key, value)
 
         target_should_override = (
             deterministic_ir.target_ir == "OP_ESCAPE_TO_SANDBOX"
@@ -579,12 +597,19 @@ class InventionEngineLayer:
 
 
 class MultiIndexRetrievalLayer:
-    """L6 multi-index retrieval: entity, causal, semantic hash, temporal, and importance indexes."""
+    """L6 multi-index retrieval: entity, causal, real-vector, temporal, and importance indexes."""
 
     def __init__(self, retrieval: MultiIndexRetrievalEngine) -> None:
         self.retrieval = retrieval
 
-    def retrieve(self, request: PipelineRequest, ir: SemanticIR, decision: ActivationDecision, exclude_ids: set[str]) -> tuple[list[RetrievalResult], LayerResult]:
+    def retrieve(
+        self,
+        request: PipelineRequest,
+        ir: SemanticIR,
+        decision: ActivationDecision,
+        exclude_ids: set[str],
+        vector_retrieval_context: str | None = None,
+    ) -> tuple[list[RetrievalResult], LayerResult]:
         if not decision.run_retrieval or decision.route == "sandbox":
             return [], _layer("L6_multi_index_retrieval", False, "Retrieval bypassed by sandbox routing.", {"count": 0})
         retrieved = self.retrieval.retrieve(
@@ -593,6 +618,7 @@ class MultiIndexRetrievalLayer:
             exclude_ids=exclude_ids,
             workspace_id=request.workspace_id,
             user_id=request.user_id,
+            vector_retrieval_context=vector_retrieval_context,
         )
         return retrieved, _layer(
             "L6_multi_index_retrieval",

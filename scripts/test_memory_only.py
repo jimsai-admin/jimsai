@@ -6,8 +6,7 @@ Supports multilingual queries.
 import asyncio, os, time
 from pathlib import Path
 
-# Enable hash fallback for fast testing without Modal services - MUST be set BEFORE imports
-os.environ.setdefault("JIMS_EMBEDDING_HASH_FALLBACK_ENABLED", "true")
+# Use short timeouts so unavailable external services fail fast.
 os.environ.setdefault("JIMS_EMBEDDING_TIMEOUT", "1")
 os.environ.setdefault("JIMS_INTENT_EMBEDDING_TIMEOUT", "1")
 os.environ.setdefault("JIMS_LIVE_EMBEDDING_TIMEOUT", "1")

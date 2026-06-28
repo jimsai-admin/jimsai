@@ -34,8 +34,8 @@ class MultiIndexRetrievalEngine:
         """Return stats from the most recent retrieve() call.
 
         Returns a dict with:
-          - semantic_hits: count of results whose latent_embedding_source == "external_service"
-          - lexical_hits: count of results using hash_projection or with no embedding source
+          - semantic_hits: count of results that used a semantic vector match
+          - lexical_hits: count of results selected by lexical/structured evidence
           - total: total results returned
         """
         return dict(self._last_retrieval_stats)
@@ -48,13 +48,14 @@ class MultiIndexRetrievalEngine:
         exclude_ids: set[str] | None = None,
         workspace_id: str | None = None,
         user_id: str | None = None,
+        vector_retrieval_context: str | None = None,
     ) -> list[RetrievalResult]:
         exclude_ids = exclude_ids or set()
         # query_vec is intentionally empty — in-memory retrieval is lexical-first.
         # Signatures with real embeddings are surfaced via Vectorize similarity
         # search in pipeline._hydrate_persistent_retrieval() before this runs.
-        # Hash embeddings have been removed; cosine on empty vec yields 0.0,
-        # which correctly demotes unembedded signatures to lexical-only paths.
+        # Vectorize match scores are carried in signature metadata so paraphrase
+        # matches are not lost after hydration into the local hot cache.
         query_vec: list[float] = []
         raw_query_terms = set(ir.tokens) | {str(entity).lower() for entity in ir.scope_constraints.get("entities", [])}
         query_terms = raw_query_terms
@@ -164,31 +165,41 @@ class MultiIndexRetrievalEngine:
                     score += user_relation_score
                     reasons.append("user_relation_index")
             semantic = max(cosine(query_vec, sig.latent_embedding), 0.0)
-            latent_source = str(sig.metadata.get("latent_embedding_source") or "hash_projection")
+            latent_source = str(sig.metadata.get("latent_embedding_source") or "none")
+            vector_retrieval_score = self._vector_retrieval_score(sig.metadata, vector_retrieval_context)
 
             # ── Semantic-first retrieval architecture ────────────────────────
             # Real embeddings (external_service) are the PRIMARY signal.
             # Lexical signals VERIFY the semantic match — they don't replace it.
-            # Hash projections are structurally unreliable: hard-cap their
-            # contribution and block unverified candidates entirely.
+            # Unembedded signatures are structurally less reliable: hard-cap
+            # their contribution and block unverified candidates entirely.
             if latent_source == "external_service":
-                if semantic < 0.30:
-                    # Hard gate: below semantic threshold, skip this signature
-                    # entirely to prevent cross-query contamination.
-                    continue
-                # Semantic majority — lexical boosts verify/amplify the match
-                score = semantic * 0.65
-                reasons.append("semantic_index")
-                if entity_matches:
-                    score += 0.15
-                if phrase_matches:
-                    score += 0.15
-                if user_profile_query and sig.user_id == user_id:
-                    score += 0.20
+                semantic_signal = max(semantic, vector_retrieval_score)
+                if semantic_signal >= 0.30:
+                    # Semantic majority; lexical boosts verify/amplify the match.
+                    score = max(score, semantic_signal * 0.65)
+                    reasons.append("semantic_index")
+                    if vector_retrieval_score >= semantic:
+                        reasons.append("vectorize_hydration")
+                    if entity_matches:
+                        score += 0.15
+                    if phrase_matches:
+                        score += 0.15
+                    if user_profile_query and sig.user_id == user_id:
+                        score += 0.20
+                else:
+                    # Local hot-cache path: a real-embedded signature can still
+                    # be recalled by strong lexical/structured evidence when this
+                    # process has no query vector.
+                    has_structured_or_lexical_evidence = bool(reasons or matched_terms)
+                    if not has_structured_or_lexical_evidence:
+                        continue
+                    score = min(score, 0.65)
+                    reasons.append("local_lexical_index")
             else:
-                # Hash fallback path: lexical must fire, semantic is a weak tiebreaker,
-                # and total score is hard-capped to prevent hash retrieval from
-                # outcompeting real-embedded signatures in mixed-corpus queries.
+                # No real embedding yet: lexical/structured evidence must fire,
+                # and total score is hard-capped to prevent unembedded signatures
+                # from outcompeting real-embedded signatures in mixed-corpus queries.
                 has_structured_or_lexical_evidence = bool(reasons or matched_terms)
                 if not has_structured_or_lexical_evidence:
                     # No lexical match at all → skip entirely, never hallucinate
@@ -254,7 +265,7 @@ class MultiIndexRetrievalEngine:
         # Compute and cache retrieval stats for observability
         semantic_hits = sum(
             1 for r in final
-            if str(r.signature.metadata.get("latent_embedding_source") or "hash_projection") == "external_service"
+            if "semantic_index" in r.reasons
         )
         lexical_hits = len(final) - semantic_hits
         self._last_retrieval_stats = {
@@ -264,6 +275,22 @@ class MultiIndexRetrievalEngine:
         }
 
         return final
+
+    @staticmethod
+    def _vector_retrieval_score(metadata: dict, vector_retrieval_context: str | None = None) -> float:
+        if not isinstance(metadata, dict) or not metadata.get("vector_retrieved"):
+            return 0.0
+        stored_context = metadata.get("vector_retrieval_context")
+        if vector_retrieval_context:
+            if stored_context != vector_retrieval_context:
+                return 0.0
+        elif stored_context:
+            return 0.0
+        try:
+            score = float(metadata.get("vector_retrieval_score", 0.0) or 0.0)
+        except (AttributeError, TypeError, ValueError):
+            return 0.0
+        return max(0.0, min(1.0, score))
 
     def _query_phrases(self, query: str) -> set[str]:
         # Unicode-aware tokenization — preserves non-Latin scripts (Arabic, CJK, Yoruba, etc.)

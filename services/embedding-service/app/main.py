@@ -25,7 +25,8 @@ async def health() -> dict[str, str | bool | int]:
         "service": settings.service_name,
         "model_loaded": status["loaded"],
         "model": status["model"],
-        "fallback_enabled": settings.jims_embedding_hash_fallback_enabled,
+        "fallback_enabled": False,
+        "real_embeddings_only": True,
         "dimension": settings.jims_embedding_dimensions,
     }
 

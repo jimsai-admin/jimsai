@@ -960,7 +960,7 @@ class ExternalMultimodalEncoderAdapter:
         """Embed content using the Modal Embedding Service /embed endpoint.
 
         Async — uses httpx.AsyncClient so the event loop is never blocked.
-        No hash fallback. Returns [] on failure; caller marks reembedding_required=True.
+        Real embeddings only. Returns [] on failure; caller marks reembedding_required=True.
 
         Model selection per modality:
           - CODE  -> codebert                 (768-d, code-aware)
@@ -1395,6 +1395,7 @@ class ProductionRuntime:
         workspace_id: str | None = None,
         user_id: str | None = None,
         exclude_ids: set[str] | None = None,
+        vector_context_id: str | None = None,
     ) -> list[MemorySignature]:
         if not latent_embedding:
             return []
@@ -1412,13 +1413,34 @@ class ProductionRuntime:
         matches = self._attempt("vectorize", lambda: self.vectorize.query_vectors(latent_embedding, top_k=max(limit * 3, limit)))
         if not matches:
             return []
-        ids = [str(match.get("id") or "") for match in matches]
+        match_by_id: dict[str, dict[str, Any]] = {
+            str(match.get("id") or ""): match
+            for match in matches
+            if str(match.get("id") or "")
+        }
+        ids = list(match_by_id.keys())
+        if not ids:
+            return []
         signatures = self._attempt("supabase_postgres", lambda: self.postgres.get_signatures_by_ids(ids)) or []
-        visible = [
-            signature
-            for signature in signatures
-            if signature.id not in exclude_ids and self._visible_to_scope(signature, workspace_id=workspace_id, user_id=user_id)
-        ]
+        rank_by_id = {sid: rank for rank, sid in enumerate(ids)}
+        visible: list[MemorySignature] = []
+        for signature in signatures:
+            if signature.id in exclude_ids or not self._visible_to_scope(signature, workspace_id=workspace_id, user_id=user_id):
+                continue
+            hydrated = signature.model_copy(deep=True)
+            hydrated.metadata = dict(hydrated.metadata or {})
+            match = match_by_id.get(signature.id) or {}
+            try:
+                score = float(match.get("score", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                score = 0.0
+            hydrated.metadata["vector_retrieved"] = True
+            hydrated.metadata["vector_retrieval_score"] = score
+            hydrated.metadata["vector_retrieval_rank"] = rank_by_id.get(signature.id, len(rank_by_id))
+            if vector_context_id:
+                hydrated.metadata["vector_retrieval_context"] = vector_context_id
+            visible.append(hydrated)
+        visible.sort(key=lambda signature: int(signature.metadata.get("vector_retrieval_rank", len(visible))))
         return visible[:limit]
 
     def enqueue(self, task_name: str, payload: dict[str, Any]) -> str | None:

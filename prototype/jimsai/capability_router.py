@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import os
 import re
+import asyncio
+import contextlib
+import time
 from typing import Any
 
 import httpx
@@ -38,7 +41,8 @@ CAPABILITY_PROTOTYPES: dict[CapabilityKind, str] = {
     ),
     CapabilityKind.MATH_SCIENCE: (
         "Perform calculations, solve equations, derive formulas, evaluate numeric or symbolic "
-        "expressions, or answer scientific and quantitative questions."
+        "expressions, transform formulas, or compute quantitative results. Conceptual science "
+        "explanations without executable math should use memory or world knowledge instead."
     ),
     CapabilityKind.CREATIVE_TEXT: (
         "Write creative content: stories, poems, essays, marketing copy, scripts, emails, "
@@ -86,12 +90,35 @@ class CapabilityRouter:
             or get_env("JIMS_CAPABILITY_CLASSIFIER_TOKEN")
         )
         self.classifier_timeout = float(get_env("JIMS_CAPABILITY_CLASSIFIER_TIMEOUT", "20") or "20")
+        self.prototype_cache_ttl = float(get_env("JIMS_CAPABILITY_PROTOTYPE_CACHE_TTL", "3600") or "3600")
+        self._prototype_embedding_cache: dict[CapabilityKind, list[float]] = {}
+        self._prototype_embedding_cached_at = 0.0
 
     async def route(self, request: PipelineRequest, ir: SemanticIR, activation: ActivationDecision) -> tuple[CapabilityPlan, LayerResult]:
         # Start with zero scores — no hardcoded structural keyword scoring.
         # All scoring comes from: (1) embedding similarity, (2) zero-shot classifier, (3) LLM overlay.
         scores: dict[CapabilityKind, float] = {kind: 0.0 for kind in CapabilityKind}
         signals: dict[str, Any] = {}
+
+        question_intent = ir.scope_constraints.get("question_intent", {}) if isinstance(ir.scope_constraints, dict) else {}
+        if isinstance(question_intent, dict) and question_intent.get("relation") == "causes":
+            plan = self._plan_for(
+                CapabilityKind.MEMORY_CHAT,
+                0.88,
+                "Causal question routed to memory/world-model recall, not symbolic math.",
+                routing_signals={
+                    "causal_question_gate": True,
+                    "question_intent": question_intent,
+                    "entities": ir.scope_constraints.get("entities", []) if isinstance(ir.scope_constraints, dict) else [],
+                },
+            )
+            return plan, LayerResult(
+                layer="V9_capability_router",
+                activated=True,
+                deterministic=True,
+                summary="Selected v9 capability route: memory_chat.",
+                data=plan.model_dump(mode="json"),
+            )
 
         # Only unambiguous syntax signals are applied before embedding — these are
         # format-based (not vocabulary-based) so they work in any language.
@@ -106,13 +133,19 @@ class CapabilityRouter:
             float(v) for v in signals["structural"].values()
         ) >= 0.7
 
-        semantic_scores = {} if strong_structural else await self._semantic_embedding_scores(request.query)
+        if strong_structural:
+            semantic_scores: dict[CapabilityKind, float] = {}
+            classifier_scores: dict[CapabilityKind, float] = {}
+        else:
+            semantic_scores, classifier_scores = await asyncio.gather(
+                self._semantic_embedding_scores(request.query),
+                self._zero_shot_classifier_scores(request.query),
+            )
         if semantic_scores:
             signals["semantic_embedding"] = {k.value: round(v, 4) for k, v in semantic_scores.items()}
             for kind, value in semantic_scores.items():
                 scores[kind] = min(1.0, scores.get(kind, 0.0) + value * 1.1)
 
-        classifier_scores = {} if strong_structural else await self._zero_shot_classifier_scores(request.query)
         if classifier_scores:
             signals["zero_shot_classifier"] = {k.value: round(v, 4) for k, v in classifier_scores.items()}
             accepted: dict[CapabilityKind, float] = {
@@ -366,32 +399,82 @@ class CapabilityRouter:
         headers = {"Content-Type": "application/json"}
         if self.embedding_token:
             headers["Authorization"] = f"Bearer {self.embedding_token}"
+        prototype_task: asyncio.Task[dict[CapabilityKind, list[float]]] | None = None
         try:
+            prototype_task = asyncio.create_task(self._capability_prototype_vectors(kinds))
             async with httpx.AsyncClient(timeout=self.embedding_timeout) as client:
                 query_response = await client.post(
                     f"{self.embedding_url}/embed",
                     headers=headers,
                     json={"texts": [query], "purpose": "query"},
                 )
-                query_response.raise_for_status()
-                prototype_response = await client.post(
-                    f"{self.embedding_url}/embed",
-                    headers=headers,
-                    json={"texts": [CAPABILITY_PROTOTYPES[kind] for kind in kinds], "purpose": "document"},
-                )
-                prototype_response.raise_for_status()
-            query_vectors = query_response.json().get("vectors") or query_response.json().get("embeddings") or []
-            prototype_vectors = prototype_response.json().get("vectors") or prototype_response.json().get("embeddings") or []
-            if not isinstance(query_vectors, list) or not isinstance(prototype_vectors, list) or len(prototype_vectors) < len(kinds):
+            query_response.raise_for_status()
+            query_payload = query_response.json()
+            if query_payload.get("fallback"):
+                if not prototype_task.done():
+                    prototype_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await prototype_task
+                return {}
+            query_vectors = query_payload.get("vectors") or query_payload.get("embeddings") or []
+            if not isinstance(query_vectors, list):
+                if not prototype_task.done():
+                    prototype_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await prototype_task
+                return {}
+            prototype_vectors_by_kind = await prototype_task
+            if len(prototype_vectors_by_kind) < len(kinds):
                 return {}
             query_vector = self._float_vector(query_vectors[0] if query_vectors else [])
             if not query_vector:
                 return {}
             raw_scores = {
-                kind: max(0.0, self._cosine(query_vector, self._float_vector(prototype_vectors[index])))
-                for index, kind in enumerate(kinds)
+                kind: max(0.0, self._cosine(query_vector, prototype_vectors_by_kind[kind]))
+                for kind in kinds
             }
             return self._relative_semantic_scores(raw_scores)
+        except Exception:
+            if prototype_task is not None and not prototype_task.done():
+                prototype_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await prototype_task
+            return {}
+
+    async def _capability_prototype_vectors(self, kinds: list[CapabilityKind]) -> dict[CapabilityKind, list[float]]:
+        now = time.monotonic()
+        if (
+            self._prototype_embedding_cache
+            and now - self._prototype_embedding_cached_at < self.prototype_cache_ttl
+            and all(kind in self._prototype_embedding_cache for kind in kinds)
+        ):
+            return self._prototype_embedding_cache
+        headers = {"Content-Type": "application/json"}
+        if self.embedding_token:
+            headers["Authorization"] = f"Bearer {self.embedding_token}"
+        try:
+            async with httpx.AsyncClient(timeout=self.embedding_timeout) as client:
+                response = await client.post(
+                    f"{self.embedding_url}/embed",
+                    headers=headers,
+                    json={"texts": [CAPABILITY_PROTOTYPES[kind] for kind in kinds], "purpose": "document"},
+                )
+                response.raise_for_status()
+            payload = response.json()
+            if payload.get("fallback"):
+                return {}
+            vectors = payload.get("vectors") or payload.get("embeddings") or []
+            if not isinstance(vectors, list) or len(vectors) < len(kinds):
+                return {}
+            cache: dict[CapabilityKind, list[float]] = {}
+            for index, kind in enumerate(kinds):
+                vector = self._float_vector(vectors[index])
+                if not vector:
+                    return {}
+                cache[kind] = vector
+            self._prototype_embedding_cache = cache
+            self._prototype_embedding_cached_at = now
+            return cache
         except Exception:
             return {}
 

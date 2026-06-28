@@ -16,4 +16,4 @@ Protected endpoints accept:
 Authorization: Bearer <JIMS_RENDER_AGENT_TOKEN>
 ```
 
-If `sentence-transformers` or the configured model cannot load, the service returns deterministic hash embeddings instead of failing the runtime.
+If `sentence-transformers` or the configured model cannot load, the service returns `503`. JIMS-AI does not use hash embeddings as a semantic fallback.

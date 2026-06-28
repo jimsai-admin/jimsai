@@ -98,7 +98,7 @@ async def startup_warm_classifier() -> None:
         _logger.warning("Startup classifier warm failed (non-fatal): %s", repr(exc))
 
     # Embedding service health is checked on first encode call — no blocking startup check needed.
-    # Use POST /v1/autonomous/reembed-hash after startup if Vectorize needs refreshing.
+    # Use POST /v1/autonomous/reembed-required after startup if Vectorize needs refreshing.
 
     # Modal services are pre-warmed by the client (test scripts, benchmark runner).
     # Server startup is intentionally kept lightweight — no blocking Modal calls.
@@ -295,9 +295,9 @@ async def audit_events(limit: int = 100):
     return await pipeline.audit_events(limit=limit)
 
 
-@app.post("/v1/autonomous/reembed-hash", dependencies=[Depends(require_scope("training:write"))])
-async def reembed_hash():
-    """Re-embed all signatures stored with hash-projection fallback vectors.
+@app.post("/v1/autonomous/reembed-required", dependencies=[Depends(require_scope("training:write"))])
+async def reembed_required():
+    """Re-embed all signatures marked reembedding_required.
 
     Uses batch embedding (one Modal call for all texts) for speed.
     Call once after the embedding service cold-starts.
@@ -331,7 +331,7 @@ async def reembed_hash():
             if isinstance(r.get("payload"), dict)
             and r["payload"].get("metadata", {}).get("reembedding_required") is True
         ]
-        _logger.info("reembed-hash: %d / %d need re-embedding", len(to_reembed), len(rows))
+        _logger.info("reembed-required: %d / %d need re-embedding", len(to_reembed), len(rows))
         if not to_reembed:
             return {"status": "ok", "total_found": 0, "reembedded": 0, "failed": 0}
 
@@ -370,13 +370,13 @@ async def reembed_hash():
                     _logger.warning("reembed patch failed for %s: %s", row.get("id"), exc)
                     failed += 1
 
-        _logger.info("reembed-hash done: %d ok, %d failed", reembedded, failed)
+        _logger.info("reembed-required done: %d ok, %d failed", reembedded, failed)
         return {"status": "ok", "total_found": len(to_reembed), "reembedded": reembedded, "failed": failed}
 
     except HTTPException:
         raise
     except Exception as exc:
-        import logging as _log; _log.getLogger("jimsai.reembed").error("reembed-hash: %s", exc, exc_info=True)
+        import logging as _log; _log.getLogger("jimsai.reembed").error("reembed-required: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail=str(exc))
 
 

@@ -420,14 +420,18 @@ class QwenBridge:
         if not self.qwen_enabled:
             self.last_t1_skip_reason = "qwen_unavailable"
             return None
-        if self._should_skip_t1(deterministic_ir):
+        if self._should_skip_t1(deterministic_ir, raw_input):
             confidence = float(deterministic_ir.get("confidence") or 0.0)
             self.last_t1_skip_reason = f"deterministic_confidence_{confidence:.2f}"
             return None
         system = (
-            "You are an intent classifier. Return only JSON with target_ir and confidence. "
+            "You are an intent classifier. Return only JSON with target_ir, confidence, and optional scope_constraints. "
             "Allowed targets: WORKSPACE_QUERY, FETCH_DOCUMENT, SYSTEM_DIAGNOSTIC, CODE_GENERATE, "
             "RUN_CANVAS, RUN_INVENTION, GENERAL_FACT, EMOTIONAL_CATCH, META_INQUIRY. "
+            "For causal questions in any language, set scope_constraints.question_intent to "
+            "{\"relation\":\"causes\",\"direction\":\"incoming\"} when the user asks what causes X, "
+            "or {\"relation\":\"causes\",\"direction\":\"outgoing\"} when the user asks what X causes; "
+            "set scope_constraints.entities to the queried concept phrase(s). "
             "Do not reason or explain. Output only the JSON object."
         )
         user = json.dumps(
@@ -445,6 +449,10 @@ class QwenBridge:
                     "EMOTIONAL_CATCH",
                     "META_INQUIRY",
                 ],
+                "scope_constraints_schema": {
+                    "question_intent": {"relation": "causes", "direction": "incoming|outgoing"},
+                    "entities": ["canonical queried concept phrases"],
+                },
             },
             sort_keys=True,
         )
@@ -494,26 +502,24 @@ class QwenBridge:
     async def extract_math_expression(
         self, raw_input: str, context: dict[str, Any] | None = None
     ) -> dict[str, Any] | None:
-        """Extract any mathematical expression from freeform text — any language, any branch of math.
-
-        Covers arithmetic, algebra, calculus (derivatives/integrals), linear algebra,
-        differential equations, statistics, geometry, number theory, and physics problems.
-        The expression is returned in a form sympy can evaluate directly.
-        """
+        """Extract executable mathematical expressions from freeform text."""
         if not self.qwen_enabled:
             return None
         system = (
             "You are a mathematical expression extractor for JimsAI. Return only JSON. "
-            "Extract the mathematical expression or problem from the user's text. "
-            "Support ALL branches of mathematics: arithmetic, algebra, calculus (derivatives, integrals), "
-            "linear algebra, differential equations, statistics, geometry, number theory, physics. "
+            "Extract a mathematical expression only when the user asks for an executable calculation, "
+            "equation solution, symbolic transformation, derivation, or quantitative result. "
+            "Support arithmetic, algebra, calculus, linear algebra, differential equations, "
+            "statistics, geometry, number theory, and physics calculations. "
             "Return the expression in Python/sympy syntax so it can be evaluated directly. "
+            "For conceptual science, causal explanation, definition, or qualitative reasoning questions, "
+            "return expression as empty. "
             "Examples:\n"
-            "  'derivative of x^3' → expression: 'diff(x**3, x)', solve_for: null\n"
-            "  'integral of sin(x)' → expression: 'integrate(sin(x), x)', solve_for: null\n"
-            "  'solve 2x + 6 = 20' → expression: '2*x + 6 = 20', solve_for: 'x'\n"
-            "  '847 * 63' → expression: '847*63', solve_for: null\n"
-            "If no mathematical content exists, return expression as empty string."
+            "  'derivative of x^3' -> expression: 'diff(x**3, x)', solve_for: null\n"
+            "  'integral of sin(x)' -> expression: 'integrate(sin(x), x)', solve_for: null\n"
+            "  'solve 2x + 6 = 20' -> expression: '2*x + 6 = 20', solve_for: 'x'\n"
+            "  '27 * 19' -> expression: '27*19', solve_for: null\n"
+            "If no executable mathematical content exists, return expression as empty string."
         )
         user = json.dumps(
             {
@@ -533,54 +539,31 @@ class QwenBridge:
     async def extract_structured_relations(
         self, text: str, modality: str = "text"
     ) -> dict[str, Any] | None:
-        """Extract entities, relations, and causal links from text in ANY language.
-
-        Replaces all regex-based NLP extraction (CAUSAL_VERBS, DEPENDENCY_VERBS,
-        extract_sentence_relations, extract_entity_names). Uses T1 (Qwen3-1.7B)
-        which:
-          - Handles any language, script, or encoding
-          - Tolerates misspellings and grammatical errors (normalises intent)
-          - Produces complete cause/effect phrases, not single-token regex captures
-          - Never invents facts — returns only what the text explicitly states
-
-        Returns {"entities": [...], "relations": [...], "causal": [...]}
-        or None if the bridge is unavailable (caller must surface as explicit gap,
-        never fall back to regex or hash).
-
-        Example — "A net force causes acceleration. Friction causes deceleration.":
-          causal: [
-            {"cause": "net force", "effect": "acceleration", "confidence": 0.92},
-            {"cause": "friction",  "effect": "deceleration", "confidence": 0.94}
-          ]
-          NOT: {"cause": "net", "effect": "causes"} or {"cause": "force", "effect": "causes"}
-        """
+        """Extract entities, relations, and causal links from text in any language."""
         if not self.qwen_enabled:
             return None
         system = (
             "You are a structured-extraction engine for JimsAI. Return only JSON. "
-            "Read the text in ANY language (including misspelled or grammatically "
-            "incorrect text — normalise intent, not surface form) and extract:\n"
-            "(1) entities — named things: services, people, chemicals, concepts, "
-            "code symbols, organisms, locations, physical quantities. "
-            "Use the entity's canonical name as it appears in the text.\n"
-            "(2) relations — subject–predicate–object triples. Use snake_case "
-            "predicates (depends_on, is_a, has_field, means, uses, etc.).\n"
-            "(3) causal — ONLY explicit cause-effect pairs where one stated thing "
-            "DIRECTLY causes another stated thing. Both cause and effect must be "
-            "complete, meaningful phrases as they appear in the text. "
-            "Do NOT extract a causal pair from a sentence fragment, a partial match, "
-            "or a single token. If a sentence has no clear causal claim, emit nothing "
-            "for it even if it contains a word like 'causes' or 'force'.\n"
-            "confidence: 0.0–1.0 per item.\n\n"
+            "Read text in any language, including misspelled or grammatically incorrect text, "
+            "and normalize intent rather than surface form. Extract: "
+            "(1) entities: named things such as services, people, chemicals, concepts, code symbols, "
+            "organisms, locations, or physical quantities. Use canonical names as they appear in text. "
+            "(2) relations: subject-predicate-object triples. Use snake_case predicates such as "
+            "depends_on, is_a, has_field, means, or uses. "
+            "(3) causal: only explicit cause-effect pairs where one stated thing directly causes "
+            "another stated thing. Cause and effect must be complete, meaningful phrases from the text. "
+            "Do not extract causal pairs from fragments, partial matches, or single tokens. If a "
+            "sentence has no clear causal claim, emit no causal item for it. "
+            "confidence: 0.0-1.0 per item.\n\n"
             "Examples:\n"
-            "  'A net force causes acceleration.' → "
-            "causal: [{cause: 'net force', effect: 'acceleration', confidence: 0.92}]\n"
-            "  'Friction causes deceleration.' → "
-            "causal: [{cause: 'friction', effect: 'deceleration', confidence: 0.94}]\n"
-            "  'High cortisol causes memory impairment.' → "
-            "causal: [{cause: 'high cortisol', effect: 'memory impairment', confidence: 0.91}]\n"
-            "  'The net force is mass times acceleration.' → causal: [] "
-            "(no causal claim — this is a definition, not a cause-effect statement)\n"
+            "  'Loose wiring causes intermittent power loss.' -> "
+            "causal: [{cause: 'loose wiring', effect: 'intermittent power loss', confidence: 0.92}]\n"
+            "  'Expired credentials cause authentication failures.' -> "
+            "causal: [{cause: 'expired credentials', effect: 'authentication failures', confidence: 0.94}]\n"
+            "  'High latency causes request timeouts.' -> "
+            "causal: [{cause: 'high latency', effect: 'request timeouts', confidence: 0.91}]\n"
+            "  'The output voltage is current times resistance.' -> causal: [] "
+            "(no causal claim; this is a definition, not a cause-effect statement)\n"
             "Return JSON with keys: entities, relations, causal."
         )
         user = json.dumps({"text": text[:2000], "modality": modality}, sort_keys=True)
@@ -965,7 +948,7 @@ class QwenBridge:
 
     # ── Thinning helpers ──────────────────────────────────────────────────────
 
-    def _should_skip_t1(self, deterministic_ir: dict[str, Any]) -> bool:
+    def _should_skip_t1(self, deterministic_ir: dict[str, Any], raw_input: str = "") -> bool:
         """Skip T1 overlay when the deterministic compiler is already high-confidence."""
         if not self.adaptive_thinning:
             return False
@@ -976,6 +959,14 @@ class QwenBridge:
         target = str(deterministic_ir.get("target_ir") or "").upper()
         scope = deterministic_ir.get("scope_constraints") if isinstance(deterministic_ir, dict) else {}
         capability_hint = str((scope or {}).get("v9_capability_hint") or "").lower() if isinstance(scope, dict) else ""
+        if (
+            isinstance(scope, dict)
+            and target in {"WORKSPACE_QUERY", "GENERAL_FACT"}
+            and "?" in raw_input
+            and not scope.get("question_intent")
+            and not scope.get("entities")
+        ):
+            return False
         if capability_hint in {"math_science", "coding"} and confidence >= self.t1_skip_confidence:
             return True
         # Always run T1 for ambiguous or complex routes

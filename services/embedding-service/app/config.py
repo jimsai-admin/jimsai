@@ -12,7 +12,6 @@ class Settings(BaseSettings):
     jims_embedding_device: str = "cpu"
     jims_embedding_preload_on_startup: bool = True
     jims_embedding_torch_dtype: str = "auto"
-    jims_embedding_hash_fallback_enabled: bool = True
     jims_active_artifact_id: str = "base_encoder"
     jims_active_artifact_path: str = ""
 

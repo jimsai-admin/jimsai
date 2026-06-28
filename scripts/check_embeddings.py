@@ -1,4 +1,4 @@
-"""Check if the embedding classifier is using real embeddings or hash fallback."""
+"""Check whether the embedding classifier can load real embeddings."""
 import sys, os
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -9,11 +9,13 @@ from prototype.jimsai.semantic_compiler import _FallbackClassifier
 clf = _FallbackClassifier()
 print("api_url:", clf.api_url)
 print("api_token set:", bool(clf.api_token))
+print("real_embeddings_only: True")
 
 # Get prototype embeddings
 protos = clf._get_prototype_embeddings()
-print(f"\nuse_hash_fallback: {clf._use_hash_fallback}")
 print(f"prototype count: {len(protos)}")
+if not protos:
+    print("embedding status: unavailable; semantic intent routing will fall back to structural/T1 routing")
 
 if protos:
     dims = [len(v) for v in protos.values()]

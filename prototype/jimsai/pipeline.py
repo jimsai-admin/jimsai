@@ -191,6 +191,7 @@ class JimsAIPipeline:
             workspace_id=request.workspace_id,
             user_id=request.user_id,
             exclude_ids={input_signature_id},
+            vector_context_id=input_signature_id,
         )
         signatures.extend(self._lexical_persistent_hydration(request, exclude_ids={input_signature_id, *[signature.id for signature in signatures]}))
         count = 0
@@ -378,7 +379,7 @@ class JimsAIPipeline:
                     clear_context = True
             except Exception:
                 pass
-        # hash_embedding removed — time-based check is sufficient
+        # Synthetic embeddings removed; time-based check is sufficient.
         if clear_context:
             session.pop("ACTIVE_OBJECT", None)
             session.pop("ACTIVE_INTENT", None)
@@ -520,7 +521,13 @@ class JimsAIPipeline:
                 ),
             )
 
-        retrieved, retrieval_layer_result = self.retrieval_layer.retrieve(request, ir, activation, exclude_ids={input_signature.id})
+        retrieved, retrieval_layer_result = self.retrieval_layer.retrieve(
+            request,
+            ir,
+            activation,
+            exclude_ids={input_signature.id},
+            vector_retrieval_context=input_signature.id,
+        )
         record(retrieval_layer_result)
         if not retrieved:
             self.retrieval_misses += 1
@@ -710,7 +717,11 @@ class JimsAIPipeline:
         capability_kind = ""
         if obj.capability_plan:
             capability_kind = str(getattr(obj.capability_plan, "kind", "") or "").upper()
-        if "MATH" in capability_kind and not obj.reasoning_chain:
+        math_attempted = any(
+            result.kind == CapabilityKind.MATH_SCIENCE and result.data.get("executed")
+            for result in obj.capability_results
+        )
+        if "MATH" in capability_kind and math_attempted and not obj.reasoning_chain:
             suggestions.append("Try expressing maths as: `2 + 9` or `2x + 5 = 11`")
 
         # Profile unknown
@@ -834,9 +845,15 @@ class JimsAIPipeline:
                 executed.append(
                     result.model_copy(
                         update={
+                            "status": "not_required",
                             "confidence": min(result.confidence, 0.35),
-                            "summary": "Math route selected, but no bounded arithmetic expression was extracted.",
-                            "data": {**result.data, "executed": False, "extraction_status": qwen_extraction_status if qwen_extraction_status != "not_attempted" else "not_found"},
+                            "summary": "No executable symbolic expression was extracted; continuing through retrieval/rendering.",
+                            "data": {
+                                **result.data,
+                                "executed": False,
+                                "solver_status": "not_required",
+                                "extraction_status": qwen_extraction_status if qwen_extraction_status != "not_attempted" else "not_found",
+                            },
                         }
                     )
                 )
@@ -1700,6 +1717,29 @@ class JimsAIPipeline:
             auto_training_decision=auto_training_decision,
         )
 
+    def _world_model_review_required(self, request: TrainingIngestRequest, signature: MemorySignature, conflict_detected: bool) -> bool:
+        if conflict_detected:
+            return True
+        terms_config = os.getenv(
+            "JIMS_WM_REVIEW_REQUIRED_TERMS",
+            "medical,medicine,clinical,health,legal,law,finance,financial,investment,"
+            "safety,security,weapon,biohazard,critical",
+        )
+        review_terms = [term.strip().lower() for term in terms_config.split(",") if term.strip()]
+        if not review_terms:
+            return False
+        haystack = " ".join(
+            str(part or "")
+            for part in (
+                request.domain_hint,
+                signature.metadata.get("document_type"),
+                signature.metadata.get("title"),
+                signature.metadata.get("summary"),
+                request.content[:500],
+            )
+        ).lower()
+        return any(re.search(rf"(?<!\w){re.escape(term)}(?!\w)", haystack) for term in review_terms)
+
     async def ingest_training(self, request: TrainingIngestRequest) -> TrainingIngestResponse:
         tracer = ExecutionTracer()
         intent_type = request.domain_hint or "training_ingestion"
@@ -1733,6 +1773,7 @@ class JimsAIPipeline:
         groq_used = self._apply_ingestion_overlay(signature, groq_overlay, request.source_trust)
         
         # Causal and Relational Conflict Detection & Downgrading for older/stale memory signatures
+        conflict_detected = False
         for existing in list(self.memory.visible_signatures(workspace_id=request.workspace_id, user_id=request.user_id)):
             has_conflict = False
             # Check relational conflict
@@ -1759,6 +1800,7 @@ class JimsAIPipeline:
 
             # If there is a conflict, downgrade the older signature to Tier 4 / UNVERIFIED_STALE_MEMORY (< 0.6)
             if has_conflict:
+                conflict_detected = True
                 existing.confidence.score = 0.5
                 existing.provenance = "unverified_stale_memory"
                 existing.metadata["validity"] = "stale"
@@ -1825,12 +1867,13 @@ class JimsAIPipeline:
                 signature_ids=[item.id for item in document_signatures],
             )
 
+        review_world_model = self._world_model_review_required(request, signature, conflict_detected)
         world_model_candidates = [
             WorldModelCandidate(
                 rule=f"{link.cause} causes {link.effect}",
                 confidence=round(min(link.confidence, request.source_trust), 4),
                 provenance=signature.id,
-                review_required=min(link.confidence, request.source_trust) < 0.9,
+                review_required=review_world_model,
             )
             for link in signature.structured.causal_chain
         ]
