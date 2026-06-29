@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -10,6 +11,40 @@ from .env_config import get_env
 from .models import VerifiedCognitiveObject
 
 import httpx
+
+
+_INVALID_CAUSAL_TRIGGERS = {
+    "is",
+    "are",
+    "was",
+    "were",
+    "be",
+    "being",
+    "means",
+    "equals",
+    "equal",
+    "times",
+    "multiplied by",
+    "depends on",
+    "depends_on",
+    "works on",
+    "work on",
+    "building",
+    "using",
+}
+
+_EXPLICIT_CAUSAL_TRIGGER_PATTERNS = (
+    r"\bcauses?\b",
+    r"\bcaused\s+by\b",
+    r"\bbecause\b",
+    r"\bdue\s+to\b",
+    r"\bleads?\s+to\b",
+    r"\bresults?\s+in\b",
+    r"\btriggers?\b",
+    r"\bproduces?\b",
+    r"\bdrives?\b",
+    r"\bgives?\s+rise\s+to\b",
+)
 
 
 class QwenBridge:
@@ -50,13 +85,18 @@ class QwenBridge:
         # OpenAI-compatible endpoint instead (e.g. NVIDIA NIM serving Llama 3.3 70B).
         # The cognitive flow above this bridge is unchanged; only the HTTP backend
         # and request/response shape differ.
-        provider = get_env("JIMS_LLM_PROVIDER", "").lower()
-        if not provider:
-            provider = "nvidia" if get_env("NVIDIA_API_KEY") else "modal"
+        provider = get_env("JIMS_LLM_PROVIDER", "modal").lower() or "modal"
         self.provider = provider
 
-        self.openai_compatible = provider in {"nvidia", "openai", "openai_compatible"}
-        if self.openai_compatible:
+        self.t1_provider = get_env(
+            "JIMS_T1_PROVIDER",
+            provider,
+        ).lower()
+        self.t2_provider = get_env("JIMS_T2_PROVIDER", provider).lower()
+        self.t1_openai_compatible = self.t1_provider in {"nvidia", "openai", "openai_compatible"}
+        self.t2_openai_compatible = self.t2_provider in {"nvidia", "openai", "openai_compatible"}
+        self.openai_compatible = self.t2_openai_compatible
+        if self.t1_openai_compatible or self.t2_openai_compatible:
             if provider == "nvidia":
                 self.openai_base_url = get_env(
                     "NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1"
@@ -69,23 +109,43 @@ class QwenBridge:
                 ).rstrip("/")
                 self.openai_api_key = get_env("JIMS_OPENAI_API_KEY")
                 self.openai_model = get_env("JIMS_OPENAI_MODEL", "gpt-4o-mini")
+            self.openai_t1_model = (
+                get_env("JIMS_T1_OPENAI_MODEL", "")
+                or get_env("NVIDIA_T1_MODEL", "")
+                or self.openai_model
+            )
+            self.openai_t2_model = (
+                get_env("JIMS_T2_OPENAI_MODEL", "")
+                or get_env("NVIDIA_T2_MODEL", "")
+                or self.openai_model
+            )
             self.openai_chat_path = get_env("JIMS_OPENAI_CHAT_PATH", "/chat/completions") or "/chat/completions"
             # Many OpenAI-compatible servers support strict JSON mode, but not all
             # models do. Default off and rely on the prompt plus JSON extraction;
             # opt in with JIMS_OPENAI_JSON_MODE=true.
             self.openai_json_mode = get_env("JIMS_OPENAI_JSON_MODE", "false").lower() in {"1", "true", "yes", "on"}
-            # Surface the active model under the same attribute names the rest of
-            # the runtime reads for both tiers (single model serves T1 and T2).
-            self.local_model = self.openai_model
-            self.local_render_model = self.openai_model
         else:
             self.openai_base_url = ""
             self.openai_api_key = ""
             self.openai_model = ""
+            self.openai_t1_model = ""
+            self.openai_t2_model = ""
             self.openai_chat_path = "/chat/completions"
             self.openai_json_mode = False
 
     # â”€â”€ Availability â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+    @property
+    def t1_enabled(self) -> bool:
+        if self.t1_openai_compatible:
+            return bool(self.openai_base_url and self.openai_api_key and self.openai_model)
+        return bool(self.local_url and self.local_api_key)
+
+    @property
+    def t2_enabled(self) -> bool:
+        if self.t2_openai_compatible:
+            return bool(self.openai_base_url and self.openai_api_key and self.openai_model)
+        return bool(self.render_url and self.local_api_key)
 
     @property
     def qwen_enabled(self) -> bool:
@@ -97,9 +157,7 @@ class QwenBridge:
         existing call site checks ``qwen_enabled`` to decide whether the bounded
         transformer overlay can run, regardless of which backend serves it.
         """
-        if self.openai_compatible:
-            return bool(self.openai_base_url and self.openai_api_key and self.openai_model)
-        return bool(self.local_url and self.render_url and self.local_api_key)
+        return self.t1_enabled or self.t2_enabled
 
     @property
     def available(self) -> bool:
@@ -108,18 +166,22 @@ class QwenBridge:
 
     def describe(self) -> dict[str, str]:
         """Return current model configuration for dashboard / observability."""
-        if self.openai_compatible:
+        if self.t1_openai_compatible or self.t2_openai_compatible:
             endpoint = f"{self.openai_base_url}{self.openai_chat_path}"
             return {
                 "backend": self.provider,
-                "t1_model": self.openai_model,
-                "t2_model": self.openai_model,
-                "t1_endpoint": endpoint,
-                "t2_endpoint": endpoint,
+                "t1_backend": self.t1_provider,
+                "t2_backend": self.t2_provider,
+                "t1_model": self.openai_t1_model if self.t1_openai_compatible else self.local_model,
+                "t2_model": self.openai_t2_model if self.t2_openai_compatible else self.local_render_model,
+                "t1_endpoint": endpoint if self.t1_openai_compatible else f"{self.local_url}{self.local_chat_path}",
+                "t2_endpoint": endpoint if self.t2_openai_compatible else f"{self.render_url}{self.local_render_path}",
                 "qwen_enabled": str(self.qwen_enabled),
             }
         return {
             "backend": "modal" if self.qwen_enabled else "none",
+            "t1_backend": self.t1_provider,
+            "t2_backend": self.t2_provider,
             "t1_model": self.local_model,
             "t2_model": self.local_render_model,
             "t1_endpoint": f"{self.local_url}{self.local_chat_path}",
@@ -133,12 +195,50 @@ class QwenBridge:
         self, _model_hint: str, system: str, user: str, max_tokens: int = 800
     ) -> dict[str, Any] | None:
         """Route to T1 Modal Intent_Service."""
-        if not self.qwen_enabled:
+        if not self.t1_enabled:
             return None
         return await self._local_chat_json(system, user, max_tokens=max_tokens)
 
+    def _timeout_seconds(self, primary_env: str, default: str) -> float:
+        configured = float(os.getenv(primary_env, default) or default)
+        cap_raw = os.getenv("JIMS_INTERACTIVE_SERVICE_TIMEOUT_CAP")
+        if cap_raw is None:
+            return configured
+        try:
+            cap = float(cap_raw)
+        except ValueError:
+            return configured
+        return min(configured, cap) if cap > 0 else configured
+
+    def _http_timeout(self, total_seconds: float) -> httpx.Timeout:
+        total = max(float(total_seconds), 0.25)
+        connect = min(total, float(os.getenv("JIMS_CONNECT_TIMEOUT", "4.0") or "4.0"))
+        write = min(total, float(os.getenv("JIMS_WRITE_TIMEOUT", "2.0") or "2.0"))
+        pool = min(total, float(os.getenv("JIMS_POOL_TIMEOUT", "1.0") or "1.0"))
+        return httpx.Timeout(timeout=total, connect=connect, read=total, write=write, pool=pool)
+
+    async def _bounded_post_json(
+        self,
+        *,
+        url: str,
+        headers: dict[str, str],
+        payload: dict[str, Any],
+        timeout_seconds: float,
+    ) -> httpx.Response:
+        async with httpx.AsyncClient(timeout=self._http_timeout(timeout_seconds), follow_redirects=True) as client:
+            return await asyncio.wait_for(
+                client.post(url, headers=headers, json=payload, follow_redirects=True),
+                timeout=max(timeout_seconds, 0.25),
+            )
+
     async def _openai_chat(
-        self, system: str, user: str, max_tokens: int, wrap_text: bool
+        self,
+        system: str,
+        user: str,
+        max_tokens: int,
+        wrap_text: bool,
+        timeout_seconds: float | None = None,
+        model: str | None = None,
     ) -> dict[str, Any] | None:
         """Call an OpenAI-compatible chat endpoint (e.g. NVIDIA NIM / Llama 3.3 70B).
 
@@ -153,7 +253,7 @@ class QwenBridge:
             "Authorization": f"Bearer {self.openai_api_key}",
         }
         payload: dict[str, Any] = {
-            "model": self.openai_model,
+            "model": model or self.openai_model,
             "messages": [
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
@@ -164,15 +264,14 @@ class QwenBridge:
         if self.openai_json_mode:
             payload["response_format"] = {"type": "json_object"}
         try:
-            timeout = float(os.getenv("JIMS_GENERATION_TIMEOUT", "120") or "120")
-            async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-                response = await client.post(
-                    f"{self.openai_base_url}{self.openai_chat_path}",
-                    headers=headers,
-                    json=payload,
-                    follow_redirects=True,
-                )
-                response.raise_for_status()
+            timeout = timeout_seconds if timeout_seconds is not None else self._timeout_seconds("JIMS_T1_TIMEOUT", "5")
+            response = await self._bounded_post_json(
+                url=f"{self.openai_base_url}{self.openai_chat_path}",
+                headers=headers,
+                payload=payload,
+                timeout_seconds=timeout,
+            )
+            response.raise_for_status()
             data = response.json()
             raw_content = ""
             choices = data.get("choices")
@@ -203,7 +302,11 @@ class QwenBridge:
             return None
 
     async def _render_chat_json(
-        self, system: str, user: str, max_tokens: int = 800
+        self,
+        system: str,
+        user: str,
+        max_tokens: int = 800,
+        timeout_seconds: float | None = None,
     ) -> dict[str, Any] | None:
         """Route to T2 Renderer.
 
@@ -216,10 +319,17 @@ class QwenBridge:
         When an OpenAI-compatible provider is configured, the call is delegated to
         _openai_chat with the same wrap-as-{"response": ...} contract.
         """
-        if not self.qwen_enabled:
+        if not self.t2_enabled:
             return None
-        if self.openai_compatible:
-            return await self._openai_chat(system, user, max_tokens, wrap_text=True)
+        if self.t2_openai_compatible:
+            return await self._openai_chat(
+                system,
+                user,
+                max_tokens,
+                wrap_text=True,
+                timeout_seconds=timeout_seconds or self._timeout_seconds("JIMS_T2_TIMEOUT", "10"),
+                model=self.openai_t2_model,
+            )
         headers = {"Content-Type": "application/json", "Authorization": f"Bearer {self.local_api_key}"}
         payload = {
             "model": self.local_render_model,
@@ -229,15 +339,14 @@ class QwenBridge:
             "response_format": {"type": "json_object"},
         }
         try:
-            timeout = float(os.getenv("JIMS_GENERATION_TIMEOUT", "120") or "120")
-            async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-                response = await client.post(
-                    f"{self.render_url}{self.local_render_path}",
-                    headers=headers,
-                    json=payload,
-                    follow_redirects=True,
-                )
-                response.raise_for_status()
+            timeout = timeout_seconds if timeout_seconds is not None else self._timeout_seconds("JIMS_T2_TIMEOUT", "10")
+            response = await self._bounded_post_json(
+                url=f"{self.render_url}{self.local_render_path}",
+                headers=headers,
+                payload=payload,
+                timeout_seconds=timeout,
+            )
+            response.raise_for_status()
             data = response.json()
             # Modal returns {"response": "<model output>", ...}
             raw_content = data.get("response") or data.get("content") or ""
@@ -285,8 +394,15 @@ class QwenBridge:
         When an OpenAI-compatible provider is configured, the call is delegated to
         _openai_chat (strict: a non-JSON reply yields None, not wrapped text).
         """
-        if self.openai_compatible:
-            return await self._openai_chat(system, user, max_tokens, wrap_text=False)
+        if self.t1_openai_compatible:
+            return await self._openai_chat(
+                system,
+                user,
+                max_tokens,
+                wrap_text=False,
+                timeout_seconds=timeout if timeout is not None else self._timeout_seconds("JIMS_T1_TIMEOUT", "5"),
+                model=self.openai_t1_model,
+            )
         headers = {"Content-Type": "application/json"}
         if self.local_api_key:
             headers["Authorization"] = f"Bearer {self.local_api_key}"
@@ -298,20 +414,23 @@ class QwenBridge:
             ],
             "temperature": 0,
             "max_tokens": max_tokens,
+            "response_format": {"type": "json_object"},
         }
         try:
             request_timeout = timeout if timeout is not None else float(
-                os.getenv("JIMS_GENERATION_TIMEOUT",
-                          os.getenv("JIMS_LOCAL_INFERENCE_TIMEOUT", "120")) or "120"
-            )
-            async with httpx.AsyncClient(timeout=request_timeout, follow_redirects=True) as client:
-                response = await client.post(
-                    f"{self.local_url}{path or self.local_chat_path}",
-                    headers=headers,
-                    json=payload,
-                    follow_redirects=True,
+                os.getenv(
+                    "JIMS_T1_TIMEOUT",
+                    os.getenv("JIMS_LOCAL_INFERENCE_TIMEOUT", "5"),
                 )
-                response.raise_for_status()
+                or "5"
+            )
+            response = await self._bounded_post_json(
+                url=f"{self.local_url}{path or self.local_chat_path}",
+                headers=headers,
+                payload=payload,
+                timeout_seconds=request_timeout,
+            )
+            response.raise_for_status()
             data = response.json()
             # Modal Intent_Service returns {"response": "<model output>", ...}
             raw_content = data.get("response") or data.get("content") or ""
@@ -343,7 +462,6 @@ class QwenBridge:
                     # Check if it's a valid JSON start
                     potential_json = raw_content[first_brace:]
                     try:
-                        import json
                         json.loads(potential_json[:potential_json.rfind("}")+1])
                         raw_content = potential_json
                     except:
@@ -431,7 +549,7 @@ class QwenBridge:
             },
             sort_keys=True,
         )
-        return await self._chat_json(self.local_model, system, user, max_tokens=400)
+        return await self._chat_json(self.local_model, system, user, max_tokens=220)
 
     async def classify_capability(
         self, raw_input: str, deterministic_context: dict[str, Any]
@@ -472,7 +590,7 @@ class QwenBridge:
             },
             sort_keys=True,
         )
-        return await self._chat_json(self.local_model, system, user, max_tokens=180)
+        return await self._chat_json(self.local_model, system, user, max_tokens=140)
 
     async def extract_math_expression(
         self, raw_input: str, context: dict[str, Any] | None = None
@@ -509,7 +627,7 @@ class QwenBridge:
             },
             sort_keys=True,
         )
-        return await self._chat_json(self.local_model, system, user, max_tokens=200)
+        return await self._chat_json(self.local_model, system, user, max_tokens=160)
 
     async def extract_structured_relations(
         self, text: str, modality: str = "text"
@@ -530,6 +648,13 @@ class QwenBridge:
             "Do not extract causal pairs from fragments, partial matches, or single tokens. If a "
             "sentence has no clear causal claim, emit no causal item for it. "
             "confidence: 0.0-1.0 per item.\n\n"
+            "Output schema is strict: "
+            "{\"entities\":[{\"name\":\"...\",\"type\":\"...\",\"evidence\":\"exact source span\"}],"
+            "\"relations\":[{\"subject\":\"...\",\"predicate\":\"...\",\"object\":\"...\",\"confidence\":0.0,\"evidence\":\"exact source span\"}],"
+            "\"causal\":[{\"cause\":\"...\",\"effect\":\"...\",\"causal_trigger\":\"exact source phrase that states causation\",\"confidence\":0.0,\"evidence\":\"exact source span\"}]}. "
+            "Never echo input keys such as text or modality. "
+            "For identity/name facts, object must be the normalized value only, not the full sentence. "
+            "For causal items, causal_trigger must be present in evidence and must explicitly state causation; working on, building, using, depending on, equaling, or describing a thing is not causation. "
             "Examples:\n"
             "  'Loose wiring causes intermittent power loss.' -> "
             "causal: [{cause: 'loose wiring', effect: 'intermittent power loss', confidence: 0.92}]\n"
@@ -541,8 +666,215 @@ class QwenBridge:
             "(no causal claim; this is a definition, not a cause-effect statement)\n"
             "Return JSON with keys: entities, relations, causal."
         )
-        user = json.dumps({"text": text[:2000], "modality": modality}, sort_keys=True)
-        return await self._chat_json(self.local_model, system, user, max_tokens=450)
+        user = (
+            f"Modality: {modality}\n"
+            "Source text between delimiters:\n"
+            "<<<SOURCE_TEXT\n"
+            f"{text[:2000]}\n"
+            "SOURCE_TEXT>>>\n"
+            "Extract only facts grounded in the source text into the required JSON schema."
+        )
+        source_text = text[:2000]
+        data = await self._chat_json(self.local_model, system, user, max_tokens=260)
+        normalized = self._normalize_structured_extraction(data, source_text=source_text)
+        if normalized is None:
+            normalized = {"entities": [], "relations": [], "causal": []}
+        if self._needs_focused_causal_pass(source_text, normalized.get("causal", [])):
+            causal_data = await self._extract_causal_links(source_text)
+            causal_normalized = self._normalize_structured_extraction(causal_data, source_text=source_text)
+            if causal_normalized is not None:
+                normalized["causal"] = self._merge_causal_links(
+                    normalized.get("causal", []),
+                    causal_normalized.get("causal", []),
+                )
+        return normalized
+
+    async def _extract_causal_links(self, text: str) -> dict[str, Any] | None:
+        system = (
+            "Return one compact JSON object with key causal. "
+            "Each causal item has keys cause, effect, causal_trigger, evidence, confidence. "
+            "Copy actual source spans only; never copy schema descriptions or placeholder text. "
+            "Extract causal only when the source explicitly states that one thing causes another. "
+            "causal_trigger must be copied from the source sentence and must mean causes, caused by, leads to, results in, because, due to, or triggers. "
+            "Working on, building, using, depending on, equaling, describing, or naming a thing is not causation. "
+            "If no explicit causal statement exists, return {\"causal\":[]}. "
+            "Example: source 'Expired credentials cause authentication failures.' returns "
+            "{\"causal\":[{\"cause\":\"Expired credentials\",\"effect\":\"authentication failures\","
+            "\"causal_trigger\":\"cause\",\"evidence\":\"Expired credentials cause authentication failures.\",\"confidence\":0.94}]}."
+        )
+        user = f"Source: {text}"
+        return await self._chat_json(self.local_model, system, user, max_tokens=220)
+
+    def _normalize_structured_extraction(self, data: dict[str, Any] | None, source_text: str = "") -> dict[str, Any] | None:
+        if not isinstance(data, dict):
+            return None
+        if not any(key in data for key in ("entities", "relations", "causal")):
+            return None
+        source_lower = source_text.lower()
+
+        entities_raw = data.get("entities") or []
+        entities: list[Any] = []
+        if isinstance(entities_raw, list):
+            for item in entities_raw:
+                if isinstance(item, dict):
+                    name = str(item.get("name") or item.get("entity") or item.get("value") or "").strip()
+                    evidence = str(item.get("evidence") or item.get("source_span") or item.get("span") or item.get("quote") or "").strip()
+                    if name and self._entity_grounded(name, evidence, source_lower):
+                        entities.append({"name": name, "type": str(item.get("type") or "concept")})
+                elif isinstance(item, str) and item.strip() and self._entity_grounded(item.strip(), "", source_lower):
+                    entities.append({"name": item.strip(), "type": "concept"})
+        elif isinstance(entities_raw, dict):
+            entities = [
+                {"name": str(value), "type": str(key)}
+                for key, value in entities_raw.items()
+                if str(value).strip() and self._entity_grounded(str(value), "", source_lower)
+            ]
+        elif isinstance(entities_raw, str) and entities_raw.strip() and self._entity_grounded(entities_raw.strip(), "", source_lower):
+            entities = [{"name": entities_raw.strip(), "type": "concept"}]
+
+        relations_raw = data.get("relations") or []
+        relations: list[Any] = []
+        if isinstance(relations_raw, list):
+            for item in relations_raw:
+                normalized = self._normalize_relation_item(item, source_lower)
+                if normalized:
+                    relations.append(normalized)
+        elif isinstance(relations_raw, dict):
+            source = self._primary_entity_name(entities)
+            for key, value in relations_raw.items():
+                normalized = self._normalize_relation_item(
+                    {"subject": source, "predicate": str(key), "object": str(value), "confidence": 0.72},
+                    source_lower,
+                )
+                if normalized:
+                    relations.append(normalized)
+
+        causal_raw = data.get("causal") or []
+        causal: list[Any] = []
+        if isinstance(causal_raw, list):
+            for item in causal_raw:
+                normalized = self._normalize_causal_item(item, source_lower)
+                if normalized:
+                    causal.append(normalized)
+        elif isinstance(causal_raw, dict):
+            normalized = self._normalize_causal_item(causal_raw, source_lower)
+            if normalized:
+                causal.append(normalized)
+
+        return {"entities": entities, "relations": relations, "causal": causal}
+
+    def _normalize_relation_item(self, item: Any, source_lower: str) -> dict[str, Any] | None:
+        if not isinstance(item, dict):
+            return None
+        subject = str(item.get("subject") or item.get("source") or item.get("head") or "").strip()
+        predicate = str(item.get("predicate") or item.get("type") or item.get("relation") or "").strip().lower().replace(" ", "_")
+        obj = str(item.get("object") or item.get("target") or item.get("value") or "").strip()
+        if not subject or not predicate or not obj:
+            return None
+        evidence = str(item.get("evidence") or item.get("source_span") or item.get("span") or item.get("quote") or "").strip()
+        if evidence and evidence.lower() not in source_lower:
+            return None
+        if self._malformed_identity_relation(subject, predicate, obj, source_lower):
+            return None
+        try:
+            confidence = float(item.get("confidence", 0.72))
+        except (TypeError, ValueError):
+            confidence = 0.72
+        if confidence <= 0.0 and evidence:
+            confidence = 0.72
+        return {
+            "subject": subject,
+            "predicate": predicate,
+            "object": obj,
+            "confidence": max(0.0, min(1.0, confidence)),
+        }
+
+    def _normalize_causal_item(self, item: Any, source_lower: str) -> dict[str, Any] | None:
+        if not isinstance(item, dict):
+            return None
+        cause = str(item.get("cause") or "").strip()
+        effect = str(item.get("effect") or "").strip()
+        trigger = str(item.get("causal_trigger") or item.get("trigger") or item.get("connector") or "").strip()
+        evidence = str(item.get("evidence") or item.get("source_span") or item.get("span") or item.get("quote") or "").strip()
+        if not cause or not effect or not evidence:
+            return None
+        evidence_lower = evidence.lower()
+        if evidence_lower not in source_lower:
+            return None
+        if cause.lower() not in evidence_lower or effect.lower() not in evidence_lower:
+            return None
+        if not self._causal_trigger_grounded(trigger, evidence_lower):
+            return None
+        try:
+            confidence = float(item.get("confidence", 0.72))
+        except (TypeError, ValueError):
+            confidence = 0.72
+        if confidence <= 0.0 and evidence:
+            confidence = 0.72
+        return {
+            "cause": cause,
+            "effect": effect,
+            "confidence": max(0.0, min(1.0, confidence)),
+        }
+
+    def _entity_grounded(self, name: str, evidence: str, source_lower: str) -> bool:
+        name_lower = name.lower().strip()
+        if not name_lower:
+            return False
+        if evidence and evidence.lower() not in source_lower:
+            return False
+        return name_lower in source_lower
+
+    def _causal_trigger_grounded(self, trigger: str, evidence_lower: str) -> bool:
+        trigger_lower = trigger.lower().strip()
+        if trigger_lower:
+            if trigger_lower not in evidence_lower:
+                return False
+            return trigger_lower not in _INVALID_CAUSAL_TRIGGERS
+        return self._explicit_causal_statement_count(evidence_lower) > 0
+
+    def _needs_focused_causal_pass(self, source_text: str, normalized_causal: list[Any]) -> bool:
+        expected_statements = self._explicit_causal_statement_count(source_text.lower())
+        return expected_statements > len(normalized_causal)
+
+    def _merge_causal_links(self, existing: list[Any], focused: list[Any]) -> list[Any]:
+        merged: list[Any] = []
+        seen: set[tuple[str, str]] = set()
+        for item in [*existing, *focused]:
+            if not isinstance(item, dict):
+                continue
+            cause = str(item.get("cause") or "").strip()
+            effect = str(item.get("effect") or "").strip()
+            if not cause or not effect:
+                continue
+            key = (cause.lower(), effect.lower())
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(item)
+        return merged
+
+    def _explicit_causal_statement_count(self, source_lower: str) -> int:
+        if not source_lower.strip():
+            return 0
+        return sum(len(re.findall(pattern, source_lower)) for pattern in _EXPLICIT_CAUSAL_TRIGGER_PATTERNS)
+
+    def _malformed_identity_relation(self, subject: str, predicate: str, obj: str, source_lower: str) -> bool:
+        if predicate not in {"is", "is_a", "equals", "has_name"}:
+            return False
+        object_lower = obj.lower()
+        subject_lower = subject.lower()
+        if object_lower == source_lower.strip():
+            return True
+        return subject_lower in object_lower and len(object_lower) > len(subject_lower) + 8
+
+    def _primary_entity_name(self, entities: list[Any]) -> str:
+        for item in entities:
+            if isinstance(item, dict) and str(item.get("name") or "").strip():
+                return str(item["name"]).strip()
+            if isinstance(item, str) and item.strip():
+                return item.strip()
+        return "source"
 
     async def extract_user_facts(
         self, raw_input: str, context: dict[str, Any] | None = None
@@ -602,7 +934,7 @@ class QwenBridge:
             },
             sort_keys=True,
         )
-        return await self._chat_json(self.local_model, system, user, max_tokens=300)
+        return await self._chat_json(self.local_model, system, user, max_tokens=180)
 
     async def canvas_synthesis(self, content: str) -> dict[str, Any] | None:
         """Bounded Active Canvas synthesis â€” returns JSON patterns only."""
@@ -702,7 +1034,10 @@ class QwenBridge:
             "You are the bounded ingestion intelligence layer for JIMS-AI. "
             "Return only JSON. Interpret the input into memory objects, but do not answer the user. "
             "Vectors are retrieval hints, not truth. Prefer provenance-backed facts, entities, relations, "
-            "document metadata, uncertainty, and correction-ready structure. Use only the supplied input."
+            "document metadata, uncertainty, and correction-ready structure. Use only the supplied input. "
+            "When the source explicitly defines a relation as single-valued, unique, canonical, or otherwise "
+            "function-like for a subject, set relation_cardinality[predicate] to 'one'. For relations that can "
+            "validly have many objects, set 'many' or omit the predicate. Do not infer uniqueness without source support."
         )
         user = json.dumps(
             {
@@ -720,20 +1055,26 @@ class QwenBridge:
                     "facts": [
                         {"subject": "string", "predicate": "string", "object": "string", "confidence": "number"}
                     ],
+                    "relation_cardinality": {"predicate_name": "one|many|unknown"},
                     "tags": ["string"],
                     "confidence": "number",
                 },
             },
             sort_keys=True,
         )
-        return await self._render_chat_json(system, user, max_tokens=1400)
+        return await self._render_chat_json(
+            system,
+            user,
+            max_tokens=1400,
+            timeout_seconds=self._timeout_seconds("JIMS_INGESTION_OVERLAY_TIMEOUT", "5"),
+        )
 
     async def render(
         self, obj: VerifiedCognitiveObject, deterministic_render: str
     ) -> str:
         """Bounded T2 render â€” rephrase the CSSE output into natural Markdown."""
         self.last_t2_skip_reason = ""
-        if not self.qwen_enabled:
+        if not self.t2_enabled:
             self.last_t2_skip_reason = "qwen_unavailable"
             raise CriticalServiceUnavailable("T2 renderer service unavailable")
         system = (
@@ -797,10 +1138,10 @@ class QwenBridge:
         this yields one bounded single-shot T2 render. Missing or failed renderer
         services raise CriticalServiceUnavailable instead of falling back.
         """
-        if not self.qwen_enabled:
+        if not self.t2_enabled:
             self.last_t2_skip_reason = "qwen_unavailable"
             raise CriticalServiceUnavailable("T2 renderer service unavailable")
-        if not self.openai_compatible:
+        if not self.t2_openai_compatible:
             rendered = await self.render(obj, deterministic_render)
             yield rendered
             return
@@ -840,7 +1181,7 @@ class QwenBridge:
             "Authorization": f"Bearer {self.openai_api_key}",
         }
         payload = {
-            "model": self.openai_model,
+            "model": self.openai_t2_model or self.openai_model,
             "messages": [
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
@@ -851,7 +1192,10 @@ class QwenBridge:
         }
         emitted_any = False
         try:
-            timeout = float(os.getenv("JIMS_GENERATION_TIMEOUT", "120") or "120")
+            timeout = self._timeout_seconds(
+                "JIMS_STREAM_RENDER_TIMEOUT",
+                os.getenv("JIMS_T2_TIMEOUT", "10") or "10",
+            )
             async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
                 async with client.stream(
                     "POST",

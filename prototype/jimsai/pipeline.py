@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import asyncio
 from typing import Any
 
 from .capability_router import CapabilityAdapterRegistry, CapabilityRouter
@@ -21,6 +22,7 @@ from .models import (
     CanvasRunResponse,
     CapabilityExecutionResult,
     CapabilityKind,
+    Confidence,
     FeedbackRequest,
     FeedbackResponse,
     InventionRunRequest,
@@ -30,6 +32,7 @@ from .models import (
     LayerResult,
     CausalLink,
     Entity,
+    MemorySignature,
     MemoryDeleteRequest,
     MemoryMutationResponse,
     MemoryRollbackRequest,
@@ -48,6 +51,8 @@ from .models import (
     MathSolveResponse,
     Modality,
     SPPETrainingPair,
+    SignatureIntent,
+    StructuredSignature,
     TrainingDashboardResponse,
     TrainingIngestRequest,
     TrainingIngestResponse,
@@ -61,6 +66,7 @@ from .models import (
 from .observability import ExecutionTracer
 from .planner import SymbolicPlanner
 from .retrieval import MultiIndexRetrievalEngine
+from .relation_schema import relation_cardinality_overlay
 from .runtime_layers import (
     AbstractionEngineLayer,
     ActiveCanvasLayer,
@@ -187,6 +193,8 @@ class JimsAIPipeline:
         return count
 
     def _hydrate_persistent_retrieval(self, request: PipelineRequest, input_signature_id: str, latent_embedding: list[float]) -> int:
+        if os.getenv("JIMS_ENABLE_QUERY_CLOUD_HYDRATION", "true").lower() not in {"1", "true", "yes", "on"}:
+            return 0
         signatures = self.production.retrieve_similar(
             latent_embedding,
             limit=12,
@@ -501,6 +509,12 @@ class JimsAIPipeline:
         record(capability_layer_result)
         capability_results = self.capability_adapters.prepare(capability_plan)
         capability_results = await self._execute_capability_adapters(request, capability_results)
+        for capability_result in capability_results:
+            self.capability_router.record_outcome(
+                capability_result.kind,
+                status=capability_result.status,
+                confidence=max(0.05, min(1.0, capability_result.confidence)),
+            )
         record(
             LayerResult(
                 layer="V9_capability_adapters",
@@ -635,15 +649,18 @@ class JimsAIPipeline:
         if not skip_llm_render:
             self._learn_from_resolved_prompt(request, pipeline_response)
             self.result_cache.set(cache_key, pipeline_response.model_dump(mode="json"))
-            self.production.save_chat_exchange(
-                user_id=request.user_id,
-                workspace_id=request.workspace_id,
-                thread_id=request.thread_id or "default",
-                query=request.query,
-                answer=response,
-                trace_id=ir.trace_id,
-                confidence=obj.confidence,
-                sources=obj.sources,
+            self._cloud_write(
+                "save_chat_exchange",
+                lambda: self.production.save_chat_exchange(
+                    user_id=request.user_id,
+                    workspace_id=request.workspace_id,
+                    thread_id=request.thread_id or "default",
+                    query=request.query,
+                    answer=response,
+                    trace_id=ir.trace_id,
+                    confidence=obj.confidence,
+                    sources=obj.sources,
+                ),
             )
         self.event_store.append(
             "query_completed",
@@ -701,15 +718,18 @@ class JimsAIPipeline:
         self.result_cache.set(self._query_cache_key(request), final_response.model_dump(mode="json"))
         # Persist the streamed answer so chat history reflects what the user saw.
         try:
-            self.production.save_chat_exchange(
-                user_id=request.user_id,
-                workspace_id=request.workspace_id,
-                thread_id=request.thread_id or "default",
-                query=request.query,
-                answer=full,
-                trace_id=verified.ir.trace_id,
-                confidence=verified.confidence,
-                sources=verified.sources,
+            self._cloud_write(
+                "save_streamed_chat_exchange",
+                lambda: self.production.save_chat_exchange(
+                    user_id=request.user_id,
+                    workspace_id=request.workspace_id,
+                    thread_id=request.thread_id or "default",
+                    query=request.query,
+                    answer=full,
+                    trace_id=verified.ir.trace_id,
+                    confidence=verified.confidence,
+                    sources=verified.sources,
+                ),
             )
         except Exception:
             pass
@@ -823,7 +843,10 @@ class JimsAIPipeline:
                     data=sig.model_dump(mode="json"),
                     created_at=sig.created_at,
                 )
-                self.production.save_training_ingest(sig, text, [panel_item])
+                self._cloud_write(
+                    "save_resolution_memory",
+                    lambda sig=sig, text=text, panel_item=panel_item: self.production.save_training_ingest(sig, text, [panel_item]),
+                )
                 self.event_store.append(
                     "resolution_memory_written",
                     sig.id,
@@ -1048,28 +1071,52 @@ class JimsAIPipeline:
         promoted = 0
         for relation in user_relations:
             fact_text = f"User profile fact: user {relation.predicate} {relation.object}."
-            signature = await self.encoder.encode(
-                fact_text,
-                modality=Modality.TEXT,
-                intent_type="user_profile",
+            vector = await self.encoder._external_embedding(fact_text, Modality.TEXT)
+            if not vector:
+                raise CriticalServiceUnavailable("embedding service unavailable for user profile promotion")
+            signature = MemorySignature(
+                id=stable_id(
+                    "sig",
+                    f"user_profile_statement:user_profile:{request.user_id}:{request.workspace_id}:{relation.predicate}:{relation.object}",
+                ),
                 provenance="user_profile_statement",
+                structured=StructuredSignature(
+                    entities=[
+                        Entity(id=stable_id("ent", "user"), name="user", type="person"),
+                        Entity(id=stable_id("ent", relation.object), name=relation.object, type="profile_value"),
+                    ],
+                    relations=[relation],
+                    causal_chain=[],
+                    intent=SignatureIntent(type="user_profile", certainty="confirmed"),
+                ),
+                latent_embedding=vector,
+                abstraction_tags=sorted({"user", "profile", "user_profile_training", relation.predicate}),
+                confidence=Confidence(
+                    score=min(0.98, max(0.72, relation.confidence)),
+                    source="user_profile_statement",
+                ),
+                modality=Modality.TEXT,
+                linked_signatures=[],
+                raw_excerpt=fact_text,
                 workspace_id=request.workspace_id,
                 user_id=request.user_id,
+                metadata={
+                    "encoder_version": "profile_relation_direct_signature_v1",
+                    "graph_index_allowed": True,
+                    "latent_encoder": "external_text_embedding",
+                    "latent_embedding_source": "external_service",
+                    "reembedding_required": False,
+                    "profile_relation_predicate": relation.predicate,
+                    "profile_relation_object": relation.object,
+                },
             )
-            signature.structured.relations = [relation]
-            signature.abstraction_tags = sorted(
-                set(signature.abstraction_tags)
-                | {"user", "profile", "user_profile_training", relation.predicate}
-            )
-            signature.raw_excerpt = fact_text
-            signature.confidence.score = max(signature.confidence.score, min(0.98, relation.confidence))
-            signature.confidence.source = "user_profile_statement"
-            signature.metadata["profile_relation_predicate"] = relation.predicate
-            signature.metadata["profile_relation_object"] = relation.object
             self.memory.insert(signature)
             self.graph.add_signature(signature)
             try:
-                self.production.save_memory_signature(signature)
+                self._cloud_write(
+                    "save_user_profile_signature",
+                    lambda signature=signature: self.production.save_memory_signature(signature),
+                )
             except Exception:
                 logger.debug("User profile fact persistence skipped", exc_info=True)
             promoted += 1
@@ -1727,22 +1774,18 @@ class JimsAIPipeline:
     async def ingest_training(self, request: TrainingIngestRequest) -> TrainingIngestResponse:
         tracer = ExecutionTracer()
         intent_type = request.domain_hint or "training_ingestion"
-        # Encoding (embedding + T1 structured extraction) and the bounded T2
-        # ingestion overlay both read only the raw content and are independent of
-        # each other, so run them concurrently. This halves the per-document model
-        # round-trip latency, which matters when an autonomous ingestion service is
-        # streaming a high volume of documents.
-        import asyncio as _asyncio_ing
-        signature, groq_overlay = await _asyncio_ing.gather(
-            self.encoder.encode(
-                request.content,
-                modality=request.modality,
-                intent_type=intent_type,
-                provenance="training_pipeline",
-                workspace_id=request.workspace_id,
-                user_id=request.user_id,
-            ),
-            self.bridge.extract_ingestion_memory(
+        signature = await self.encoder.encode(
+            request.content,
+            modality=request.modality,
+            intent_type=intent_type,
+            provenance="training_pipeline",
+            workspace_id=request.workspace_id,
+            user_id=request.user_id,
+        )
+        groq_overlay = None
+        inline_overlay = os.getenv("JIMS_INLINE_INGESTION_OVERLAY", "true").lower() in {"1", "true", "yes", "on"}
+        if inline_overlay:
+            groq_overlay = await self.bridge.extract_ingestion_memory(
                 request.content,
                 {
                     "modality": request.modality.value,
@@ -1750,8 +1793,7 @@ class JimsAIPipeline:
                     "source_trust": request.source_trust,
                     "workspace_id": request.workspace_id,
                 },
-            ),
-        )
+            )
         signature.confidence.score = round(min(signature.confidence.score, request.source_trust), 4)
         signature.confidence.source = "training_ingestion_source_trust"
         groq_used = self._apply_ingestion_overlay(signature, groq_overlay, request.source_trust)
@@ -1909,12 +1951,18 @@ class JimsAIPipeline:
         panel_items = self._items_for_ingest_response(response)
         panel_items.extend(self._signature_item(fact_signature, panel="memory") for fact_signature in document_signatures)
         panel_items.append(self._pipeline_item(self._pipeline_monitor()))
-        self.production.save_training_ingest(signature, request.content, panel_items)
+        self._cloud_write(
+            "save_training_ingest",
+            lambda signature=signature, content=request.content, panel_items=panel_items: self.production.save_training_ingest(signature, content, panel_items),
+        )
         for fact_signature in document_signatures:
-            self.production.save_training_ingest(
-                fact_signature,
-                fact_signature.raw_excerpt,
-                [self._signature_item(fact_signature, panel="memory")],
+            self._cloud_write(
+                "save_document_fact_signature",
+                lambda fact_signature=fact_signature: self.production.save_training_ingest(
+                    fact_signature,
+                    fact_signature.raw_excerpt,
+                    [self._signature_item(fact_signature, panel="memory")],
+                ),
             )
         invalidated = self.result_cache.clear()
         self.event_store.append(
@@ -1935,6 +1983,23 @@ class JimsAIPipeline:
         if self.cloud_authoritative:
             self.memory.enforce_hot_cache_cap()
         return response
+
+    def _cloud_write(self, label: str, action) -> None:
+        if os.getenv("JIMS_SYNC_CLOUD_WRITES", "true").lower() in {"1", "true", "yes", "on"}:
+            action()
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+
+        async def _write() -> None:
+            try:
+                await asyncio.to_thread(action)
+            except Exception:
+                logger.debug("Background cloud write failed: %s", label, exc_info=True)
+
+        loop.create_task(_write())
 
     def queue_training_ingest(self, request: TrainingIngestRequest) -> dict[str, Any]:
         now = utc_now()
@@ -2062,6 +2127,22 @@ class JimsAIPipeline:
             existing_relations.add(key)
             changed = True
 
+        cardinality = self._relation_cardinality_overlay(overlay.get("relation_cardinality"))
+        if cardinality:
+            relation_predicates = {relation.predicate for relation in signature.structured.relations}
+            existing_cardinality = signature.metadata.get("relation_cardinality")
+            if not isinstance(existing_cardinality, dict):
+                existing_cardinality = {}
+            for predicate, value in cardinality.items():
+                if predicate != "*" and predicate not in relation_predicates:
+                    continue
+                if existing_cardinality.get(predicate) == value:
+                    continue
+                existing_cardinality[predicate] = value
+                changed = True
+            if existing_cardinality:
+                signature.metadata["relation_cardinality"] = existing_cardinality
+
         existing_causal = {(link.cause.lower(), link.effect.lower()) for link in signature.structured.causal_chain}
         for item in self._list_of_dicts(overlay.get("causal_links")):
             cause = str(item.get("cause") or "").strip()
@@ -2102,6 +2183,9 @@ class JimsAIPipeline:
         if not isinstance(value, list):
             return []
         return [item for item in value if isinstance(item, dict)]
+
+    def _relation_cardinality_overlay(self, value: Any) -> dict[str, str]:
+        return relation_cardinality_overlay(value)
 
     def _bounded_confidence(self, value: Any, source_trust: float) -> float:
         try:

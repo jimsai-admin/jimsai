@@ -22,6 +22,7 @@ the active pipeline raises CriticalServiceUnavailable instead of storing degrade
 
 from __future__ import annotations
 
+import asyncio
 import csv
 import hashlib
 import json
@@ -240,26 +241,48 @@ class DualRepresentationEncoder:
             if modality in {Modality.TEXT, Modality.CODE, Modality.DATA}
             else self._surrogate_text(content, modality)
         )
-        signature = await self.encode_text(
-            text,
-            intent_type=intent_type,
-            provenance=provenance,
-            modality=modality,
-            workspace_id=workspace_id,
-            user_id=user_id,
+        signature_task = asyncio.create_task(
+            self.encode_text(
+                text,
+                intent_type=intent_type,
+                provenance=provenance,
+                modality=modality,
+                workspace_id=workspace_id,
+                user_id=user_id,
+            )
         )
+        vector_task = asyncio.create_task(self._external_embedding(content, modality))
+        signature: MemorySignature | None = None
+        vector: list[float] | None = None
+        pending: set[asyncio.Task] = {signature_task, vector_task}
+        try:
+            while pending:
+                done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+                for task in done:
+                    if task is signature_task:
+                        signature = task.result()
+                    elif task is vector_task:
+                        vector = task.result()
+                        if not vector:
+                            raise CriticalServiceUnavailable("embedding service unavailable for L1 encoder")
+            if signature is None:
+                raise CriticalServiceUnavailable("T1 structured extraction unavailable for L1 encoder")
+            if not vector:
+                raise CriticalServiceUnavailable("embedding service unavailable for L1 encoder")
+        except Exception:
+            for task in pending:
+                task.cancel()
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+            raise
         if modality not in {Modality.TEXT, Modality.CODE, Modality.DATA}:
             signature.raw_excerpt = content[:500]
 
-        vector = await self._external_embedding(content, modality)
-        if vector:
-            signature.latent_embedding = vector
-            signature.confidence.source = "dual_encoder_external_latent"
-            signature.metadata["latent_encoder"] = self._latent_model_name(modality)
-            signature.metadata["latent_embedding_source"] = "external_service"
-            signature.metadata["reembedding_required"] = False
-        else:
-            raise CriticalServiceUnavailable("embedding service unavailable for L1 encoder")
+        signature.latent_embedding = vector
+        signature.confidence.source = "dual_encoder_external_latent"
+        signature.metadata["latent_encoder"] = self._latent_model_name(modality)
+        signature.metadata["latent_embedding_source"] = "external_service"
+        signature.metadata["reembedding_required"] = False
 
         return signature
 

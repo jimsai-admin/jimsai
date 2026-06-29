@@ -26,20 +26,27 @@ class FourLayerMemoryStore:
 
     def insert(self, signature: MemorySignature) -> MemorySignature:
         self.delete(signature.id)
+        layers = ["sensory"]
+        indexable = self._indexable(signature)
         self.sensory[signature.id] = signature
-        if signature.confidence.score >= 0.75:
+        if indexable and signature.confidence.score >= 0.75:
             self.working[signature.id] = signature
             self.episodic[signature.id] = signature
-        if signature.confidence.score >= 0.85:
+            layers.extend(["working", "episodic"])
+        if indexable and signature.confidence.score >= 0.85:
             self.semantic[signature.id] = signature
-        for entity in signature.structured.entities:
-            self.entity_index[entity.name.lower()].add(signature.id)
-        month_key = signature.structured.temporal.timestamp.strftime("%Y-%m")
-        self.temporal_index[month_key].add(signature.id)
-        for link in signature.structured.causal_chain:
-            self.causal_index[link.cause.lower()].add(signature.id)
-            self.causal_index[link.effect.lower()].add(signature.id)
-        self.importance_index[signature.id] = signature.importance.current_score
+            layers.append("semantic")
+        signature.metadata["consolidation_layers"] = layers
+        signature.metadata["graph_index_allowed"] = indexable
+        if indexable:
+            for entity in signature.structured.entities:
+                self.entity_index[entity.name.lower()].add(signature.id)
+            month_key = signature.structured.temporal.timestamp.strftime("%Y-%m")
+            self.temporal_index[month_key].add(signature.id)
+            for link in signature.structured.causal_chain:
+                self.causal_index[link.cause.lower()].add(signature.id)
+                self.causal_index[link.effect.lower()].add(signature.id)
+            self.importance_index[signature.id] = signature.importance.current_score
         return signature
 
     def all_signatures(self) -> list[MemorySignature]:
@@ -98,6 +105,15 @@ class FourLayerMemoryStore:
                 index[key].discard(signature_id)
                 if not index[key]:
                     index.pop(key, None)
+
+    def _indexable(self, signature: MemorySignature) -> bool:
+        if signature.metadata.get("validity") in {"superseded", "deleted", "invalid"}:
+            return False
+        if signature.provenance == "local_extraction" and not signature.metadata.get("verified_for_learning"):
+            return False
+        if signature.metadata.get("truth_policy") == "transient_prompt":
+            return False
+        return True
 
     def _visible_to_scope(self, signature: MemorySignature, workspace_id: str | None, user_id: str | None) -> bool:
         if signature.metadata.get("validity") in {"superseded", "deleted", "invalid"}:

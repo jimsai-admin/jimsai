@@ -26,18 +26,53 @@ from dataclasses import dataclass, field
 from .models import WorldModelActivation, WorldModelCandidate
 
 
+_RELATION_ALIASES = {
+    "depends on": "depends_on",
+    "is a": "is_a",
+    "caused by": "caused_by",
+}
+
+
+def _parse_rule(rule: str) -> tuple[str, str, str] | None:
+    cleaned = re.sub(r"\s+", " ", rule.strip().rstrip("."))
+    if not cleaned:
+        return None
+    for phrase, predicate in sorted(_RELATION_ALIASES.items(), key=lambda item: -len(item[0])):
+        match = re.match(rf"^(.+?)\s+{re.escape(phrase)}\s+(.+)$", cleaned, flags=re.IGNORECASE)
+        if match:
+            subject = match.group(1).strip()
+            obj = match.group(2).strip()
+            return (subject, predicate, obj) if subject and obj else None
+    match = re.match(r"^(.+?)\s+([A-Za-z][A-Za-z0-9_]{1,80})\s+(.+)$", cleaned, flags=re.UNICODE)
+    if not match:
+        return None
+    subject = match.group(1).strip()
+    predicate = match.group(2).strip().lower()
+    obj = match.group(3).strip()
+    return (subject, predicate, obj) if subject and predicate and obj else None
+
+
+def _canonical_rule(parsed: tuple[str, str, str]) -> str:
+    subject, predicate, obj = parsed
+    return f"{subject} {predicate} {obj}"
+
+
 def _normalize_rule(rule: str) -> str:
     """Normalize 'X causes Y' strings for stable dedup keys.
 
     Case-insensitive, collapses whitespace. Does NOT translate or
     stem entity names — exact-match by design (see module docstring).
     """
+    parsed = _parse_rule(rule)
+    if parsed is not None:
+        return re.sub(r"\s+", " ", _canonical_rule(parsed).strip().lower())
     return re.sub(r"\s+", " ", rule.strip().lower())
 
 
 @dataclass
 class _RuleObservation:
     rule: str                          # original-cased rule string, first-seen form
+    predicate: str = ""
     count: int = 0
     confidence_sum: float = 0.0
     provenances: set[str] = field(default_factory=set)
@@ -87,13 +122,14 @@ class WorldModelPromotionEngine:
         newly_promoted: list[WorldModelCandidate] = []
 
         for activation in activations:
-            if " causes " not in activation.rule:
+            parsed = _parse_rule(activation.rule)
+            if parsed is None:
                 continue
 
             key = _normalize_rule(activation.rule)
             obs = self._observations.get(key)
             if obs is None:
-                obs = _RuleObservation(rule=activation.rule)
+                obs = _RuleObservation(rule=_canonical_rule(parsed), predicate=parsed[1])
                 self._observations[key] = obs
 
             obs.count += 1
@@ -126,13 +162,15 @@ class WorldModelPromotionEngine:
         observed rules (not just promoted ones).
         """
         if not self._observations:
-            return {"observed_rules": 0, "promoted_rules": 0, "avg_confidence": 0.0}
+            return {"observed_rules": 0, "promoted_rules": 0, "avg_confidence": 0.0, "relation_types": 0}
 
         confidences = [obs.avg_confidence for obs in self._observations.values()]
+        predicates = {obs.predicate for obs in self._observations.values() if obs.predicate}
         return {
             "observed_rules": len(self._observations),
             "promoted_rules": len(self._promoted_keys),
             "avg_confidence": round(sum(confidences) / len(confidences), 4),
+            "relation_types": len(predicates),
         }
 
 

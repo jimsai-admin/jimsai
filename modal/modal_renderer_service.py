@@ -32,6 +32,16 @@ from shared.metrics import create_metrics
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
+
+def _int_env(name: str, default: int) -> int:
+    try:
+        return max(0, int(os.getenv(name, str(default)) or str(default)))
+    except ValueError:
+        return default
+
+
+_MIN_CONTAINERS = _int_env("JIMS_MODAL_RENDERER_MIN_CONTAINERS", 1)
+
 # ---------------------------------------------------------------------------
 # Modal primitives
 # ---------------------------------------------------------------------------
@@ -121,7 +131,7 @@ _svc_metrics = create_metrics("renderer", is_gpu_service=True)
     volumes={"/vol/models": volume},
     secrets=[secret],
     gpu="l4",
-    min_containers=0,
+    min_containers=_MIN_CONTAINERS,
     max_containers=2,
     memory=16384,
 )
@@ -315,8 +325,13 @@ async def route_metrics():
     svc = RendererService()
     return Response(content=await svc.metrics.remote.aio(), media_type="text/plain; version=0.0.4")
 
-@app.function(image=image, volumes={"/vol/models": volume}, secrets=[secret],
-              gpu="l4")
+@app.function(
+    image=image,
+    volumes={"/vol/models": volume},
+    secrets=[secret],
+    gpu="l4",
+    min_containers=_MIN_CONTAINERS,
+)
 @modal.asgi_app()
 def fastapi_app():
     return web_app

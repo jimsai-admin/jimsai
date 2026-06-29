@@ -7,6 +7,7 @@ import json
 import math
 import os
 import time
+import asyncio
 from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass
 from typing import Any
@@ -110,7 +111,7 @@ class ProductionSettings:
             vectorize_index=os.getenv("CF_VECTORIZE_INDEX", ""),
             vectorize_dimensions=int(os.getenv("CF_VECTORIZE_DIMENSIONS", "768") or "768"),
             embedding_service_url=os.getenv("JIMS_EMBEDDING_SERVICE_URL", "").strip().rstrip("/"),
-            embedding_service_token=os.getenv("JIMS_EMBEDDING_SERVICE_TOKEN", "").strip() or os.getenv("JIMS_MODAL_API_KEY", "").strip(),
+            embedding_service_token=os.getenv("JIMS_MODAL_API_KEY", "").strip() or os.getenv("JIMS_EMBEDDING_SERVICE_TOKEN", "").strip(),
         )
 
     @property
@@ -984,25 +985,36 @@ class ExternalMultimodalEncoderAdapter:
             purpose = "query" if modality == Modality.TEXT else "document"
 
         target_timeout = float(
-            os.getenv("JIMS_EMBEDDING_TIMEOUT",
-                os.getenv("JIMS_LIVE_EMBEDDING_TIMEOUT",
-                    os.getenv("JIMS_MULTIMODAL_ENCODER_TIMEOUT", "10")))
-            or "10"
+            os.getenv("JIMS_L1_EMBEDDING_TIMEOUT")
+            or os.getenv("JIMS_INTERACTIVE_EMBEDDING_TIMEOUT")
+            or "5"
         )
+        try:
+            timeout_cap = float(os.getenv("JIMS_INTERACTIVE_SERVICE_TIMEOUT_CAP", "6") or "6")
+        except ValueError:
+            timeout_cap = 6.0
+        if timeout_cap > 0:
+            target_timeout = min(target_timeout, timeout_cap)
 
-        max_attempts = 3
+        try:
+            max_attempts = max(1, int(os.getenv("JIMS_EMBEDDING_MAX_ATTEMPTS", "1") or "1"))
+        except ValueError:
+            max_attempts = 1
         for attempt in range(max_attempts):
             try:
-                attempt_timeout = target_timeout if attempt == 0 else target_timeout * 2.0
+                attempt_timeout = target_timeout if attempt == 0 else min(target_timeout * 1.5, target_timeout + 5.0)
                 async with httpx.AsyncClient(timeout=attempt_timeout) as client:
-                    response = await client.post(
-                        f"{base}/embed",
-                        headers=headers,
-                        json={
-                            "texts": [content[:16000]],
-                            "model": model_id,
-                            "purpose": purpose,
-                        },
+                    response = await asyncio.wait_for(
+                        client.post(
+                            f"{base}/embed",
+                            headers=headers,
+                            json={
+                                "texts": [content[:16000]],
+                                "model": model_id,
+                                "purpose": purpose,
+                            },
+                        ),
+                        timeout=max(attempt_timeout, 0.25),
                     )
                 response.raise_for_status()
                 vector = self._extract_vector(response.json())

@@ -137,16 +137,6 @@ def _label_to_predicate(label: str) -> str:
     normalized = re.sub(r"^(name_of_the_|name_of_|the_)", "", normalized)
     if not normalized:
         return ""
-    if normalized in {"researcher", "author", "writer", "creator"}:
-        return "has_author"
-    if normalized in {"case_study", "case", "study_case"}:
-        return "has_case_study"
-    if normalized in {"student_id", "id", "identifier"}:
-        return "has_student_id"
-    if normalized in {"institution", "university", "school", "organization", "organisation"}:
-        return "has_institution"
-    if normalized == "title":
-        return "has_title"
     return f"has_{normalized}"
 
 

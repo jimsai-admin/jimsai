@@ -5,11 +5,13 @@ import re
 import asyncio
 import contextlib
 import time
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
 
 from .env_config import get_env
+from .errors import CriticalServiceUnavailable
 from .models import (
     ActivationDecision,
     CapabilityExecutionResult,
@@ -64,6 +66,21 @@ CAPABILITY_PROTOTYPES: dict[CapabilityKind, str] = {
     ),
 }
 
+
+@dataclass
+class RoutingOutcomeStats:
+    observations: int = 0
+    success_ema: float = 0.5
+    unavailable_ema: float = 0.0
+
+    def update(self, success: bool, unavailable: bool = False, weight: float = 1.0) -> None:
+        weight = max(0.05, min(1.0, weight))
+        alpha = 0.18 * weight
+        self.observations += 1
+        self.success_ema = (1.0 - alpha) * self.success_ema + alpha * (1.0 if success else 0.0)
+        self.unavailable_ema = (1.0 - alpha) * self.unavailable_ema + alpha * (1.0 if unavailable else 0.0)
+
+
 class CapabilityRouter:
     """V9 capability router.
 
@@ -81,7 +98,7 @@ class CapabilityRouter:
             get_env("JIMS_MODAL_API_KEY")
             or get_env("JIMS_EMBEDDING_SERVICE_TOKEN")
         )
-        self.embedding_timeout = float(get_env("JIMS_CAPABILITY_EMBEDDING_TIMEOUT", "8") or "8")
+        self.embedding_timeout = self._interactive_timeout("JIMS_CAPABILITY_EMBEDDING_TIMEOUT", "4")
         self.classifier_enabled = get_env("JIMS_ENABLE_ZERO_SHOT_CAPABILITY_ROUTER", "true").lower() in {"1", "true", "yes", "on"}
         # Always use the Modal Classification Service
         self.classifier_url = get_env("JIMS_CLASSIFICATION_SERVICE_URL").rstrip("/")
@@ -89,10 +106,23 @@ class CapabilityRouter:
             get_env("JIMS_MODAL_API_KEY")
             or get_env("JIMS_CAPABILITY_CLASSIFIER_TOKEN")
         )
-        self.classifier_timeout = float(get_env("JIMS_CAPABILITY_CLASSIFIER_TIMEOUT", "20") or "20")
+        self.classifier_timeout = self._interactive_timeout("JIMS_CAPABILITY_CLASSIFIER_TIMEOUT", "6")
+        self.classifier_mode = get_env("JIMS_CAPABILITY_CLASSIFIER_MODE", "off").strip().lower() or "off"
         self.prototype_cache_ttl = float(get_env("JIMS_CAPABILITY_PROTOTYPE_CACHE_TTL", "3600") or "3600")
         self._prototype_embedding_cache: dict[CapabilityKind, list[float]] = {}
         self._prototype_embedding_cached_at = 0.0
+        self._outcome_stats: dict[CapabilityKind, RoutingOutcomeStats] = {}
+
+    def _interactive_timeout(self, env_name: str, default: str) -> float:
+        try:
+            value = float(get_env(env_name, default) or default)
+        except ValueError:
+            value = float(default)
+        try:
+            cap = float(get_env("JIMS_INTERACTIVE_SERVICE_TIMEOUT_CAP", "6") or "6")
+        except ValueError:
+            cap = 6.0
+        return min(value, cap) if cap > 0 else value
 
     async def route(self, request: PipelineRequest, ir: SemanticIR, activation: ActivationDecision) -> tuple[CapabilityPlan, LayerResult]:
         # Start with zero scores — no hardcoded structural keyword scoring.
@@ -137,14 +167,15 @@ class CapabilityRouter:
             semantic_scores: dict[CapabilityKind, float] = {}
             classifier_scores: dict[CapabilityKind, float] = {}
         else:
-            semantic_scores, classifier_scores = await asyncio.gather(
-                self._semantic_embedding_scores(request.query),
-                self._zero_shot_classifier_scores(request.query),
-            )
+            semantic_scores = await self._semantic_embedding_scores(request.query)
+            classifier_scores = {}
         if semantic_scores:
             signals["semantic_embedding"] = {k.value: round(v, 4) for k, v in semantic_scores.items()}
             for kind, value in semantic_scores.items():
                 scores[kind] = min(1.0, scores.get(kind, 0.0) + value * 1.1)
+
+        if not strong_structural and self._should_query_classifier(semantic_scores, scores):
+            classifier_scores = await self._zero_shot_classifier_scores(request.query)
 
         if classifier_scores:
             signals["zero_shot_classifier"] = {k.value: round(v, 4) for k, v in classifier_scores.items()}
@@ -161,14 +192,39 @@ class CapabilityRouter:
             for kind, value in accepted.items():
                 scores[kind] = min(1.0, scores.get(kind, 0.0) + value * 0.88)
 
-        if not any(value > 0.16 for value in scores.values()):
-            if semantic_scores:
-                top_kind, top_val = max(semantic_scores.items(), key=lambda x: x[1])
-                scores[top_kind] = max(scores.get(top_kind, 0.0), min(0.24, 0.12 + top_val))
-                signals["fallback"] = f"low_confidence_semantic_{top_kind.value}"
+        if not self._has_reliable_route_score(scores):
+            overlay = await self._llm_overlay(request.query, ir, scores, signals)
+            if overlay:
+                overlay_kind = overlay.get("kind")
+                try:
+                    overlay_confidence = float(overlay.get("confidence", 0.0))
+                except (TypeError, ValueError):
+                    overlay_confidence = 0.0
+                if isinstance(overlay_kind, CapabilityKind) and overlay_confidence >= 0.58:
+                    scores[overlay_kind] = max(scores.get(overlay_kind, 0.0), min(1.0, overlay_confidence))
+                    signals["llm_overlay"] = {
+                        "kind": overlay_kind.value,
+                        "confidence": round(min(1.0, overlay_confidence), 4),
+                        "secondary": [
+                            item.value for item in (overlay.get("secondary") or [])
+                            if isinstance(item, CapabilityKind) and item != overlay_kind
+                        ][:3],
+                        "reason": str(overlay.get("reason") or "LLM capability overlay"),
+                    }
+                else:
+                    raise CriticalServiceUnavailable("capability router produced no reliable route evidence")
             else:
-                scores[CapabilityKind.MEMORY_CHAT] = 0.28
-                signals["fallback"] = "memory_chat"
+                raise CriticalServiceUnavailable("capability router produced no reliable route evidence")
+
+        policy_adjustments = self._routing_policy_adjustments()
+        applied_policy: dict[CapabilityKind, float] = {}
+        for score_kind, adjustment in policy_adjustments.items():
+            if scores.get(score_kind, 0.0) <= 0.0:
+                continue
+            scores[score_kind] = max(0.0, min(1.0, scores[score_kind] + adjustment))
+            applied_policy[score_kind] = adjustment
+        if applied_policy:
+            signals["learned_policy"] = {kind.value: round(value, 4) for kind, value in applied_policy.items()}
 
         ranked = sorted(scores.items(), key=lambda item: (-item[1], item[0].value))
         kind = ranked[0][0] if ranked else CapabilityKind.MEMORY_CHAT
@@ -183,8 +239,23 @@ class CapabilityRouter:
         confidence = self._confidence(top_score, second_score)
         reason = self._reason_for(kind, signals)
         secondary = [c for c, s in ranked[1:4] if s >= 0.44 and top_score - s <= 0.28]
+        if "llm_overlay" in signals:
+            overlay_signal = signals["llm_overlay"]
+            reason = str(overlay_signal.get("reason") or reason)
+            try:
+                confidence = max(confidence, min(1.0, float(overlay_signal.get("confidence", confidence))))
+            except (TypeError, ValueError):
+                pass
+            overlay_secondary: list[CapabilityKind] = []
+            for item in overlay_signal.get("secondary", []):
+                with contextlib.suppress(ValueError):
+                    candidate = CapabilityKind(item)
+                    if candidate != kind:
+                        overlay_secondary.append(candidate)
+            if overlay_secondary:
+                secondary = overlay_secondary[:3]
 
-        if self._should_adjudicate_with_llm(confidence, top_score, second_score, signals):
+        if "llm_overlay" not in signals and self._should_adjudicate_with_llm(confidence, top_score, second_score, signals):
             overlay = await self._llm_overlay(request.query, ir, scores, signals)
             if overlay:
                 overlay_kind = overlay.get("kind")
@@ -213,6 +284,35 @@ class CapabilityRouter:
             summary=f"Selected v9 capability route: {plan.kind.value}.",
             data=plan.model_dump(mode="json"),
         )
+
+    def record_outcome(
+        self,
+        kind: CapabilityKind | str,
+        *,
+        status: str | None = None,
+        success: bool | None = None,
+        confidence: float = 1.0,
+    ) -> None:
+        capability = kind if isinstance(kind, CapabilityKind) else CapabilityKind(str(kind))
+        status_value = str(status or "").lower()
+        unavailable = status_value in {"unavailable", "blocked", "failed", "error", "timeout"}
+        if success is None:
+            success = status_value in {"available", "completed", "solved", "not_required", "queued"}
+        stats = self._outcome_stats.setdefault(capability, RoutingOutcomeStats())
+        stats.update(success=bool(success), unavailable=unavailable, weight=confidence)
+
+    def _routing_policy_adjustments(self) -> dict[CapabilityKind, float]:
+        adjustments: dict[CapabilityKind, float] = {}
+        for kind, stats in self._outcome_stats.items():
+            if stats.observations <= 0:
+                continue
+            sample_confidence = min(1.0, stats.observations / 20.0)
+            reliability = stats.success_ema - 0.5
+            availability_penalty = stats.unavailable_ema * 0.12
+            adjustment = reliability * 0.18 * sample_confidence - availability_penalty * sample_confidence
+            if abs(adjustment) >= 0.005:
+                adjustments[kind] = round(adjustment, 4)
+        return adjustments
 
     def _plan_for(
         self,
@@ -345,12 +445,58 @@ class CapabilityRouter:
         margin = max(top_score - second_score, 0.0)
         return round(min(0.94, max(0.5, 0.48 + top_score * 0.45 + margin * 0.35)), 4)
 
+    def _has_reliable_route_score(self, scores: dict[CapabilityKind, float]) -> bool:
+        ranked = sorted(scores.values(), reverse=True)
+        if not ranked:
+            return False
+        top_score = ranked[0]
+        second_score = ranked[1] if len(ranked) > 1 else 0.0
+        try:
+            absolute_threshold = float(get_env("JIMS_CAPABILITY_ROUTE_ABSOLUTE_THRESHOLD", "0.16") or "0.16")
+            relative_threshold = float(get_env("JIMS_CAPABILITY_ROUTE_RELATIVE_THRESHOLD", "0.12") or "0.12")
+            margin_threshold = float(get_env("JIMS_CAPABILITY_ROUTE_MARGIN_THRESHOLD", "0.025") or "0.025")
+        except ValueError:
+            absolute_threshold = 0.16
+            relative_threshold = 0.12
+            margin_threshold = 0.025
+        return top_score > absolute_threshold or (
+            top_score >= relative_threshold and top_score - second_score >= margin_threshold
+        )
+
     def _reason_for(self, kind: CapabilityKind, signals: dict[str, Any]) -> str:
         if signals.get("structural", {}).get(kind.value):
             return f"Structural signal selected {kind.value}."
         if signals.get("llm_overlay"):
             return f"LLM overlay selected {kind.value}."
-        return f"Embedding/classifier routing selected {kind.value}."
+        if signals.get("zero_shot_classifier"):
+            return f"Embedding/classifier routing selected {kind.value}."
+        return f"Embedding routing selected {kind.value}."
+
+    def _should_query_classifier(
+        self,
+        semantic_scores: dict[CapabilityKind, float],
+        scores: dict[CapabilityKind, float],
+    ) -> bool:
+        if not self.classifier_enabled:
+            return False
+        if self.classifier_mode in {"0", "false", "no", "off", "disabled"}:
+            return False
+        if self.classifier_mode in {"1", "true", "yes", "on", "always", "hot_path"}:
+            return True
+        if self.classifier_mode not in {"adjudication", "ambiguous"}:
+            return False
+        if not semantic_scores:
+            return True
+        ranked = sorted(scores.values(), reverse=True)
+        top_score = ranked[0] if ranked else 0.0
+        second_score = ranked[1] if len(ranked) > 1 else 0.0
+        try:
+            min_score = float(get_env("JIMS_CAPABILITY_CLASSIFIER_ADJUDICATION_MIN_SCORE", "0.22") or "0.22")
+            max_margin = float(get_env("JIMS_CAPABILITY_CLASSIFIER_ADJUDICATION_MAX_MARGIN", "0.08") or "0.08")
+        except ValueError:
+            min_score = 0.22
+            max_margin = 0.08
+        return top_score < min_score or top_score - second_score < max_margin
 
     def _should_adjudicate_with_llm(self, confidence: float, top_score: float, second_score: float, signals: dict[str, Any]) -> bool:
         """Use LLM overlay when embedding/classifier confidence is ambiguous.
@@ -390,11 +536,15 @@ class CapabilityRouter:
             confidence = float(data.get("confidence", 0.0))
         except (TypeError, ValueError):
             confidence = 0.0
+        if confidence <= 0.0:
+            confidence = 0.68
         return {"kind": primary, "secondary": secondary, "confidence": confidence, "reason": data.get("reason") or "LLM capability overlay"}
 
     async def _semantic_embedding_scores(self, query: str) -> dict[CapabilityKind, float]:
-        if not self.semantic_enabled or not self.embedding_url or not query.strip():
+        if not self.semantic_enabled or not query.strip():
             return {}
+        if not self.embedding_url:
+            raise CriticalServiceUnavailable("capability embedding service URL is not configured")
         kinds = list(CAPABILITY_PROTOTYPES)
         headers = {"Content-Type": "application/json"}
         if self.embedding_token:
@@ -415,31 +565,33 @@ class CapabilityRouter:
                     prototype_task.cancel()
                     with contextlib.suppress(asyncio.CancelledError):
                         await prototype_task
-                return {}
+                raise CriticalServiceUnavailable("capability embedding service returned fallback response")
             query_vectors = query_payload.get("vectors") or query_payload.get("embeddings") or []
             if not isinstance(query_vectors, list):
                 if not prototype_task.done():
                     prototype_task.cancel()
                     with contextlib.suppress(asyncio.CancelledError):
                         await prototype_task
-                return {}
+                raise CriticalServiceUnavailable("capability embedding service returned malformed vectors")
             prototype_vectors_by_kind = await prototype_task
             if len(prototype_vectors_by_kind) < len(kinds):
-                return {}
+                raise CriticalServiceUnavailable("capability prototype embeddings unavailable")
             query_vector = self._float_vector(query_vectors[0] if query_vectors else [])
             if not query_vector:
-                return {}
+                raise CriticalServiceUnavailable("capability query embedding unavailable")
             raw_scores = {
                 kind: max(0.0, self._cosine(query_vector, prototype_vectors_by_kind[kind]))
                 for kind in kinds
             }
             return self._relative_semantic_scores(raw_scores)
-        except Exception:
+        except CriticalServiceUnavailable:
+            raise
+        except Exception as exc:
             if prototype_task is not None and not prototype_task.done():
                 prototype_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await prototype_task
-            return {}
+            raise CriticalServiceUnavailable("capability embedding service unavailable") from exc
 
     async def _capability_prototype_vectors(self, kinds: list[CapabilityKind]) -> dict[CapabilityKind, list[float]]:
         now = time.monotonic()
@@ -462,25 +614,29 @@ class CapabilityRouter:
                 response.raise_for_status()
             payload = response.json()
             if payload.get("fallback"):
-                return {}
+                raise CriticalServiceUnavailable("capability prototype embedding service returned fallback response")
             vectors = payload.get("vectors") or payload.get("embeddings") or []
             if not isinstance(vectors, list) or len(vectors) < len(kinds):
-                return {}
+                raise CriticalServiceUnavailable("capability prototype embedding service returned malformed vectors")
             cache: dict[CapabilityKind, list[float]] = {}
             for index, kind in enumerate(kinds):
                 vector = self._float_vector(vectors[index])
                 if not vector:
-                    return {}
+                    raise CriticalServiceUnavailable("capability prototype embedding unavailable")
                 cache[kind] = vector
             self._prototype_embedding_cache = cache
             self._prototype_embedding_cached_at = now
             return cache
-        except Exception:
-            return {}
+        except CriticalServiceUnavailable:
+            raise
+        except Exception as exc:
+            raise CriticalServiceUnavailable("capability prototype embedding service unavailable") from exc
 
     async def _zero_shot_classifier_scores(self, query: str) -> dict[CapabilityKind, float]:
-        if not self.classifier_enabled or not self.classifier_url or not query.strip():
+        if not self.classifier_enabled or not query.strip():
             return {}
+        if not self.classifier_url:
+            raise CriticalServiceUnavailable("capability classifier service URL is not configured")
         headers = {"Content-Type": "application/json"}
         if self.classifier_token:
             headers["Authorization"] = f"Bearer {self.classifier_token}"
@@ -503,9 +659,13 @@ class CapabilityRouter:
                     scores[kind] = max(0.0, min(float(item.get("score") or 0.0), 1.0))
                 except (TypeError, ValueError):
                     continue
+            if not scores:
+                raise CriticalServiceUnavailable("capability classifier returned no usable scores")
             return scores
-        except Exception:
-            return {}
+        except CriticalServiceUnavailable:
+            raise
+        except Exception as exc:
+            raise CriticalServiceUnavailable("capability classifier service unavailable") from exc
 
     def _relative_semantic_scores(self, raw_scores: dict[CapabilityKind, float]) -> dict[CapabilityKind, float]:
         if not raw_scores:

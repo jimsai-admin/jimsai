@@ -70,8 +70,8 @@ class RequiredConfig:
         # Optional tunables with safe defaults
         self.neo4j_user: str = get_env("NEO4J_USER", "neo4j")
         self.neo4j_database: str = get_env("NEO4J_DATABASE", "neo4j")
-        self.embedding_timeout: int = int(get_env("JIMS_EMBEDDING_TIMEOUT", "8"))
-        self.generation_timeout: int = int(get_env("JIMS_GENERATION_TIMEOUT", "120"))
+        self.embedding_timeout: int = int(get_env("JIMS_EMBEDDING_TIMEOUT", "5"))
+        self.generation_timeout: int = int(get_env("JIMS_GENERATION_TIMEOUT", "30"))
         self.reasoning_confidence_threshold: float = float(get_env("JIMS_REASONING_CONFIDENCE_THRESHOLD", "0.6"))
         self.reasoning_depth_threshold: int = int(get_env("JIMS_REASONING_DEPTH_THRESHOLD", "3"))
         self.t1_skip_confidence: float = float(get_env("JIMS_T1_SKIP_CONFIDENCE", "0.60"))

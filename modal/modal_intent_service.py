@@ -1,8 +1,9 @@
 """
 modal_intent_service.py — Modal app definition for JIMS-AI Intent Service.
 
-Serves Qwen3-1.7B (T1 intent/understanding tier) via llama-cpp-python on CPU.
-Scale-to-zero (min_containers=0) — no GPU required for the 1.7B GGUF model.
+Serves Qwen3-1.7B (T1 intent/understanding tier) via llama-cpp-python on GPU.
+The model is small, but L1/T1 is on the user-facing critical path, so CPU
+inference is too slow for real-time ingestion and query routing.
 
 Task: 6.1 — App definition and container image scaffold.
 Model loading (6.2), inference (6.3), health/metrics (6.4) are TODO stubs.
@@ -49,10 +50,10 @@ image = modal.Image.debian_slim(python_version="3.11").run_commands([
     "ln -sf /usr/local/cuda/lib64/stubs/libcuda.so /usr/local/cuda/lib64/stubs/libcuda.so.1 "
     "&& echo '/usr/local/cuda/lib64/stubs' > /etc/ld.so.conf.d/cuda-stubs.conf "
     "&& ldconfig",
-    # CPU-only build — GGML_CUDA=off, no AVX, 0.3.9 for Qwen3 GGUF support
+    # GPU build — T1 is on the critical path, so CPU llama-cpp is not acceptable.
     "export PATH=/usr/local/cuda/bin:$PATH && "
     "export CUDACXX=/usr/local/cuda/bin/nvcc && "
-    "CMAKE_ARGS='-DGGML_CUDA=off -DGGML_AVX=off -DGGML_AVX2=off "
+    "CMAKE_ARGS='-DGGML_CUDA=on -DGGML_AVX=off -DGGML_AVX2=off "
     "-DGGML_F16C=off -DGGML_FMA=off' "
     "pip install 'llama-cpp-python==0.3.9' --no-cache-dir --no-binary llama-cpp-python",
 ]).pip_install(
@@ -63,6 +64,7 @@ image = modal.Image.debian_slim(python_version="3.11").run_commands([
         "huggingface-hub>=0.23",
         "pydantic>=2.7",
         "python-dotenv>=1.0",
+        "torch>=2.3",
     ]
 ).add_local_dir(
     str(Path(__file__).parent / "shared"),
@@ -107,13 +109,14 @@ _svc_metrics = create_metrics("intent")
     image=image,
     volumes={"/vol/models": volume},
     secrets=[secret],
+    gpu="l4",
     min_containers=1,
     max_containers=3,
-    memory=4096,
+    memory=8192,
     timeout=600,
 )
 class IntentService:
-    """Modal class that hosts Qwen3-1.7B on CPU for intent/T1 inference."""
+    """Modal class that hosts Qwen3-1.7B on GPU for intent/T1 inference."""
 
     # ------------------------------------------------------------------
     # Class-level state stubs — set during container __enter__
@@ -144,6 +147,7 @@ class IntentService:
         import logging
         import asyncio
         import threading
+        import torch
         from llama_cpp import Llama
         from shared.modal_common import ensure_model_on_volume, ARTIFACT_REGISTRY
 
@@ -152,6 +156,9 @@ class IntentService:
 
         # Step 2 — record container start time
         self._container_start_time = time.time()
+
+        if not torch.cuda.is_available():
+            raise RuntimeError("GPU not available — Intent_Service requires CUDA for interactive T1 latency")
 
         # Step 3 — verify volume mount
         if not os.path.isdir("/vol/models"):
@@ -171,6 +178,7 @@ class IntentService:
                     Llama(
                         model_path="/vol/models/generation/Qwen3-1.7B-Q4_K_M.gguf",
                         n_ctx=4096,
+                        n_gpu_layers=-1,
                         n_threads=4,
                         verbose=False,
                     )
@@ -229,6 +237,29 @@ class IntentService:
         else:
             messages = [{"role": "user", "content": request.prompt}]
 
+        wants_json = bool(request.response_format and request.response_format.get("type") == "json_object")
+        if wants_json:
+            if messages and messages[0].get("role") == "system":
+                messages[0]["content"] = (
+                    f"{messages[0]['content']}\n"
+                    "Do not think step by step. Do not explain. Output only one valid compact JSON object."
+                )
+            else:
+                messages.insert(
+                    0,
+                    {
+                        "role": "system",
+                        "content": "Do not think step by step. Do not explain. Output only one valid compact JSON object.",
+                    },
+                )
+            for index in range(len(messages) - 1, -1, -1):
+                if messages[index].get("role") == "user":
+                    messages[index]["content"] = (
+                        f"/no_think\n{messages[index]['content']}\n\n"
+                        "Return only valid JSON. Do not include markdown, prose, or <think> tags."
+                    )
+                    break
+
         # 4. Time start
         t0 = time.time()
 
@@ -238,6 +269,7 @@ class IntentService:
                 messages=messages,
                 temperature=request.temperature,
                 max_tokens=request.max_tokens or 256,
+                response_format=request.response_format if wants_json else None,
             )
         except Exception as exc:
             err_str = str(exc)
@@ -255,7 +287,7 @@ class IntentService:
         content = completion["choices"][0]["message"]["content"]
 
         # 7. Handle json_object response format
-        if request.response_format and request.response_format.get("type") == "json_object":
+        if wants_json:
             # Strip think tags - Qwen3 outputs think...done
             content = re.sub(r"think.*?done", "", content, flags=re.DOTALL).strip()
             content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
@@ -264,6 +296,33 @@ class IntentService:
             end = content.rfind("}")
             if start != -1 and end != -1 and end > start:
                 content = content[start:end + 1]
+            else:
+                repair_messages = [
+                    *messages,
+                    {"role": "assistant", "content": content[:3000]},
+                    {
+                        "role": "user",
+                        "content": (
+                            "/no_think\n"
+                            "The previous response was not valid JSON. Using the original task and the previous response, "
+                            "return the required result as exactly one compact JSON object. If an item is absent, use an empty list. "
+                            "Do not include reasoning, markdown, prose, or <think> tags."
+                        ),
+                    },
+                ]
+                repair = self._llm.create_chat_completion(
+                    messages=repair_messages,
+                    temperature=0.0,
+                    max_tokens=min(max(request.max_tokens or 256, 256), 512),
+                    response_format=request.response_format,
+                )
+                content = repair["choices"][0]["message"]["content"]
+                content = re.sub(r"think.*?done", "", content, flags=re.DOTALL).strip()
+                content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
+                start = content.find("{")
+                end = content.rfind("}")
+                if start != -1 and end != -1 and end > start:
+                    content = content[start:end + 1]
 
         # 8. Build usage
         usage = {
@@ -294,7 +353,7 @@ class IntentService:
         return build_health_payload(
             service_name="intent",
             models_loaded=self._model_loaded,
-            gpu_available=False,
+            gpu_available=True,
             volume_mounted=self._volume_mounted,
             container_start_time=self._container_start_time,
         )
@@ -349,6 +408,7 @@ async def route_metrics():
     image=image,
     volumes={"/vol/models": volume},
     secrets=[secret],
+    gpu="l4",
 )
 @modal.asgi_app()
 def fastapi_app():

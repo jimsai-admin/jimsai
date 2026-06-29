@@ -32,6 +32,7 @@ from .models import (
 )
 from .planner import SymbolicPlanner
 from .retrieval import MultiIndexRetrievalEngine, _is_document_wide_relation, term_matches
+from .relation_schema import relation_is_functional
 from .semantic_compiler import SemanticCompilerRuntime
 from .simulation import BoundedSimulationEngine
 
@@ -251,7 +252,8 @@ class RealTimeLearningLayer:
             signature.confidence.score = round(max(0.1, signature.confidence.score - min(0.2, 0.05 * len(conflicts))), 4)
             signature.metadata["l2_learning"]["conflicts"] = conflicts[:12]
         self.memory.insert(signature)
-        self.graph.add_signature(signature)
+        if signature.metadata.get("graph_index_allowed"):
+            self.graph.add_signature(signature)
         return _layer(
             "L2_real_time_learning",
             True,
@@ -280,19 +282,18 @@ class RealTimeLearningLayer:
 
     def _conflicts(self, signature: MemorySignature) -> list[dict[str, str]]:
         conflicts: list[dict[str, str]] = []
-        single_value_predicates = {"means", "has_title", "has_case_study", "has_author", "has_student_id", "is_a"}
         new_relations = {(relation.subject.lower(), relation.predicate, relation.object.lower()) for relation in signature.structured.relations}
         for existing in self.memory.visible_signatures(workspace_id=signature.workspace_id, user_id=signature.user_id):
             for relation in existing.structured.relations:
-                if relation.predicate not in single_value_predicates:
-                    continue
                 if (relation.subject.lower(), relation.predicate, relation.object.lower()) in new_relations:
                     continue
                 for new_relation in signature.structured.relations:
-                    if new_relation.predicate not in single_value_predicates:
-                        continue
                     same_slot = relation.subject.lower() == new_relation.subject.lower() and relation.predicate == new_relation.predicate
-                    if same_slot and relation.object.lower() != new_relation.object.lower():
+                    functional_slot = (
+                        relation_is_functional(existing, relation.predicate)
+                        or relation_is_functional(signature, new_relation.predicate)
+                    )
+                    if same_slot and functional_slot and relation.object.lower() != new_relation.object.lower():
                         conflicts.append(
                             {
                                 "existing_signature": existing.id,

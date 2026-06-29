@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import os
 import re
 
 from .encoder import stable_id
@@ -65,8 +66,9 @@ class MultiIndexRetrievalEngine:
         user_profile_query = bool(ir.scope_constraints.get("profile_query"))
         has_entity_scope = bool(ir.scope_constraints.get("entities")) and not _is_document_wide_relation(relation_filter)
         effective_limit = 24 if _is_document_wide_relation(relation_filter) or relation_filter == "means" else limit
+        visible_signatures = self.memory.visible_signatures(workspace_id=workspace_id, user_id=user_id)
         results: dict[str, RetrievalResult] = {}
-        for sig in self.memory.visible_signatures(workspace_id=workspace_id, user_id=user_id):
+        for sig in visible_signatures:
             if sig.id in exclude_ids:
                 continue
             if sig.provenance == "local_extraction":
@@ -255,7 +257,19 @@ class MultiIndexRetrievalEngine:
                 user_profile_query=user_profile_query,
             ):
                 results[sig.id] = RetrievalResult(signature=sig, score=round(score, 4), reasons=reasons or ["importance_index"])
-        ranked = sorted(results.values(), key=lambda r: (-r.score, r.signature.id))
+        results = self._expand_related_results(
+            results,
+            visible_signatures,
+            query_terms=query_terms,
+            relation_filter=relation_filter,
+            user_profile_query=user_profile_query,
+        )
+        ranked = self._rerank_results(
+            results.values(),
+            query_terms=query_terms,
+            relation_filter=relation_filter,
+            user_profile_query=user_profile_query,
+        )
         deduped = self._deduplicate_by_predicate(ranked, user_id)
         final = deduped[:effective_limit]
         for result in final:
@@ -275,6 +289,158 @@ class MultiIndexRetrievalEngine:
         }
 
         return final
+
+    def _expand_related_results(
+        self,
+        results: dict[str, RetrievalResult],
+        visible_signatures: list,
+        *,
+        query_terms: set[str],
+        relation_filter: str,
+        user_profile_query: bool,
+    ) -> dict[str, RetrievalResult]:
+        """Expand direct hits with scoped graph neighbors.
+
+        First-pass retrieval finds direct evidence. This step adds signatures that
+        are connected to those direct hits by learned links, shared entities, or
+        structured relation/causal nodes. It never looks outside
+        ``visible_signatures``, so workspace and user isolation remain enforced by
+        the memory layer.
+        """
+        if not results:
+            return results
+
+        try:
+            seed_count = max(1, int(os.getenv("JIMS_RETRIEVAL_EXPANSION_SEEDS", "8") or "8"))
+        except ValueError:
+            seed_count = 8
+
+        expanded = dict(results)
+        visible_by_id = {
+            signature.id: signature
+            for signature in visible_signatures
+            if signature.provenance != "local_extraction"
+        }
+        node_index: dict[str, set[str]] = {}
+        for signature in visible_by_id.values():
+            for node in self._signature_nodes(signature):
+                node_index.setdefault(node, set()).add(signature.id)
+
+        seeds = sorted(results.values(), key=lambda item: (-item.score, item.signature.id))[:seed_count]
+        for seed in seeds:
+            candidate_ids: set[str] = set()
+            linked_ids = {sid for sid in seed.signature.linked_signatures if sid in visible_by_id}
+            candidate_ids.update(linked_ids)
+
+            seed_nodes = self._signature_nodes(seed.signature)
+            for node in seed_nodes:
+                candidate_ids.update(node_index.get(node, set()))
+
+            for candidate_id in sorted(candidate_ids):
+                if candidate_id in expanded or candidate_id == seed.signature.id:
+                    continue
+                candidate = visible_by_id.get(candidate_id)
+                if candidate is None:
+                    continue
+
+                reasons: list[str] = []
+                if candidate_id in linked_ids:
+                    reasons.append("linked_signature_expansion")
+                if self._signature_nodes(candidate) & seed_nodes:
+                    reasons.append("graph_neighbor_expansion")
+                if relation_filter and self._signature_has_relation(candidate, relation_filter):
+                    reasons.append("relation_neighbor_expansion")
+                if user_profile_query and candidate.user_id == seed.signature.user_id:
+                    reasons.append("profile_neighbor_expansion")
+
+                if not reasons:
+                    continue
+
+                overlap = self._query_overlap(candidate, query_terms)
+                if overlap:
+                    reasons.append("query_overlap_rerank")
+
+                score = seed.score * 0.58
+                score += min(0.18, 0.04 * overlap)
+                score += min(0.12, 0.12 * candidate.confidence.score)
+                if relation_filter and "relation_neighbor_expansion" in reasons:
+                    score += 0.08
+                if "linked_signature_expansion" in reasons:
+                    score += 0.06
+
+                latent_source = str(candidate.metadata.get("latent_embedding_source") or "none")
+                cap = 0.68 if latent_source == "external_service" else 0.52
+                score = round(max(0.12, min(cap, score)), 4)
+                expanded[candidate.id] = RetrievalResult(
+                    signature=candidate,
+                    score=score,
+                    reasons=reasons,
+                )
+
+        return expanded
+
+    def _rerank_results(
+        self,
+        results,
+        *,
+        query_terms: set[str],
+        relation_filter: str,
+        user_profile_query: bool,
+    ) -> list[RetrievalResult]:
+        reranked: list[RetrievalResult] = []
+        for result in results:
+            score = float(result.score)
+            overlap = self._query_overlap(result.signature, query_terms)
+            if overlap:
+                score += min(0.08, 0.02 * overlap)
+            if relation_filter and self._signature_has_relation(result.signature, relation_filter):
+                score += 0.06
+            if user_profile_query and any(
+                rel.subject.lower() == "user"
+                for rel in result.signature.structured.relations
+            ):
+                score += 0.06
+            reranked.append(
+                RetrievalResult(
+                    signature=result.signature,
+                    score=round(min(1.0, score), 4),
+                    reasons=result.reasons,
+                )
+            )
+        return sorted(reranked, key=lambda r: (-r.score, r.signature.id))
+
+    def _signature_nodes(self, signature) -> set[str]:
+        nodes: set[str] = set()
+        for entity in signature.structured.entities:
+            nodes.add(entity.name.lower())
+        for relation in signature.structured.relations:
+            nodes.add(relation.subject.lower())
+            nodes.add(relation.object.lower())
+        for link in signature.structured.causal_chain:
+            nodes.add(link.cause.lower())
+            nodes.add(link.effect.lower())
+        return {node for node in nodes if node}
+
+    def _query_overlap(self, signature, query_terms: set[str]) -> int:
+        if not query_terms:
+            return 0
+        nodes = self._signature_nodes(signature)
+        raw_excerpt = self._content_excerpt(signature.raw_excerpt).lower()
+        matched = {
+            term
+            for term in query_terms
+            if any(term_matches(node, term) for node in nodes)
+            or (len(term) >= 3 and term in raw_excerpt)
+            or any(term_matches(tag.lower(), term) for tag in signature.abstraction_tags)
+        }
+        return len(matched)
+
+    def _signature_has_relation(self, signature, relation_filter: str) -> bool:
+        if not relation_filter:
+            return False
+        if relation_filter == "causes" and signature.structured.causal_chain:
+            return True
+        return any(relation.predicate == relation_filter for relation in signature.structured.relations)
 
     @staticmethod
     def _vector_retrieval_score(metadata: dict, vector_retrieval_context: str | None = None) -> float:

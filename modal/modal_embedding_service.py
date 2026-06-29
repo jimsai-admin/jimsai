@@ -40,6 +40,16 @@ from shared.modal_common import ARTIFACT_REGISTRY, build_health_payload, ensure_
 
 logger = logging.getLogger(__name__)
 
+
+def _int_env(name: str, default: int) -> int:
+    try:
+        return max(0, int(os.getenv(name, str(default)) or str(default)))
+    except ValueError:
+        return default
+
+
+_MIN_CONTAINERS = _int_env("JIMS_MODAL_EMBEDDING_MIN_CONTAINERS", 1)
+
 # ---------------------------------------------------------------------------
 # Modal primitives
 # ---------------------------------------------------------------------------
@@ -106,7 +116,8 @@ _svc_metrics = create_metrics("embedding", is_embedding_service=True)
     image=image,
     volumes={"/vol/models": volume},
     secrets=[secret],
-    min_containers=0,    max_containers=5,
+    min_containers=_MIN_CONTAINERS,
+    max_containers=5,
     memory=2560,
 )
 class EmbeddingService:
@@ -381,6 +392,7 @@ async def route_metrics():
     image=image,
     volumes={"/vol/models": volume},
     secrets=[secret],
+    min_containers=_MIN_CONTAINERS,
 )
 @modal.asgi_app()
 def fastapi_app():
