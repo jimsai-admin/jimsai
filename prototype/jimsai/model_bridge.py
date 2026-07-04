@@ -200,7 +200,20 @@ class QwenBridge:
         return await self._local_chat_json(system, user, max_tokens=max_tokens)
 
     def _timeout_seconds(self, primary_env: str, default: str) -> float:
-        configured = float(os.getenv(primary_env, default) or default)
+        # Fall back to the operator-facing local-model timeout keys so a value
+        # set in .env (JIMS_LOCAL_INFERENCE_TIMEOUT / JIMS_LOCAL_RENDER_TIMEOUT)
+        # is honored when the specific override key is absent.
+        fallback_env = {
+            "JIMS_T1_TIMEOUT": "JIMS_LOCAL_INFERENCE_TIMEOUT",
+            "JIMS_T2_TIMEOUT": "JIMS_LOCAL_RENDER_TIMEOUT",
+        }.get(primary_env)
+        raw = os.getenv(primary_env)
+        if raw is None and fallback_env:
+            raw = os.getenv(fallback_env)
+        try:
+            configured = float(raw) if raw else float(default)
+        except ValueError:
+            configured = float(default)
         cap_raw = os.getenv("JIMS_INTERACTIVE_SERVICE_TIMEOUT_CAP")
         if cap_raw is None:
             return configured
@@ -282,7 +295,7 @@ class QwenBridge:
             if not raw_content:
                 return None
             # Strip any reasoning/think blocks reasoning models may emit
-            raw_content = re.sub(r"<think>.*?</think>", "", raw_content, flags=re.DOTALL).strip()
+            raw_content = re.sub(r"<think>.*$", "", re.sub(r"<think>.*?</think>", "", raw_content, flags=re.DOTALL), flags=re.DOTALL).strip()
             raw_content = re.sub(r"(?i)think.*?done", "", raw_content, flags=re.DOTALL).strip()
             if not raw_content:
                 return None
@@ -327,7 +340,7 @@ class QwenBridge:
                 user,
                 max_tokens,
                 wrap_text=True,
-                timeout_seconds=timeout_seconds or self._timeout_seconds("JIMS_T2_TIMEOUT", "10"),
+                timeout_seconds=timeout_seconds or self._timeout_seconds("JIMS_T2_TIMEOUT", "30"),
                 model=self.openai_t2_model,
             )
         headers = {"Content-Type": "application/json", "Authorization": f"Bearer {self.local_api_key}"}
@@ -339,7 +352,7 @@ class QwenBridge:
             "response_format": {"type": "json_object"},
         }
         try:
-            timeout = timeout_seconds if timeout_seconds is not None else self._timeout_seconds("JIMS_T2_TIMEOUT", "10")
+            timeout = timeout_seconds if timeout_seconds is not None else self._timeout_seconds("JIMS_T2_TIMEOUT", "30")
             response = await self._bounded_post_json(
                 url=f"{self.render_url}{self.local_render_path}",
                 headers=headers,
@@ -358,7 +371,7 @@ class QwenBridge:
                 _log.getLogger(__name__).warning("_render_chat_json: empty response field from Modal renderer")
                 return None
             # Strip Qwen3 <think>...</think> blocks
-            raw_content = re.sub(r"<think>.*?</think>", "", raw_content, flags=re.DOTALL).strip()
+            raw_content = re.sub(r"<think>.*$", "", re.sub(r"<think>.*?</think>", "", raw_content, flags=re.DOTALL), flags=re.DOTALL).strip()
             if not raw_content:
                 return None
             # Try to parse as JSON object
@@ -1069,6 +1082,46 @@ class QwenBridge:
             timeout_seconds=self._timeout_seconds("JIMS_INGESTION_OVERLAY_TIMEOUT", "5"),
         )
 
+    def _render_view(self, obj: VerifiedCognitiveObject) -> dict[str, Any]:
+        """Render-relevant projection of the VCO for the bounded T2 interface.
+
+        T2 is strictly a fluency layer: it needs the verified claims, gaps,
+        confidence, and style — not layer activations, trace events, or raw
+        capability dumps. Shipping the full VCO made the render prompt tens of
+        kilobytes, which slowed prefill and caused renderer timeouts.
+        """
+        return {
+            "intent": obj.intent,
+            "generation_mode": obj.generation_mode,
+            "confidence": obj.confidence,
+            "confidence_tier": obj.confidence_tier,
+            "reasoning_chain": [
+                {
+                    "claim": step.claim,
+                    "confidence": step.confidence,
+                    "provenance_class": getattr(step.provenance_class, "value", str(step.provenance_class)),
+                    "relation": step.relation,
+                    "sources": step.sources[:3],
+                }
+                for step in obj.reasoning_chain[:16]
+            ],
+            "knowledge_gaps": obj.knowledge_gaps[:8],
+            "sources": obj.sources[:8],
+            "capability": obj.capability_plan.kind.value if obj.capability_plan else "memory_chat",
+            "capability_results": [
+                {
+                    "kind": result.kind.value,
+                    "status": result.status,
+                    "summary": result.summary,
+                    "executed": bool(result.data.get("executed")),
+                    "solver_status": result.data.get("solver_status"),
+                    "solver_result": result.data.get("solver_result"),
+                    "expression": result.data.get("expression"),
+                }
+                for result in obj.capability_results[:4]
+            ],
+        }
+
     async def render(
         self, obj: VerifiedCognitiveObject, deterministic_render: str
     ) -> str:
@@ -1103,7 +1156,7 @@ class QwenBridge:
         )
         user = json.dumps(
             {
-                "verified_cognitive_object": obj.model_dump(mode="json"),
+                "verified_cognitive_object": self._render_view(obj),
                 "deterministic_render": deterministic_render,
                 "style_signature": obj.style_signature,
                 "response_requirements": [
@@ -1163,7 +1216,7 @@ class QwenBridge:
         )
         user = json.dumps(
             {
-                "verified_cognitive_object": obj.model_dump(mode="json"),
+                "verified_cognitive_object": self._render_view(obj),
                 "deterministic_render": deterministic_render,
                 "style_signature": obj.style_signature,
                 "response_requirements": [
@@ -1194,7 +1247,7 @@ class QwenBridge:
         try:
             timeout = self._timeout_seconds(
                 "JIMS_STREAM_RENDER_TIMEOUT",
-                os.getenv("JIMS_T2_TIMEOUT", "10") or "10",
+                str(self._timeout_seconds("JIMS_T2_TIMEOUT", "30")),
             )
             async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
                 async with client.stream(

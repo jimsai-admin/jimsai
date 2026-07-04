@@ -507,8 +507,35 @@ class JimsAIPipeline:
 
         capability_plan, capability_layer_result = await self.capability_router.route(request, ir, activation)
         record(capability_layer_result)
+
+        # Retrieval runs BEFORE capability adapter execution so adapters can see
+        # what scoped memory already answers — e.g. web search is skipped when
+        # the workspace/user memory layer holds strong evidence (it takes
+        # precedence over the public web, spec §4.4), saving seconds per query.
+        retrieved, retrieval_layer_result = self.retrieval_layer.retrieve(
+            request,
+            ir,
+            activation,
+            exclude_ids={input_signature.id},
+            vector_retrieval_context=input_signature.id,
+        )
+        record(retrieval_layer_result)
+        if not retrieved:
+            self.retrieval_misses += 1
+
         capability_results = self.capability_adapters.prepare(capability_plan)
-        capability_results = await self._execute_capability_adapters(request, capability_results)
+        # Multi-intent attention: prepare and execute every detected secondary
+        # intent as well, so a prompt asking for two things gets two answers.
+        # Human-gated capabilities keep their approval requirements — prepare()
+        # marks them blocked/queued exactly as it does for a primary route.
+        seen_kinds = {capability_plan.kind}
+        for secondary_kind in (capability_plan.secondary_intents or [])[:2]:
+            if secondary_kind in seen_kinds:
+                continue
+            seen_kinds.add(secondary_kind)
+            secondary_plan = self.capability_router.plan_for_secondary(secondary_kind, capability_plan)
+            capability_results.extend(self.capability_adapters.prepare(secondary_plan))
+        capability_results = await self._execute_capability_adapters(request, capability_results, retrieved=retrieved)
         for capability_result in capability_results:
             self.capability_router.record_outcome(
                 capability_result.kind,
@@ -540,17 +567,6 @@ class JimsAIPipeline:
                     domain=ir.domain_namespace.lower(),
                 ),
             )
-
-        retrieved, retrieval_layer_result = self.retrieval_layer.retrieve(
-            request,
-            ir,
-            activation,
-            exclude_ids={input_signature.id},
-            vector_retrieval_context=input_signature.id,
-        )
-        record(retrieval_layer_result)
-        if not retrieved:
-            self.retrieval_misses += 1
 
         abstraction_result, abstraction_layer_result = self.abstraction_layer.run(retrieved, activation)
         record(abstraction_layer_result)
@@ -623,7 +639,7 @@ class JimsAIPipeline:
         obj.layer_results = layer_results
         # Strip any leaked Qwen3 <think>...</think> reasoning blocks from the final response.
         # These can appear when the model doesn't wrap its output in JSON as instructed.
-        clean_response = re.sub(r"<think>.*?</think>", "", response, flags=re.DOTALL).strip()
+        clean_response = re.sub(r"<think>.*$", "", re.sub(r"<think>.*?</think>", "", response, flags=re.DOTALL), flags=re.DOTALL).strip()
         if not clean_response:
             clean_response = response  # keep original if stripping removed everything
         pipeline_response = PipelineResponse(
@@ -705,12 +721,21 @@ class JimsAIPipeline:
             "used_llm": bool(obj is not None and self.bridge.qwen_enabled),
         }
         parts: list[str] = []
-        async for delta in self.bridge.stream_render(obj, deterministic_render):
-            if not delta:
-                continue
-            parts.append(delta)
-            yield {"type": "token", "text": delta}
-        full = re.sub(r"<think>.*?</think>", "", "".join(parts), flags=re.DOTALL).strip() or "".join(parts)
+        try:
+            async for delta in self.bridge.stream_render(obj, deterministic_render):
+                if not delta:
+                    continue
+                parts.append(delta)
+                yield {"type": "token", "text": delta}
+        except CriticalServiceUnavailable:
+            if os.getenv("JIMS_T2_STRICT", "false").lower() in {"1", "true", "yes", "on"} or parts:
+                # Strict mode, or the stream broke mid-render (a partial T2 answer
+                # must not be silently replaced with a different text).
+                raise
+            # T2 never produced a token — serve the deterministic CSSE render.
+            parts.append(deterministic_render)
+            yield {"type": "token", "text": deterministic_render}
+        full = re.sub(r"<think>.*$", "", re.sub(r"<think>.*?</think>", "", "".join(parts), flags=re.DOTALL), flags=re.DOTALL).strip() or "".join(parts)
         final_response = verified.model_copy(
             update={"response": full, "used_llm": bool(obj is not None and self.bridge.qwen_enabled)}
         )
@@ -867,11 +892,26 @@ class JimsAIPipeline:
         self,
         request: PipelineRequest,
         capability_results: list[CapabilityExecutionResult],
+        retrieved: list | None = None,
     ) -> list[CapabilityExecutionResult]:
         executed: list[CapabilityExecutionResult] = []
         for result in capability_results:
             # â”€â”€ WORLD_KNOWLEDGE: DuckDuckGo web search â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             if result.kind == CapabilityKind.WORLD_KNOWLEDGE and result.status == "available":
+                if self._scoped_memory_answers(request, retrieved):
+                    # The workspace/user memory layer already holds strong scoped
+                    # evidence — it takes precedence over the public web, and
+                    # skipping the search saves the DDG + ingestion round trips.
+                    executed.append(
+                        result.model_copy(
+                            update={
+                                "status": "not_required",
+                                "summary": "Scoped workspace/user memory answers this query; web search skipped.",
+                                "data": {**result.data, "executed": False, "web_skip_reason": "scoped_memory_evidence"},
+                            }
+                        )
+                    )
+                    continue
                 web_result = await self._execute_web_search(request, result)
                 executed.append(web_result)
                 continue
@@ -944,6 +984,26 @@ class JimsAIPipeline:
                 )
             )
         return executed
+
+    def _scoped_memory_answers(self, request: PipelineRequest, retrieved: list | None) -> bool:
+        """True when retrieval already surfaced strong evidence scoped to this
+        request's workspace or user — the layer that outranks the public web."""
+        if not retrieved:
+            return False
+        try:
+            threshold = float(os.getenv("JIMS_WEB_SKIP_MEMORY_SCORE", "0.55") or "0.55")
+        except ValueError:
+            threshold = 0.55
+        for item in retrieved:
+            signature = getattr(item, "signature", None)
+            score = float(getattr(item, "score", 0.0) or 0.0)
+            if signature is None or score < threshold:
+                continue
+            scoped_to_workspace = bool(request.workspace_id) and getattr(signature, "workspace_id", None) == request.workspace_id
+            scoped_to_user = bool(request.user_id) and getattr(signature, "user_id", None) == request.user_id
+            if scoped_to_workspace or scoped_to_user:
+                return True
+        return False
 
     async def _execute_web_search(
         self,
@@ -1216,8 +1276,22 @@ class JimsAIPipeline:
                     )
                 )
             if web_steps:
-                obj.reasoning_chain = web_steps
-                obj.sources = [str(s.get("url") or "") for s in web_sources[:3] if s.get("url")]
+                # Workspace/user memory takes precedence over the public web
+                # (spec §4.4): retrieved memory claims stay first-class and web
+                # results AUGMENT the chain instead of replacing it. Only when
+                # memory produced nothing does the web become the whole answer.
+                memory_steps = [
+                    step for step in obj.reasoning_chain
+                    if step.source_signature_ids or step.sources
+                ]
+                if memory_steps:
+                    obj.reasoning_chain = [*obj.reasoning_chain, *web_steps]
+                else:
+                    obj.reasoning_chain = web_steps
+                obj.sources = [
+                    *obj.sources,
+                    *[str(s.get("url") or "") for s in web_sources[:3] if s.get("url")],
+                ]
                 obj.confidence = max(obj.confidence, result.confidence)
                 obj.knowledge_gaps = [
                     g for g in obj.knowledge_gaps
@@ -1242,7 +1316,11 @@ class JimsAIPipeline:
                 provenance_class=ProvenanceClass.SYMBOLIC_SOLVER,
                 relation="CALCULATION_TRACE",
             )
-            if obj.capability_plan.kind == CapabilityKind.MATH_SCIENCE:
+            if (
+                obj.capability_plan.kind == CapabilityKind.MATH_SCIENCE
+                and not obj.capability_plan.secondary_intents
+            ):
+                # Pure math query: the solver trace IS the answer.
                 obj.reasoning_chain = [step]
                 obj.sources = [source] if source else []
                 obj.knowledge_gaps = [
@@ -1251,6 +1329,8 @@ class JimsAIPipeline:
                     if "Math capability" in gap or "solver" in gap
                 ]
             else:
+                # Multi-intent or non-math primary: the solver answers one part
+                # of the prompt — retrieved claims answer the rest. Keep both.
                 obj.reasoning_chain = [step, *obj.reasoning_chain]
                 if source and source not in obj.sources:
                     obj.sources = [source, *obj.sources]
@@ -1274,10 +1354,21 @@ class JimsAIPipeline:
                 provenance_class=ProvenanceClass.GAP_UNRESOLVED,
                 relation="CAPABILITY_GATE",
             )
+            # Source-backed memory claims survive a blocked capability route:
+            # a misroute (or an unconfigured provider) must degrade the answer
+            # to what memory verifies, never erase it. The gate step records
+            # the blocked capability; retrieved evidence still answers what it can.
+            memory_backed = [
+                step for step in obj.reasoning_chain
+                if step.source_signature_ids or step.sources
+            ]
             if obj.capability_plan.kind != CapabilityKind.MEMORY_CHAT:
-                obj.reasoning_chain = [gate_step]
-                obj.sources = []
-                obj.confidence = min(obj.confidence, 0.35)
+                if memory_backed:
+                    obj.reasoning_chain.append(gate_step)
+                else:
+                    obj.reasoning_chain = [gate_step]
+                    obj.sources = []
+                    obj.confidence = min(obj.confidence, 0.35)
             elif not obj.reasoning_chain:
                 obj.reasoning_chain.append(gate_step)
 

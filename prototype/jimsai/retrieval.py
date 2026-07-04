@@ -58,7 +58,8 @@ class MultiIndexRetrievalEngine:
         # Vectorize match scores are carried in signature metadata so paraphrase
         # matches are not lost after hydration into the local hot cache.
         query_vec: list[float] = []
-        raw_query_terms = set(ir.tokens) | {str(entity).lower() for entity in ir.scope_constraints.get("entities", [])}
+        query_entity_terms = {str(entity).lower() for entity in ir.scope_constraints.get("entities", [])}
+        raw_query_terms = set(ir.tokens) | query_entity_terms
         query_terms = raw_query_terms
         query_phrases = self._query_phrases(query)
         question_intent = ir.scope_constraints.get("question_intent", {})
@@ -255,6 +256,7 @@ class MultiIndexRetrievalEngine:
                 reasons=reasons,
                 relation_filter=relation_filter,
                 user_profile_query=user_profile_query,
+                query_entity_terms=query_entity_terms,
             ):
                 results[sig.id] = RetrievalResult(signature=sig, score=round(score, 4), reasons=reasons or ["importance_index"])
         results = self._expand_related_results(
@@ -498,10 +500,28 @@ class MultiIndexRetrievalEngine:
         reasons: list[str],
         relation_filter: str,
         user_profile_query: bool,
+        query_entity_terms: set[str] | None = None,
     ) -> bool:
         if not reasons:
             return False
-        # Semantic index already passed the hard gate (cosine ≥ 0.30), always admit.
+        # Entity-scope gate: when the query names specific entities, neither
+        # generic phrase/excerpt overlap NOR pure semantic similarity may stand
+        # in for evidence about a DIFFERENT entity. A ghost-entity question is
+        # semantically near-identical to a taught fact about another entity —
+        # admitting that match answers the wrong question with confidence.
+        # Only a match on one of the queried entities (or user-profile /
+        # relation-scoped evidence below) admits the signature. This is what
+        # turns an unknown-entity question into an honest gap instead of a leak.
+        if query_entity_terms and not user_profile_query:
+            entity_overlap = {
+                term
+                for term in matched_terms
+                for entity in query_entity_terms
+                if term_matches(entity, term)
+            }
+            if not entity_overlap and "user_relation_index" not in reasons:
+                return False
+        # Semantic index already passed the hard gate (cosine ≥ 0.30), admit.
         if "semantic_index" in reasons:
             return True
         if relation_filter and "relation_index" in reasons:

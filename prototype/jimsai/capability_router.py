@@ -163,12 +163,20 @@ class CapabilityRouter:
             float(v) for v in signals["structural"].values()
         ) >= 0.7
 
-        if strong_structural:
-            semantic_scores: dict[CapabilityKind, float] = {}
-            classifier_scores: dict[CapabilityKind, float] = {}
-        else:
+        # Semantic scoring always runs — even with a strong structural signal.
+        # A structural hit (math syntax, code fence) identifies ONE intent in the
+        # prompt; only embedding similarity can see the other intents in a
+        # multi-intent prompt. The structural score stays dominant for the
+        # primary route; semantic scores feed secondary-intent detection.
+        classifier_scores: dict[CapabilityKind, float] = {}
+        try:
             semantic_scores = await self._semantic_embedding_scores(request.query)
-            classifier_scores = {}
+        except CriticalServiceUnavailable:
+            if not strong_structural:
+                raise
+            # Structural evidence alone is sufficient to route; losing the
+            # embedding service must not take down structurally-clear queries.
+            semantic_scores = {}
         if semantic_scores:
             signals["semantic_embedding"] = {k.value: round(v, 4) for k, v in semantic_scores.items()}
             for kind, value in semantic_scores.items():
@@ -212,9 +220,17 @@ class CapabilityRouter:
                         "reason": str(overlay.get("reason") or "LLM capability overlay"),
                     }
                 else:
-                    raise CriticalServiceUnavailable("capability router produced no reliable route evidence")
+                    signals["memory_first_fallback"] = "no reliable route evidence; defaulting to memory-first"
             else:
-                raise CriticalServiceUnavailable("capability router produced no reliable route evidence")
+                signals["memory_first_fallback"] = "no reliable route evidence; defaulting to memory-first"
+            if "llm_overlay" not in signals:
+                # Routing uncertainty must never fail the query. Memory-first is
+                # the architecture's default: retrieval, constraint validation,
+                # and gap reporting still decide what can actually be answered —
+                # a wrong low-confidence route degrades ranking, not availability.
+                scores[CapabilityKind.MEMORY_CHAT] = max(
+                    scores.get(CapabilityKind.MEMORY_CHAT, 0.0), 0.30
+                )
 
         policy_adjustments = self._routing_policy_adjustments()
         applied_policy: dict[CapabilityKind, float] = {}
@@ -272,6 +288,18 @@ class CapabilityRouter:
                         "reason": reason,
                     }
 
+        # Segment-aware multi-intent attention: a whole-prompt embedding blends
+        # multiple intents into one vector, so a two-part prompt looks like its
+        # dominant part. Per-segment embeddings (one batched call) let each part
+        # of the prompt vote its own capability — language-agnostic, no keywords.
+        segment_kinds = await self._segment_secondary_kinds(request.query, kind)
+        if segment_kinds:
+            signals["segment_intents"] = [k.value for k in segment_kinds]
+            for seg_kind in segment_kinds:
+                if seg_kind not in secondary:
+                    secondary.append(seg_kind)
+            secondary = secondary[:3]
+
         plan = self._plan_for(
             kind, confidence, reason,
             secondary_intents=secondary,
@@ -283,6 +311,17 @@ class CapabilityRouter:
             deterministic="llm_overlay" not in signals,
             summary=f"Selected v9 capability route: {plan.kind.value}.",
             data=plan.model_dump(mode="json"),
+        )
+
+    def plan_for_secondary(self, kind: CapabilityKind, primary_plan: CapabilityPlan) -> CapabilityPlan:
+        """Build an execution plan for a secondary intent detected alongside the
+        primary route, so multi-intent prompts get every part addressed."""
+        confidence = round(max(0.40, min(0.85, primary_plan.confidence * 0.85)), 4)
+        return self._plan_for(
+            kind,
+            confidence,
+            f"Secondary intent detected alongside {primary_plan.kind.value}.",
+            routing_signals={"secondary_of": primary_plan.kind.value},
         )
 
     def record_outcome(
@@ -539,6 +578,67 @@ class CapabilityRouter:
         if confidence <= 0.0:
             confidence = 0.68
         return {"kind": primary, "secondary": secondary, "confidence": confidence, "reason": data.get("reason") or "LLM capability overlay"}
+
+    async def _segment_secondary_kinds(
+        self, query: str, primary: CapabilityKind
+    ) -> list[CapabilityKind]:
+        """Detect additional intents by routing each prompt segment separately.
+
+        Best-effort and additive: any failure returns [] and the primary route
+        stands. Splitting uses script-neutral sentence punctuation, not words.
+        """
+        segments = [
+            seg.strip()
+            for seg in re.split(r"[?？!！。;；\n]+", query)
+            if len(seg.strip()) >= 12
+        ]
+        if len(segments) < 2:
+            return []
+        segments = segments[:4]
+        detected: list[CapabilityKind] = []
+        # Deterministic per-segment structural check (format-based, any language)
+        for seg in segments:
+            if self._looks_like_numeric_math(seg):
+                detected.append(CapabilityKind.MATH_SCIENCE)
+        if self.semantic_enabled and self.embedding_url:
+            try:
+                min_score = float(get_env("JIMS_SEGMENT_INTENT_MIN_SCORE", "0.35") or "0.35")
+            except ValueError:
+                min_score = 0.35
+            try:
+                headers = {"Content-Type": "application/json"}
+                if self.embedding_token:
+                    headers["Authorization"] = f"Bearer {self.embedding_token}"
+                prototype_vectors = await self._capability_prototype_vectors(list(CAPABILITY_PROTOTYPES))
+                async with httpx.AsyncClient(timeout=self.embedding_timeout) as client:
+                    response = await client.post(
+                        f"{self.embedding_url}/embed",
+                        headers=headers,
+                        json={"texts": segments, "purpose": "query"},
+                    )
+                response.raise_for_status()
+                payload = response.json()
+                vectors = payload.get("vectors") or payload.get("embeddings") or []
+                if not payload.get("fallback") and isinstance(vectors, list):
+                    for raw_vector in vectors[: len(segments)]:
+                        vector = self._float_vector(raw_vector)
+                        if not vector:
+                            continue
+                        raw_scores = {
+                            proto_kind: max(0.0, self._cosine(vector, prototype_vectors[proto_kind]))
+                            for proto_kind in prototype_vectors
+                        }
+                        relative = self._relative_semantic_scores(raw_scores)
+                        top_kind, top_value = max(relative.items(), key=lambda item: item[1])
+                        if top_value >= min_score:
+                            detected.append(top_kind)
+            except Exception:
+                pass  # segment detection is an enhancement, never a failure path
+        ordered: list[CapabilityKind] = []
+        for candidate in detected:
+            if candidate != primary and candidate not in ordered:
+                ordered.append(candidate)
+        return ordered
 
     async def _semantic_embedding_scores(self, query: str) -> dict[CapabilityKind, float]:
         if not self.semantic_enabled or not query.strip():

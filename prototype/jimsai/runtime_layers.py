@@ -8,6 +8,7 @@ from typing import Any
 from .constraints import ConstraintValidator
 from .csse import ConstrainedSemanticSynthesisEngine
 from .encoder import DualRepresentationEncoder
+from .errors import CriticalServiceUnavailable
 from .graph import CausalGraphEngine
 from .memory import FourLayerMemoryStore
 from .model_bridge import QwenBridge
@@ -1103,7 +1104,24 @@ class TransformerRenderInterface:
 
     async def render(self, obj: VerifiedCognitiveObject) -> tuple[str, bool, LayerResult]:
         csse_basis = self.csse.render(obj)
-        response = await self.bridge.render(obj, csse_basis)
+        try:
+            response = await self.bridge.render(obj, csse_basis)
+        except CriticalServiceUnavailable as exc:
+            if os.getenv("JIMS_T2_STRICT", "false").lower() in {"1", "true", "yes", "on"}:
+                raise
+            # The VCO is already verified and the CSSE render is already computed —
+            # a T2 outage must degrade fluency, never availability.
+            return csse_basis, False, _layer(
+                "T2_transformer_render_interface",
+                True,
+                "T2 renderer unavailable; served the deterministic CSSE render.",
+                {
+                    "used_local_model": False,
+                    "mode": "csse_fallback",
+                    "t2_error": str(exc),
+                },
+                deterministic=True,
+            )
         return response, True, _layer(
             "T2_transformer_render_interface",
             True,
