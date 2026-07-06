@@ -1,0 +1,15 @@
+{
+  "retrieved_at": "2026-07-04T21:03:08.326847+00:00",
+  "license": "CC0-1.0 (Wikidata/Wikimedia)",
+  "rank_source": "https://qrank.wmcloud.org/download/qrank.csv.gz",
+  "label_source": "https://www.wikidata.org/w/api.php",
+  "top": 3000,
+  "languages": {
+    "en": 10394,
+    "fr": 6521,
+    "yo": 1487,
+    "zh": 7862,
+    "sw": 2093
+  },
+  "edges": 4717
+}

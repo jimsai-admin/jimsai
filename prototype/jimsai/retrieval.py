@@ -278,6 +278,22 @@ class MultiIndexRetrievalEngine:
             result.signature.importance.retrieval_count += 1
             result.signature.importance.current_score = min(1.0, result.signature.importance.current_score + 0.01)
 
+        # CLL shadow mode (JIMS_CONCEPT_INDEX=shadow): observe what the concept
+        # index would have retrieved for this query and log the diff against
+        # the production result. Zero behavior change — evidence-gathering for
+        # docs/concept_language_layer.md before the index goes live.
+        try:
+            from .cll_shadow import get_shadow, shadow_enabled
+            if shadow_enabled():
+                get_shadow().observe(
+                    query,
+                    visible_signatures,
+                    [result.signature.id for result in final],
+                    limit=effective_limit,
+                )
+        except Exception:  # shadow must never affect production retrieval
+            pass
+
         # Compute and cache retrieval stats for observability
         semantic_hits = sum(
             1 for r in final
