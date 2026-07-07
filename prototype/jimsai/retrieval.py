@@ -259,6 +259,31 @@ class MultiIndexRetrievalEngine:
                 query_entity_terms=query_entity_terms,
             ):
                 results[sig.id] = RetrievalResult(signature=sig, score=round(score, 4), reasons=reasons or ["importance_index"])
+
+        # CLL concept index, on-mode (JIMS_CONCEPT_INDEX=on): consult the
+        # concept posting-list index BEFORE scoring/ranking (per the design in
+        # docs/concept_language_layer.md) — hits enter as CANDIDATES and the
+        # normal expansion/rerank/dedup machinery orders them, so production
+        # evidence (relations, trust, prompt-excerpt hazards) still decides.
+        try:
+            from .cll_shadow import get_shadow, index_enabled
+            if index_enabled():
+                by_id = {sig.id: sig for sig in visible_signatures}
+                for rank, sid in enumerate(
+                        get_shadow().concept_hits(query, visible_signatures, limit=5)):
+                    if sid in results or sid not in by_id:
+                        continue
+                    sig = by_id[sid]
+                    score = max(0.3, 0.6 - 0.05 * rank)
+                    # Same hazard rule as production scoring: prior-query
+                    # records must not surface as answers.
+                    if str(getattr(sig, "raw_excerpt", "") or "").startswith("prompt:"):
+                        score *= 0.15
+                    results[sid] = RetrievalResult(
+                        signature=sig, score=round(score, 4), reasons=["concept_index"])
+        except Exception:  # concept index must never break retrieval
+            pass
+
         results = self._expand_related_results(
             results,
             visible_signatures,
@@ -274,25 +299,26 @@ class MultiIndexRetrievalEngine:
         )
         deduped = self._deduplicate_by_predicate(ranked, user_id)
         final = deduped[:effective_limit]
-        for result in final:
-            result.signature.importance.retrieval_count += 1
-            result.signature.importance.current_score = min(1.0, result.signature.importance.current_score + 0.01)
 
-        # CLL shadow mode (JIMS_CONCEPT_INDEX=shadow): observe what the concept
-        # index would have retrieved for this query and log the diff against
-        # the production result. Zero behavior change — evidence-gathering for
-        # docs/concept_language_layer.md before the index goes live.
+        # CLL evidence report (both shadow and on modes): what the concept
+        # index retrieved vs what production returned, appended to the JSONL
+        # sink (JIMS_CLL_SHADOW_LOG) for agreement analysis. In on-mode the
+        # injection already happened at candidate level above.
         try:
-            from .cll_shadow import get_shadow, shadow_enabled
-            if shadow_enabled():
+            from .cll_shadow import get_shadow, index_enabled, shadow_enabled
+            if shadow_enabled() or index_enabled():
                 get_shadow().observe(
                     query,
                     visible_signatures,
                     [result.signature.id for result in final],
                     limit=effective_limit,
                 )
-        except Exception:  # shadow must never affect production retrieval
+        except Exception:  # evidence gathering must never break retrieval
             pass
+
+        for result in final:
+            result.signature.importance.retrieval_count += 1
+            result.signature.importance.current_score = min(1.0, result.signature.importance.current_score + 0.01)
 
         # Compute and cache retrieval stats for observability
         semantic_hits = sum(

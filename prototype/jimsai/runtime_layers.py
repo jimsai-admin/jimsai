@@ -716,19 +716,19 @@ class ReasoningBridgeLayer:
         if not reasoning_chain:
             reasoning_chain = self._memory_excerpt_steps(ir, retrieved)
         if not reasoning_chain:
-            reasoning_chain = [
-                ReasoningStep(
-                    claim=f"Retrieved signature {result.signature.id} supports intent {ir.target_ir}",
-                    confidence=min(0.99, result.score),
-                    sources=[result.signature.id],
-                    relation="ASSERT",
+            # Independence Policy: no assertive evidence matched the query's
+            # entities — that is a GAP, never a fabricated "supports intent"
+            # filler claim. Fail loudly, honestly, and auditable.
+            if retrieved:
+                # INTERNAL: prefix marks this as a diagnostic gap that the
+                # renderer must never surface to the user verbatim (it drives
+                # a natural gap response instead). Typed, not string-blocklisted.
+                gaps.append(
+                    "[internal] no assertive claim matched the query entities"
                 )
-                for result in retrieved[:5]
-            ]
-        if not reasoning_chain:
             reasoning_chain = [
                 ReasoningStep(
-                    claim="No verified claim emitted because retrieval returned no source signatures.",
+                    claim="No verified claim available for this query.",
                     confidence=0.3,
                     sources=[],
                     relation="HEDGE",
@@ -776,6 +776,49 @@ class ReasoningBridgeLayer:
         wants_explanation = bool(ir.scope_constraints.get("question_intent")) or bool(
             set(ir.tokens) & {"why", "cause", "how", "explain", "impact", "effect"}
         )
+        # Entity scope at CLAIM level: a voiced claim must be about SOMETHING
+        # the query asks about. The scope is the UNION of L1-extracted
+        # entities and name-evidence tokens (digits/capitals) from the IR — a
+        # multi-intent prompt carries several foci (numbers for the math span,
+        # names for the recall span) and a claim may serve any one of them.
+        entity_keys = {
+            str(entity).lower() for entity in ir.scope_constraints.get("entities", [])
+            if len(str(entity)) >= 2
+        } | {
+            token.lower().strip(".,:;!?") for token in ir.tokens
+            if len(token.strip(".,:;!?")) >= 2
+            and (any(ch.isdigit() for ch in token) or any(ch.isupper() for ch in token))
+        }
+
+        def _skeleton(word: str) -> tuple[str, str, str] | str:
+            return (word[0], word[-1], "".join(sorted(word[1:-1]))) if len(word) >= 4 else word
+
+        entity_skeletons = {_skeleton(key) for key in entity_keys if len(key) >= 4}
+
+        def _entity_scoped(sentence_lower: str) -> bool:
+            """Exact containment, or letter-anchor (skeleton) equality with a
+            sentence token — the same first/last/interior-set principle as the
+            lexicon typo repair, so a typo'd entity still finds its fact."""
+            if any(key in sentence_lower for key in entity_keys):
+                return True
+            if entity_skeletons:
+                for token in re.findall(r"[\w-]{4,}", sentence_lower):
+                    if _skeleton(token) in entity_skeletons:
+                        return True
+            return False
+        # Concept-level query representation (language-agnostic): lets a
+        # cross-lingual sentence prove relevance at MEANING level when surface
+        # terms cannot overlap (same concept index used by retrieval).
+        shadow = None
+        query_concepts: set[str] = set()
+        try:
+            from .cll_shadow import get_shadow, index_enabled, shadow_enabled
+            if index_enabled() or shadow_enabled():
+                shadow = get_shadow()
+                if shadow.loaded:
+                    query_concepts, _ = shadow.encode(" ".join(ir.tokens))
+        except Exception:
+            shadow = None
         candidates: list[tuple[int, float, int, str, RetrievalResult]] = []
         minimum_sentence_score = 2 if len(query_terms) >= 3 else 1
         for result_index, result in enumerate(retrieved):
@@ -788,6 +831,22 @@ class ReasoningBridgeLayer:
                 query_terms,
                 include_causal=wants_explanation,
             ):
+                # Questions don't assert: an interrogative sentence carries no
+                # claim and must never be voiced as one (this is what echoed
+                # user prompts back as "answers").
+                if sentence.rstrip(" .").endswith(("?", "？", "؟")):
+                    continue
+                # Entity scope: no shared entity → the sentence is about
+                # something else, however high its common-term overlap (this
+                # is what leaked neighbor facts on ghost-entity queries).
+                if entity_keys and not _entity_scoped(sentence.lower()):
+                    continue
+                if shadow is not None and query_concepts:
+                    try:
+                        sentence_concepts, _ = shadow.encode(sentence)
+                        sentence_score += len(query_concepts & sentence_concepts)
+                    except Exception:
+                        pass
                 if sentence_score < minimum_sentence_score:
                     continue
                 candidates.append((sentence_score, result.score, -result_index, sentence, result))

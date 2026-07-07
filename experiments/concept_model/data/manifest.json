@@ -11,5 +11,34 @@
     "zh": 7862,
     "sw": 2093
   },
-  "edges": 4717
+  "edges": 4717,
+  "enrichments": [
+    {
+      "retrieved_at": "2026-07-07T03:31:35.972256+00:00",
+      "added": {
+        "en": 4965,
+        "fr": 4194,
+        "yo": 279,
+        "zh": 9191,
+        "sw": 395
+      },
+      "fetch_langs": [
+        "en",
+        "fr",
+        "yo",
+        "zh",
+        "sw",
+        "zh-cn",
+        "zh-hans",
+        "zh-hant",
+        "zh-hk",
+        "zh-mo",
+        "zh-my",
+        "zh-sg",
+        "zh-tw"
+      ],
+      "license": "CC0-1.0 (Wikidata/Wikimedia)",
+      "label_source": "https://www.wikidata.org/w/api.php"
+    }
+  ]
 }

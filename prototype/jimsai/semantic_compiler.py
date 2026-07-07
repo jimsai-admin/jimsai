@@ -339,13 +339,30 @@ class SemanticCompilerRuntime:
         scope: dict[str, Any] = existing_scope or {}
         scope["raw_length"] = len(raw_input)
         scope["token_count"] = len(tokens)
-        camel_entities = [
+        entities = {
             entity.strip(".,:;!?")
             for entity in re.findall(r"\b[\w#@][\w\-.#@]*\b", raw_input, flags=re.UNICODE)
             if _looks_like_structural_identifier(entity)
-        ]
-        if camel_entities:
-            scope["entities"] = sorted(set(camel_entities))
+        }
+        # Proper-noun entities via the CLL name-evidence mechanism (mid-sentence
+        # capitalization / digits), the SAME signal the concept index uses —
+        # this is why "the Vorbani project" yields entity 'vorbani' but a
+        # sentence-initial "What" does not. It replaces the old camelCase-only
+        # heuristic that silently missed every plain proper noun, which in turn
+        # caused entity-less queries to inherit stale dialogue focus (ghost
+        # leaks). Language-agnostic, no word list; falls back to camelCase-only
+        # when the concept index is not active.
+        try:
+            from .cll_shadow import get_shadow, index_enabled, shadow_enabled
+            if index_enabled() or shadow_enabled():
+                shadow = get_shadow()
+                if shadow.loaded:
+                    _, literals = shadow.encode(raw_input, mode="query")
+                    entities.update(lit[2:] for lit in literals)
+        except Exception:
+            pass
+        if entities:
+            scope["entities"] = sorted(entities)
         numbers = [int(n) for n in re.findall(r"\b\d+\b", raw_input)]
         if numbers:
             scope["numbers"] = numbers
@@ -401,11 +418,16 @@ class SemanticCompilerRuntime:
         if scope.get("profile_write"):
             scope["profile_query"] = True
 
-        # 6. Session object carry-forward
+        # 6. Session object carry-forward (discourse-focus inheritance)
+        # A query that names NO entities and has conversational context
+        # inherits the focus referent as a CANDIDATE. The relation type is
+        # irrelevant to what "it" refers to — the old uses_/has_/is_ prefix
+        # guard was a vocabulary heuristic that blocked exactly the most
+        # common dialogue follow-ups ("what database does it USE?"). Wrong
+        # narrowing is already handled downstream: retrieval intersection,
+        # entity-scoped claims, the 15-minute topic decay, and gap honesty.
         context_inherited = False
-        question_intent = scope.get("question_intent")
-        relation = question_intent.get("relation") if isinstance(question_intent, dict) else None
-        if "entities" not in scope and session.get("ACTIVE_OBJECT") and not _is_document_wide_relation(relation):
+        if "entities" not in scope and session.get("ACTIVE_OBJECT"):
             scope["entities"] = [session["ACTIVE_OBJECT"]]
             context_inherited = True
 

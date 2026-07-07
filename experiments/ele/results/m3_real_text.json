@@ -1,0 +1,68 @@
+{
+  "seed": 702945,
+  "threshold": 0.9583,
+  "m3a": {
+    "sentences": 418,
+    "vocab": 1901,
+    "frames_promoted": 518,
+    "scaffold_in_top_decile": 1.0,
+    "top_frames": [
+      "% .",
+      "the %",
+      "% the",
+      "% is",
+      "is %",
+      "a %",
+      "% a",
+      "and %",
+      "% and",
+      "not %",
+      "% not",
+      "it %",
+      "to %",
+      "% of",
+      "of %"
+    ]
+  },
+  "m3b": {
+    "tails_tested": [
+      "the %",
+      "is %",
+      "a %",
+      "and %",
+      "not %",
+      "it %",
+      "to %",
+      "of %",
+      "in %",
+      "this %",
+      "as %",
+      "are %"
+    ],
+    "h1_decisions": {
+      "the %": "ADJUNCT",
+      "is %": "UNPROVEN",
+      "a %": "ADJUNCT",
+      "and %": "ADJUNCT",
+      "not %": "ADJUNCT",
+      "it %": "ADJUNCT",
+      "to %": "ADJUNCT",
+      "of %": "ADJUNCT",
+      "in %": "ADJUNCT",
+      "this %": "ADJUNCT",
+      "as %": "ADJUNCT",
+      "are %": "ADJUNCT"
+    },
+    "h1_decision_counts": {
+      "ADJUNCT": 11,
+      "UNPROVEN": 1
+    },
+    "control_decision_counts": {
+      "UNPROVEN": 60
+    },
+    "control_unproven_fraction": 1.0,
+    "h1_vs_random_agreement": 0.083,
+    "random_vs_random_agreement": 1.0
+  },
+  "finding": "random predicate assignment fragments evidence below the sample gate (controls ~all UNPROVEN) — the comparison cannot certify H1's signal; and H1's own gate-passing decisions label determiner/copula scaffolding as ADJUNCT, a category error: real-text tail candidates are not argument-structure units. CONCLUSION: predicate identity AND candidate argument units were silently supplied by the toy corpus; on real text they must come from L1 extraction or a bounded parser interface — obligatoriness/spread remain valid once those inputs exist"
+}

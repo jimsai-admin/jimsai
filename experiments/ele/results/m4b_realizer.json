@@ -1,0 +1,53 @@
+{
+  "seed": 999999,
+  "results": [
+    {
+      "language": "svo",
+      "order": [
+        "agent",
+        "verb",
+        "article",
+        "object"
+      ],
+      "params": 21662,
+      "closed_class_derived": [
+        ".",
+        "di",
+        "na",
+        "ne",
+        "zo"
+      ],
+      "suffixes_mined": [
+        "mi"
+      ],
+      "undertrained_unconstrained_hallucinating": "23/24",
+      "undertrained_constrained_hallucinating": "0/24",
+      "heldout_agreement": 1.0,
+      "heldout_exact_match": 1.0
+    },
+    {
+      "language": "sov",
+      "order": [
+        "agent",
+        "article",
+        "object",
+        "verb"
+      ],
+      "params": 21662,
+      "closed_class_derived": [
+        ".",
+        "ko",
+        "lo",
+        "mi",
+        "ti"
+      ],
+      "suffixes_mined": [
+        "so"
+      ],
+      "undertrained_unconstrained_hallucinating": "21/24",
+      "undertrained_constrained_hallucinating": "0/24",
+      "heldout_agreement": 1.0,
+      "heldout_exact_match": 1.0
+    }
+  ]
+}

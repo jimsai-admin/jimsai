@@ -287,16 +287,28 @@ class JimsAIPipeline:
 
     def _load_session(self, user_id: str, thread_id: str | None = None) -> dict[str, str]:
         session_key = self._thread_session_key(user_id, thread_id)
+        # Dialogue state (discourse focus) is core conversational memory, not
+        # optional cache: it must survive even when the external session cache
+        # (Redis) is unavailable. The in-process store is always-available;
+        # the cloud store adds cross-process durability when reachable. Read
+        # cloud first, then fill from in-process so a dropped cache write
+        # never silently erases the conversation's focus.
+        merged: dict[str, str] = {}
         if self.cloud_authoritative:
-            return self.production.load_session(session_key)
-        return self.sessions.setdefault(session_key, {})
+            cloud = self.production.load_session(session_key)
+            if cloud:
+                merged.update(cloud)
+        local = self.sessions.get(session_key)
+        if local:
+            for key, value in local.items():
+                merged.setdefault(key, value)
+        return merged if merged else self.sessions.setdefault(session_key, {})
 
     def _save_session(self, user_id: str, session: dict[str, str], thread_id: str | None = None) -> None:
         session_key = self._thread_session_key(user_id, thread_id)
+        self.sessions[session_key] = session  # always-available tier
         if self.cloud_authoritative:
-            self.production.save_session(session_key, session)
-        else:
-            self.sessions[session_key] = session
+            self.production.save_session(session_key, session)  # best-effort durability
 
     async def run(self, request: PipelineRequest, skip_llm_render: bool = False) -> PipelineResponse:
         # When skip_llm_render is True (streaming path), the blocking T2 LLM render
@@ -403,8 +415,22 @@ class JimsAIPipeline:
         ir, intent_layer_result = await self.intent_layer.infer(request, session)
         record(intent_layer_result)
         session["ACTIVE_INTENT"] = ir.target_ir
-        if ir.scope_constraints.get("entities") and not session.get("_prevent_active_object"):
-            session["ACTIVE_OBJECT"] = str(ir.scope_constraints["entities"][0])
+        if not session.get("_prevent_active_object"):
+            # Discourse focus: the referent for later underspecified turns
+            # ("what does IT use?"). L1 entities first; when L1 extracts
+            # nothing, fall back to CLL name-evidenced literals from the same
+            # query — one name-evidence machinery everywhere, any language.
+            focus = [str(e) for e in ir.scope_constraints.get("entities", [])]
+            if not focus:
+                try:
+                    from .cll_shadow import get_shadow, index_enabled, shadow_enabled
+                    if index_enabled() or shadow_enabled():
+                        _, literals = get_shadow().encode(request.query)
+                        focus = [lit[2:] for lit in sorted(literals)]
+                except Exception:
+                    focus = []
+            if focus:
+                session["ACTIVE_OBJECT"] = focus[0]
         session.pop("_prevent_active_object", None)
         self._save_session(request.user_id, session, request.thread_id)
 
@@ -721,20 +747,29 @@ class JimsAIPipeline:
             "used_llm": bool(obj is not None and self.bridge.qwen_enabled),
         }
         parts: list[str] = []
-        try:
-            async for delta in self.bridge.stream_render(obj, deterministic_render):
-                if not delta:
-                    continue
-                parts.append(delta)
-                yield {"type": "token", "text": delta}
-        except CriticalServiceUnavailable:
-            if os.getenv("JIMS_T2_STRICT", "false").lower() in {"1", "true", "yes", "on"} or parts:
-                # Strict mode, or the stream broke mid-render (a partial T2 answer
-                # must not be silently replaced with a different text).
-                raise
-            # T2 never produced a token — serve the deterministic CSSE render.
-            parts.append(deterministic_render)
-            yield {"type": "token", "text": deterministic_render}
+        # De-LLM path: the answer IS the deterministic CSSE render — stream it
+        # progressively in natural word-chunks (no model, no wait). This gives
+        # true token-by-token delivery to the client without any T2 LLM.
+        if not self.bridge.qwen_enabled:
+            for chunk in self._stream_chunks(deterministic_render):
+                parts.append(chunk)
+                yield {"type": "token", "text": chunk}
+        else:
+            try:
+                async for delta in self.bridge.stream_render(obj, deterministic_render):
+                    if not delta:
+                        continue
+                    parts.append(delta)
+                    yield {"type": "token", "text": delta}
+            except CriticalServiceUnavailable:
+                if os.getenv("JIMS_T2_STRICT", "false").lower() in {"1", "true", "yes", "on"} or parts:
+                    # Strict mode, or the stream broke mid-render (a partial T2
+                    # answer must not be silently replaced with a different text).
+                    raise
+                # T2 never produced a token — stream the deterministic render.
+                for chunk in self._stream_chunks(deterministic_render):
+                    parts.append(chunk)
+                    yield {"type": "token", "text": chunk}
         full = re.sub(r"<think>.*$", "", re.sub(r"<think>.*?</think>", "", "".join(parts), flags=re.DOTALL), flags=re.DOTALL).strip() or "".join(parts)
         final_response = verified.model_copy(
             update={"response": full, "used_llm": bool(obj is not None and self.bridge.qwen_enabled)}
@@ -759,6 +794,15 @@ class JimsAIPipeline:
         except Exception:
             pass
         yield {"type": "done", "response": full}
+
+    @staticmethod
+    def _stream_chunks(text: str):
+        """Chunk a rendered answer into natural streaming deltas: word-by-word,
+        preserving whitespace/newlines so the client reconstructs the exact
+        text. Deterministic, language-agnostic (splits on Unicode spaces),
+        model-free — progressive delivery of the CSSE render itself."""
+        for token in re.findall(r"\S+\s*", text):
+            yield token
 
     def _build_suggestions(self, response_text: str, obj: VerifiedCognitiveObject) -> list[str]:
         """Generate actionable suggestions for low-confidence or incomplete responses."""
@@ -919,8 +963,17 @@ class JimsAIPipeline:
             if result.kind != CapabilityKind.MATH_SCIENCE or result.adapter != "internal_symbolic_solver":
                 executed.append(result)
                 continue
-            expression, solve_for = "", None  # T1 bridge handles extraction
-            qwen_extraction_status = "not_attempted"
+            # Math notation is a formal language — extract by grammar first
+            # (deterministic, language-independent, LLM-free). The T1 bridge
+            # is a legacy fallback only; under the Independence Policy it is
+            # disabled and an unparseable expression becomes a gap, not a guess.
+            from .math_extract import extract_expression
+            expression, solve_for = extract_expression(
+                request.query,
+                known_symbols=frozenset(getattr(self.math_solver, "_PHYSICS_NAMESPACE", {})),
+                elements=frozenset(getattr(self.math_solver, "_ELEMENT_MASSES", {})),
+            )
+            qwen_extraction_status = "deterministic_grammar" if expression else "not_attempted"
             if not expression:
                 expression, solve_for, qwen_extraction_status = await self._extract_solver_expression_with_qwen(request.query, result.data)
             if not expression:
@@ -1215,17 +1268,20 @@ class JimsAIPipeline:
                         break
 
             if not code_step:
+                # Typed internal gap → the CSSE renders a natural coding-gap
+                # response ("share a file / describe what you're building").
+                # HEDGE relation keeps the raw status out of user-facing claims.
                 obj.knowledge_gaps.append(
-                    "Coding capability routed correctly, but no configured model/provider produced verified code."
+                    "[internal] coding capability produced no verified code"
                 )
                 obj.reasoning_chain = [
                     ReasoningStep(
-                        claim="Coding provider unavailable or returned no verified code for this request.",
+                        claim="No verified code available for this request.",
                         confidence=0.0,
                         sources=[],
                         source_signature_ids=[],
                         provenance_class=ProvenanceClass.GAP_UNRESOLVED,
-                        relation="CAPABILITY_GATE",
+                        relation="HEDGE",
                     )
                 ]
                 obj.sources = []

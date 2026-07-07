@@ -182,6 +182,38 @@ class CapabilityRouter:
             for kind, value in semantic_scores.items():
                 scores[kind] = min(1.0, scores.get(kind, 0.0) + value * 1.1)
 
+        # Workspace-literal evidence (CLL concept index): a query that names
+        # entities the workspace memory already knows is a memory question,
+        # whatever its wording superficially resembles ("codename of the
+        # device..." is not a coding request when 'Bevorno' is a taught
+        # entity). Data-driven — the evidence exists only because the
+        # workspace contains the entity; no vocabulary, no language branches.
+        # Structural signals (code fences, math syntax) stay dominant.
+        if not strong_structural:
+            try:
+                from .cll_shadow import get_shadow, index_enabled, shadow_enabled
+                if index_enabled() or shadow_enabled():
+                    shadow = get_shadow()
+                    # Literals named in THIS utterance, plus entities carried
+                    # from the conversation (dialogue focus) — "what is the
+                    # codename replacing IT?" is a memory question because
+                    # 'it' resolves to a known workspace entity. Inherited
+                    # entities are checked against postings directly (they
+                    # arrive lowercased and would not re-tokenize as literals).
+                    scope_entities = [str(e) for e in ir.scope_constraints.get("entities", [])]
+                    known = max(
+                        shadow.known_query_literals(request.query),
+                        shadow.known_terms(scope_entities),
+                    )
+                    if known:
+                        boost = min(0.55, 0.3 + 0.1 * (known - 1))
+                        scores[CapabilityKind.MEMORY_CHAT] = min(
+                            1.0, scores.get(CapabilityKind.MEMORY_CHAT, 0.0) + boost)
+                        signals["workspace_literal_evidence"] = {
+                            "known_literals": known, "boost": round(boost, 4)}
+            except Exception:
+                pass
+
         if not strong_structural and self._should_query_classifier(semantic_scores, scores):
             classifier_scores = await self._zero_shot_classifier_scores(request.query)
 

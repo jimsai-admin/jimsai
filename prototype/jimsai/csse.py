@@ -27,12 +27,17 @@ class ConstrainedSemanticSynthesisEngine:
 
     # ── Confidence prose (calibrated to tier, not number) ──────────────────
 
+    # Certainty is conveyed by answering plainly, not by meta-commentary — a
+    # natural interlocutor does not footnote every reply with how sure it is.
+    # Only genuine uncertainty earns a brief, woven-in note; confident tiers
+    # say nothing extra. (This replaced a per-tier stock footer that stamped
+    # "I believe this is right" onto every answer — the robotic tell.)
     _CONFIDENCE_PROSE = {
-        1: "I'm certain about this",           # 0.99+   symbolic solver / verified
-        2: "I'm quite confident about this",   # 0.90–0.99  high-confidence memory
-        3: "I believe this is right",          # 0.70–0.89  learned pattern
-        4: "I'm not fully certain — worth double-checking",  # 0.40–0.69
-        5: None,                                # below 0.40 — gap, omit confidence
+        1: None,   # 0.99+   verified — just state it
+        2: None,   # 0.90–0.99  confident — just state it
+        3: None,   # 0.70–0.89  confident enough — just state it
+        4: "This is my best read — worth a quick check.",  # 0.40–0.69
+        5: None,   # below 0.40 — gap path handles it
     }
 
     # ── Public API ─────────────────────────────────────────────────────────
@@ -131,12 +136,10 @@ class ConstrainedSemanticSynthesisEngine:
 
             lines.append(self._clean_claim(step.claim))
 
-        # Confidence note — math solver results are always tier 1/2 so this reads
-        # naturally: "I'm certain about this."
         phrase = self._confidence_phrase(tier)
         if phrase:
             lines.append("")
-            lines.append(f"*{phrase}.*")
+            lines.append(phrase)
 
         return "\n".join(lines)
 
@@ -176,9 +179,9 @@ class ConstrainedSemanticSynthesisEngine:
             return self._render_claims(steps, obj, tier)
 
         phrase = self._confidence_phrase(tier)
-        if phrase and tier <= 3:
+        if phrase:
             lines.append("")
-            lines.append(f"*{phrase}.*")
+            lines.append(phrase)
 
         return "\n".join(lines)
 
@@ -233,11 +236,12 @@ class ConstrainedSemanticSynthesisEngine:
             for gap in user_gaps[:3]:
                 lines.append(f"- {gap}")
 
-        # Natural confidence note
+        # Natural confidence note — only when genuinely uncertain (tier 4),
+        # phrased as a plain helpful sentence, never a stock italic footer.
         phrase = self._confidence_phrase(tier)
         if phrase:
             lines.append("")
-            lines.append(f"*{phrase}.*")
+            lines.append(phrase)
 
         return "\n".join(lines)
 
@@ -361,21 +365,27 @@ class ConstrainedSemanticSynthesisEngine:
         return kind.lower().replace("_", " ") if kind else "this type of"
 
     def _user_relevant_gaps(self, gaps: list[str]) -> list[str]:
+        """Return only gaps meaningful to a user.
+
+        Internal/diagnostic gaps are TYPED at their source with an "[internal]"
+        marker (see runtime_layers) rather than caught by a growing blocklist
+        of substrings — a structural signal, not a vocabulary list. The legacy
+        substrings remain only as a safety net for provider-status strings not
+        yet converted to typed gaps.
         """
-        Filter gaps that are purely internal (solver errors, adapter names, etc.)
-        and return only gaps meaningful to a user.
-        The filter uses substring checks on gap content — not hardcoded response text.
-        """
-        internal_substrings = (
-            "sympy", "adapter", "reembedding_required", "embedding_unavailable", "signature", "ontology",
-            "internal", "solver could not solve", "solver failed",
-            "source signatures matched", "deterministic",
+        legacy_internal = (
+            "sympy", "adapter", "reembedding_required", "embedding_unavailable",
+            "signature", "ontology", "solver could not solve", "solver failed",
+            "source signatures matched", "deterministic", "provider unavailable",
         )
         result = []
         for gap in gaps:
-            lower = gap.lower()
-            if not any(s in lower for s in internal_substrings):
-                result.append(gap)
+            lower = gap.lower().strip()
+            if lower.startswith("[internal]"):
+                continue
+            if any(s in lower for s in legacy_internal):
+                continue
+            result.append(gap)
         return result
 
     def _clean_claim(self, claim: str) -> str:

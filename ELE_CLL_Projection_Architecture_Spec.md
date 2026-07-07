@@ -1,7 +1,7 @@
 # ELE + CLL + Projection Architecture
 ## Engineering Specification for Replacing T1 (Intent Classification) and T2 (Language Rendering)
 
-**Status**: Draft for implementation
+**Status**: Draft for implementation — see `docs/ele_cll_grounding_review.md` (2026-07-06) for the repo-grounding audit, scope corrections, and the falsifiable milestone roadmap (M0: the §2 ELE/Projection experiments are not committed to this repo and must be recreated as regression tests before integration work).
 **Audience**: Coding agent (Claude Code / Opus 4.8)
 **Purpose**: Replace the current T1 (intent → structured IR) and T2 (VCO → natural language) LLM-based components with a modular, auditable, continuously-learning system: ELE (language engine) + CLL (concept/meaning layer) + a shared Projection runtime.
 
