@@ -82,6 +82,39 @@ class CausalGraphEngine:
                     queue.append((edge.target, level + 1))
         return dict(paths)
 
+    def find_path(self, source: str, target: str, max_depth: int = 6) -> list[tuple[str, str, str]] | None:
+        """Shortest edge path source → target as [(from, predicate, to), …], or
+        None if unreachable within max_depth. BFS with parent tracking — the
+        composable substrate for transitive inference ('A causes B, B causes C
+        ⟹ A causes C'). Returns None (never a fabricated link) when no path
+        exists — the fail-safe that keeps reasoning honest."""
+        source_key, target_key = source.lower(), target.lower()
+        if source_key == target_key:
+            return []
+        parent: dict[str, tuple[str, str]] = {}
+        visited = {source_key}
+        queue: deque[tuple[str, int]] = deque([(source_key, 0)])
+        while queue:
+            node, level = queue.popleft()
+            if level >= max_depth:
+                continue
+            for edge in self.edges.get(node, []):
+                nxt = edge.target
+                if nxt in visited:
+                    continue
+                parent[nxt] = (node, edge.predicate)
+                if nxt == target_key:
+                    path: list[tuple[str, str, str]] = []
+                    cur = nxt
+                    while cur != source_key:
+                        prev, pred = parent[cur]
+                        path.append((prev, pred, cur))
+                        cur = prev
+                    return list(reversed(path))
+                visited.add(nxt)
+                queue.append((nxt, level + 1))
+        return None
+
     def incoming(self, target: str) -> list[dict[str, str | float]]:
         target_key = target.lower()
         matches: list[dict[str, str | float]] = []

@@ -31,6 +31,12 @@ _CJK_RUN = re.compile(r"[一-鿿]+")
 _TOKEN = re.compile(r"[^\W_]+")
 
 
+def _oov_names_enabled() -> bool:
+    """Case-independent OOV name-evidence (JIMS_OOV_NAMES, default on). A toggle
+    so the messy-input recall fix can be A/B'd against gap-honesty cleanly."""
+    return os.getenv("JIMS_OOV_NAMES", "1").lower() not in {"0", "false", "no", "off"}
+
+
 def _strip_marks(text: str) -> str:
     decomposed = unicodedata.normalize("NFD", text)
     return "".join(ch for ch in decomposed if not unicodedata.combining(ch))
@@ -174,25 +180,37 @@ class ConceptShadowIndex:
                         key = f"L:{raw.lower()}"
                         has_digit = any(ch.isdigit() for ch in raw)
                         has_upper = any(ch.isupper() for ch in raw)
+                        # CASE-INDEPENDENT name evidence. Reaching this branch
+                        # means the token is OUT-OF-VOCABULARY (the lexicon
+                        # matched no phrase/surface for it). An OOV token of
+                        # content-word length that is not a typo of a known word
+                        # is probably a NAME — whether or not it is capitalised.
+                        # This is what lets a fact written in lowercase natural
+                        # prose ("…we went with pozidb…") index its entities at
+                        # all; capitalisation was an idealised-world assumption.
+                        # No entity list: the signal is "the lexicon doesn't know
+                        # this word." Function words / filler are < 5 chars or
+                        # resolve via typo-repair, so they are excluded.
+                        repaired = self._typo_repair(raw.lower())
+                        oov_name = len(raw) >= 5 and not repaired and _oov_names_enabled()
                         if mode == "document":
-                            name_like = has_digit or has_upper
-                            if has_upper and i not in sentence_initial:
-                                self._name_evidence.add(key)  # true name evidence
+                            name_like = has_digit or has_upper or oov_name
+                            if (has_upper and i not in sentence_initial) or oov_name:
+                                self._name_evidence.add(key)  # name evidence
                         else:
                             # Query side: mid-sentence capitals and digits are
                             # direct evidence; sentence-initial capitals count
-                            # only when the corpus name-memory backs them.
-                            name_like = has_digit or (
+                            # only when the corpus name-memory backs them; an OOV
+                            # content word is name-like (mirrors the doc side).
+                            name_like = has_digit or oov_name or (
                                 has_upper
                                 and (i not in sentence_initial
                                      or key in self._name_evidence)
                             )
                         if name_like:
                             literals.add(key)
-                        elif mode == "query":
-                            repaired = self._typo_repair(raw.lower())
-                            if repaired:
-                                concepts.update(self.surfaces[repaired][:3])
+                        elif mode == "query" and repaired:
+                            concepts.update(self.surfaces[repaired][:3])
                         i += 1
         return concepts, literals
 

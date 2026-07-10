@@ -1,0 +1,32 @@
+[
+  {
+    "seed": 42,
+    "sentences": 120,
+    "recall": 0.3367,
+    "precision": 0.3793,
+    "extracted": 87,
+    "correct": 33,
+    "direction_errors": 19,
+    "negation_false_positives": 35
+  },
+  {
+    "seed": 7,
+    "sentences": 120,
+    "recall": 0.4259,
+    "precision": 0.5287,
+    "extracted": 87,
+    "correct": 46,
+    "direction_errors": 14,
+    "negation_false_positives": 27
+  },
+  {
+    "seed": 2024,
+    "sentences": 120,
+    "recall": 0.3714,
+    "precision": 0.4535,
+    "extracted": 86,
+    "correct": 39,
+    "direction_errors": 16,
+    "negation_false_positives": 31
+  }
+]

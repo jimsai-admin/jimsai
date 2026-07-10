@@ -115,15 +115,34 @@ def extract_expression(text: str, known_symbols: frozenset[str] = frozenset(),
     if current:
         runs.append(current)
 
-    best: tuple[float, str, str | None] | None = None
+    best: tuple[float, str, str | None, list] | None = None
     for run in runs:
         expr, solve_for = _normalize_run(run)
         if not expr:
             continue
         score = sum(1 for kind, _v, _s, _e in run if kind in ("num", "op"))
         if best is None or score > best[0]:
-            best = (score, expr, solve_for)
-    return (best[1], best[2]) if best else ("", None)
+            best = (score, expr, solve_for, run)
+    if not best:
+        return "", None
+    _score, expr, solve_for, run = best
+
+    # Solve-TARGET detection for expression-heavy science/engineering problems
+    # ("solve F = m*a for a", "express t in terms of v, u, a", "rearrange
+    # E = m*c^2 for m"). The answer is an EXPRESSION, not a number, and the
+    # target is whichever equation symbol ALSO appears in the query OUTSIDE the
+    # equation span — a repeated variable, no "for"/"pour"/"solve" keyword, so
+    # it is language-independent. If several qualify, take the earliest mention.
+    if "=" in expr and solve_for is None:
+        run_start, run_end = run[0][2], run[-1][3]
+        eq_syms = {v for k, v, _s, _e in run if k == "word"}
+        outside = sorted(
+            (s, v) for (k, v, s, e) in token_list
+            if k == "word" and v in eq_syms and (e <= run_start or s >= run_end)
+        )
+        if outside:
+            solve_for = outside[0][1]
+    return expr, solve_for
 
 
 def _normalize_run(run: list[tuple[str, str, int, int]]) -> tuple[str, str | None]:
@@ -176,8 +195,17 @@ def _normalize_run(run: list[tuple[str, str, int, int]]) -> tuple[str, str | Non
         return "", None  # "1 + 1 = 3" style statements are claims, not solve requests
 
     expr = ""
-    for i, (kind, value, _s, _e) in enumerate(tokens):
+    for i, (kind, value, start, _e) in enumerate(tokens):
         if i and kind in ("num", "word") and tokens[i - 1][0] in ("num", "word"):
-            return "", None  # two adjacent operands ("Fagur 20") — not an expression
+            # Implicit multiplication: a coefficient stuck to a variable ("2x",
+            # "3y") — a NUMBER immediately followed (no space) by a short
+            # identifier. Universal math notation, language-independent; insert
+            # the '*'. Genuine prose ("Fagur 20", spaced or word→word) is still
+            # rejected as not-an-expression.
+            adjacent = tokens[i - 1][3] == start
+            if adjacent and tokens[i - 1][0] == "num" and kind == "word":
+                expr += "*"
+            else:
+                return "", None
         expr += "**" if value == "^" else value  # sympy reads ^ as XOR
     return expr, solve_for

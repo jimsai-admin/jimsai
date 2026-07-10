@@ -32,13 +32,11 @@ class ConstrainedSemanticSynthesisEngine:
     # Only genuine uncertainty earns a brief, woven-in note; confident tiers
     # say nothing extra. (This replaced a per-tier stock footer that stamped
     # "I believe this is right" onto every answer — the robotic tell.)
-    _CONFIDENCE_PROSE = {
-        1: None,   # 0.99+   verified — just state it
-        2: None,   # 0.90–0.99  confident — just state it
-        3: None,   # 0.70–0.89  confident enough — just state it
-        4: "This is my best read — worth a quick check.",  # 0.40–0.69
-        5: None,   # below 0.40 — gap path handles it
-    }
+    # No prose hedge at any tier — a hardcoded English sentence cannot appear in
+    # a French/Pidgin/Yoruba answer, and the realizer cannot yet render it
+    # in-language. The calibrated confidence SCORE travels in the response
+    # payload (language-neutral); the presentation layer localises any badge.
+    _CONFIDENCE_PROSE: dict[int, str | None] = {1: None, 2: None, 3: None, 4: None, 5: None}
 
     # ── Public API ─────────────────────────────────────────────────────────
 
@@ -180,51 +178,102 @@ class ConstrainedSemanticSynthesisEngine:
     def _render_math(self, steps: list, obj: VerifiedCognitiveObject, tier: int, lang: str = "en") -> str:
         lines: list[str] = []
 
-        for step in steps:
-            # "Verified calculation: expr = result"
-            calc = re.fullmatch(
-                r"Verified calculation:\s*(.+?)\s*=\s*(.+?)\.?",
-                step.claim.strip(),
-            )
-            if calc:
-                expr, result = calc.group(1).strip(), calc.group(2).strip()
-                expr = expr.rstrip("=").strip()
-                result = result.lstrip("=").strip()
-                # Math is a UNIVERSAL notation — the equation is the answer in any
-                # language. No English scaffolding ("To work it out …"), which
-                # would be wrong for a French/Pidgin/Yoruba query. Numbers,
-                # operators and "=" carry the whole meaning.
-                lines.append(f"**{expr} = {result}**")
-                continue
-
-            # "Verified equation solution for x: expr -> result"
-            eq = re.fullmatch(
-                r"Verified equation solution for (\w+):\s*(.+?)\s*->\s*(.+?)\.?",
-                step.claim.strip(),
-            )
-            if eq:
-                var, expr, result = eq.group(1), eq.group(2).strip(), eq.group(3).strip()
-                # Language-neutral: show the working as notation (equation ⟹
-                # solution), never an English sentence.
-                if expr and expr not in (result, f"{var} = {result}", f"{var}={result}"):
-                    lines.append(f"**{expr}  ⟹  {var} = {result}**")
+        # STRUCTURED-FIRST: render math from the solved capability result, not
+        # from a claim string (which the per-language realizer would mangle —
+        # notation is language-neutral and must not be "translated"). Detailed
+        # working by default; terse only when a specific output shape is asked.
+        m = self._math_result(obj)
+        if m:
+            if m["steps"] and not self._wants_terse(obj):
+                for w in m["steps"][:-1]:
+                    lines.append(w)
+                lines.append(f"**{m['steps'][-1]}**")
+            else:
+                res = self._clean_result(m["result"])
+                if m["solve_for"]:
+                    lines.append(f"**{m['solve_for']} = {res}**")
+                elif m["expression"]:
+                    lines.append(f"**{m['expression']} = {res}**")
                 else:
+                    lines.append(f"**{res}**")
+        else:
+            # Fallback: no structured result — parse the trace claims.
+            for step in steps:
+                calc = re.fullmatch(r"Verified calculation:\s*(.+?)\s*=\s*(.+?)\.?", step.claim.strip())
+                if calc:
+                    expr = calc.group(1).strip().rstrip("=").strip()
+                    result = calc.group(2).strip().lstrip("=").strip()
+                    lines.append(f"**{expr} = {result}**")
+                    continue
+                eq = re.fullmatch(r"Verified equation solution for (\w+):\s*(.+?)\s*->\s*(.+?)\.?", step.claim.strip())
+                if eq:
+                    var, result = eq.group(1), self._clean_result(eq.group(3).strip())
                     lines.append(f"**{var} = {result}**")
-                continue
-
-            lines.append(self._clean_claim(step.claim))
+                    continue
+                lines.append(self._clean_claim(step.claim))
 
         phrase = self._confidence_phrase(tier)
-        # Decorative hedge — shown only in English. For other languages it is
-        # OMITTED rather than leaked as English or garbled by partial
-        # realization; the calibrated confidence score travels in the response
-        # payload, so no signal is lost. (Essential chrome — the honest gap —
-        # is still realized in-language below.)
         if phrase and lang == "en":
             lines.append("")
             lines.append(phrase)
 
         return "\n".join(lines)
+
+    def _math_result(self, obj: VerifiedCognitiveObject) -> dict | None:
+        """Structured view of a SOLVED math capability result (expression,
+        result, solve_for, language-neutral notation steps), or None."""
+        try:
+            for r in getattr(obj, "capability_results", []) or []:
+                data = getattr(r, "data", None) or {}
+                if str(data.get("solver_status") or data.get("status") or "").lower() != "solved":
+                    continue
+                raw = data.get("solver_steps") or data.get("steps") or []
+                return {
+                    "expression": str(data.get("expression") or ""),
+                    "result": str(data.get("solver_result") or data.get("result") or ""),
+                    "solve_for": str(data.get("solve_for") or ""),
+                    "steps": [str(s).strip() for s in raw if str(s).strip()],
+                }
+        except Exception:
+            pass
+        return None
+
+    def _clean_result(self, result: str) -> str:
+        """Present a solver result as a bare value: '[3]' → '3', '[3, 5]' →
+        '3, 5' (a sympy solution list is machinery, not user-facing notation)."""
+        r = (result or "").strip()
+        if r.startswith("[") and r.endswith("]"):
+            r = r[1:-1].strip()
+        return r
+
+    def _math_notation_steps(self, obj: VerifiedCognitiveObject) -> list[str]:
+        """The solved math result's working as language-neutral NOTATION lines
+        (the detail an LLM shows), or [] — read from the capability result so
+        the render stays a pure view. Robust to either data-key spelling."""
+        try:
+            for r in getattr(obj, "capability_results", []) or []:
+                data = getattr(r, "data", None) or {}
+                solved = str(data.get("solver_status") or data.get("status") or "").lower() == "solved"
+                if not solved:
+                    continue
+                raw = data.get("steps") or data.get("solver_steps") or []
+                steps = [str(s).strip() for s in raw if str(s).strip()]
+                if steps:
+                    return steps
+        except Exception:
+            pass
+        return []
+
+    def _wants_terse(self, obj: VerifiedCognitiveObject) -> bool:
+        """True when the user asked for a specific/compact output shape — then
+        math shows only the result, not the full working. Reuses the same
+        format detection as response_format (no separate keyword list); detailed
+        working is the default, as an LLM does."""
+        try:
+            from .response_format import detect_format
+            return bool(detect_format(getattr(obj, "raw_query", "") or ""))
+        except Exception:
+            return False
 
     # ── Causal ─────────────────────────────────────────────────────────────
 

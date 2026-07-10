@@ -163,25 +163,28 @@ class SymbolicMathSolver:
                 rhs = safe_parse(right)
                 free = lhs.free_symbols | rhs.free_symbols
                 if not free:
-                    val = sp.simplify(lhs - rhs)
-                    return {"status": "solved", "result": str(sp.simplify(lhs)), "method": "sympy_eval", "steps": [f"Evaluated: {text}"]}
+                    # Pure evaluation: the equation itself is the whole working.
+                    return {"status": "solved", "result": str(sp.simplify(lhs)), "method": "sympy_eval", "steps": []}
                 symbol = sp.Symbol(solve_for) if solve_for else sorted(free, key=str)[0]
                 equation = sp.Eq(lhs, rhs)
                 solutions = sp.solve(equation, symbol)
-                steps = []
+                # Steps are LANGUAGE-NEUTRAL NOTATION only — the algebraic working,
+                # no English labels ("Solving for …"), so a detailed answer reads
+                # correctly in every language. Show: original equation, an
+                # isolation step for linear cases, then each solution.
+                steps: list[str] = []
                 if show_steps:
-                    steps = [
-                        f"Original equation: {left.strip()} = {right.strip()}",
-                        f"Solving for {symbol}",
-                        f"Solutions: {symbol} = {solutions}",
-                    ]
-                    # Try to show algebraic steps for simple linear equations
+                    steps.append(f"{left.strip()} = {right.strip()}")
                     try:
-                        factored = sp.factor(lhs - rhs)
-                        if factored != lhs - rhs:
-                            steps.insert(2, f"Factored form: {factored} = 0")
+                        poly = sp.Poly(sp.simplify(lhs - rhs), symbol)
+                        if poly.degree() == 1:
+                            a, b = poly.all_coeffs()  # a·symbol + b
+                            if b != 0:
+                                steps.append(f"{sp.nsimplify(a)}*{symbol} = {sp.nsimplify(-b)}")
                     except Exception:
                         pass
+                    for sol in solutions:
+                        steps.append(f"{symbol} = {sp.nsimplify(sol)}")
                 return {"status": "solved", "result": str(solutions), "method": "sympy_solve", "steps": steps}
             else:
                 expr = safe_parse(text)
@@ -259,7 +262,12 @@ class SymbolicMathSolver:
                     sym_names.add(str(s))
             syms = [sp.Symbol(n) for n in sorted(sym_names)]
             solutions = sp.solve(eq_objs, syms)
-            steps = [f"System: {chr(10).join(equations)}", f"Solving for: {', '.join(sorted(sym_names))}", f"Solutions: {solutions}"]
+            # Language-neutral notation: the equations, then the solution set.
+            steps = [eq.strip() for eq in equations]
+            if isinstance(solutions, dict):
+                steps.extend(f"{k} = {v}" for k, v in solutions.items())
+            else:
+                steps.append(str(solutions))
             return {"status": "solved", "result": str(solutions), "method": "sympy_system", "steps": steps}
         except Exception as exc:
             return {"status": "failed", "result": str(exc), "method": "sympy_system", "steps": []}

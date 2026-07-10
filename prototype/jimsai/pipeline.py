@@ -1039,6 +1039,7 @@ class JimsAIPipeline:
                             "solver_status": status,
                             "solver_result": solved.get("result", ""),
                             "solver_method": solved.get("method", ""),
+                            "solver_steps": solved.get("steps", []),
                             "result_signature_id": signature.id,
                             "extraction_status": qwen_extraction_status,
                         },
