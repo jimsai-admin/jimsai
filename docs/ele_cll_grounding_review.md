@@ -36,7 +36,14 @@ Recall now WORKS on real lowercase prose (was 0/5 for messy-fact+clean-query); s
 
 **The noise root cause — pinned, and it corrects my first proposal.** I first proposed a FREQUENCY filter; reading the code, the original design had already rejected it for a good reason (`_gate_literal`: *"frequency conflates function words with popular entities"* — a frequently-named entity also has high df). The real cause is narrower and verified: the lexicon is NOUN-only (QRank), so the noise words are common VERBS/ADVERBS/wh-words ("going", "where", "based", "actually") — checked live, all 10 return `not in lexicon`, exactly like the nonce names. The lexicon cannot separate them because it lacks the common vocabulary that would mark a word as *known, therefore not a name*. **The principled fix is therefore broader VOCABULARY coverage** (common words sourced per language — the M5 grind), NOT frequency and NOT English suffix rules (`-ing`/`-ed`, which would fail for Pidgin/Yoruba). Then "where"/"going" become known → not names, while nonces stay OOV → names.
 
-**Honest interim state:** the OOV fix ships behind `JIMS_OOV_NAMES` (default on — real-world recall is the point, and 0/5 is non-functional), with the gap-honesty cost (1/5, a fabrication regression) documented as the price until the vocabulary is broadened. This is a genuine product trade-off — function now vs. the cardinal no-fabrication principle — resolved cleanly only by the lexicon-coverage fix. The loop worked exactly as intended: a real fix, an honest measurement of its cost, a corrected hypothesis, and the true root cause named — no per-language patch.
+**Resolved and validated (2026-07-10).** Built the common-vocabulary fix two ways, both language-universal, no hardcoded list: (1) ingest external frequency lists where they exist (`fetch_common_words.py` → hermitdave/FrequencyWords, en/fr/zh, 13k words, provenance-stamped); (2) for LOW-RESOURCE languages no external list covers (Yoruba, Pidgin — verified absent from the corpus, because OpenSubtitles doesn't cover them), LEARN common words distributionally — background document frequency in `cll_shadow` (a token recurring across many indexed documents is common vocabulary; Zipf, any language, cold-start-honest). Live messy gauntlet (`messy_gauntlet.py`):
+
+| language | baseline (OOV off) | OOV on, no vocab | + common-vocab |
+|---|---|---|---|
+| English (external list) | recall 0/5 | recall 4/5, gap 4/5 | **recall 4/5, gap 5/5, scope 5/5** |
+| Pidgin (learned path) | recall 0/5 | — | **recall 3/5, gap 5/5, scope 5/5** |
+
+Gap-honesty and scoping fully preserved (5/5) in BOTH; recall lifted 0→functional (4/5 well-resourced, 3/5 low-resource — the honest cost of no external list) with **zero fabrication**. The foundational messy-input problem is genuinely fixed. The loop worked exactly as intended: a real fix, its cost measured, a wrong hypothesis (frequency) corrected by the code, the true root cause (noun-only lexicon) named, and a validated language-universal resolution — no per-language patch.
 
 ## 0. Facing the public — fail-safe, not fix-count (2026-07-09)
 
@@ -257,6 +264,30 @@ Honest residuals (named, not hidden): (1) full per-language chrome (gap prompts,
 - **P5 multi-intent — mechanism FIXED.** Root cause: the composition logic already existed (pipeline keeps math + memory when secondary intents present), but the router never *detected* the recall as secondary — workspace-literal evidence was gated behind `if not strong_structural`, so any math-syntax prompt skipped it. Fix (`capability_router.py`): workspace-literal evidence runs EVEN under a strong structural signal (a structural hit is ONE intent; a named known entity is ANOTHER — the multi-attention-span primitive), and because it is unambiguous evidence it forces MEMORY_CHAT into secondary intents, bypassing the margin heuristic. Verified: `project_database` multi-intent now composes both answers (math 100 + recall TensorDB); `person_city` multi-intent fails only when person_city *recall* fails (below). Pure math (no known entity) unaffected — P6 intact.
 - **person_city recall — seed-dependent nonce-collision weakness (honest limitation).** Passes in isolation for 6/6 hand-picked nonces and under simulated query history; passes cleanly on some harness seeds (44241) and fails on others (877193) for the person family across P3/P4/P5. Cause is specific generated nonces colliding with real lexicon concepts, disrupting encoding/routing — not deterministically reproducible. Recorded as ~85–90% reliability, not a clean 100%; not hidden.
 - **P11 response-language — mechanism works, lexicon-coverage-limited.** `surface_realizer` translates when content words are in the lexicon (`project`→`Projet`, `database`→`base de données`, `资料库`) but leaves the person sentence English because `city`/`engineer`/`based` are absent from the 3,000-concept QRank lexicon. Mechanism proven; the gap is coverage (the lexicon grind, Gap 4) — closed by M5 ingestion of common-noun concepts (OMW/WordNet), which lifts P4-person, P11, and paraphrase depth together. The character-based P11 judge is also strict on short factual sentences; a lexicon-vote judge is the refinement.
+
+### M2 — T1-mini intent classifier: honest negative-ish, 2026-07-10
+
+`experiments/concept_model/run_m2.py` (offline, seeded, no LLM/embeddings). Benchmarks the concept-native TinyIntentClassifier (naive Bayes over CLL concept IDs) on the PRODUCTION lexicon, trained on clean English only, against a surface-word baseline and a hybrid — tested on messy English and REAL (fully in-language) French/Chinese intent queries. The E8 toy (12/12 cross-lingual) was an ideal world; production is messier and the result flips the naive claim:
+
+| condition | concept | surface | hybrid |
+|---|---|---|---|
+| clean English | 81% | 98% | 100% |
+| messy English | 79% | 97% | 95% |
+| real French | 42% | 30% | 30% |
+| real Chinese | 70% | 20% | 70% |
+
+- **Surface words WIN same-language** (98% vs 81%) — English intent words are highly discriminative; concept features *lose* signal on short queries.
+- **Concept-native genuinely transfers cross-lingually** where surface collapses (fr 42>30, zh 70>20, surface ≈ chance on Chinese) — the T1-mini transfer claim is real, directionally.
+- **No clean winner.** The hybrid is best for English (100%) and non-Latin scripts (zh 70%), but for FRENCH the shared-Latin surface words misfire and *drag the concept signal down* (42→30). A clean fix needs language-aware weighting = language detection, i.e. added complexity.
+- **Honest conclusion:** pure T1-mini does NOT cleanly replace the current classifier. The production `multilingual-e5` intent classifier is already CPU-local (not an LLM — the Independence Policy permits small swappable embedders) and handles all cases *uniformly*, which the naive-Bayes variants do not. T1-mini's concept-native transfer is a viable CPU-cheap FALLBACK / cross-lingual booster, not a replacement. Not every roadmap item is a win; recorded, not inflated.
+
+### M11 — Projection + verifier: analogy is computable & verifiable, 2026-07-10
+
+`experiments/creativity/run_m11.py` (offline, seeded, no LLM). Tests whether novel composition — analogy/metaphor — is PROJECTION of relational structure accepted by a VERIFIER, not sampling randomness. Per-seed relational graphs; for each a SOURCE, an ANALOGOUS target (isomorphic relabel), a PARTIAL target (half the relations), and an INCOHERENT target (randomised). The projector finds the entity mapping maximising **systematic** alignment (Gentner: the largest CONNECTED component of preserved relations / |source| — a real analogy preserves one connected structure, coincidences are scattered); the verifier thresholds it.
+
+- **Across 4 seeds: analogous ≈ 1.00, incoherent ≈ 0.36, separation 0.64, and 0 FALSE-ACCEPTS** — the verifier never accepts an incoherent projection as coherent (the fail-safe: a bad analogy is refused, not voiced), 0 missed real analogies. Example: a 4-relation source maps 1:1 onto its relabelled analogue (score 1.0) and near-0 onto a randomised one.
+- **The failure I found and fixed, honestly:** raw preserved-fraction scoring gave false-accepts on SPARSE structures (few relations → a random target aligns 70%+ by chance). Systematicity (connected-component scoring) plus richer structures (7–9 relations) removed them — which is theory-consistent: structure-mapping is reliable only with *enough* relational structure. Sparse-structure chance alignment is the named limitation.
+- **Conclusion:** analogy/metaphor has a verifiable computational substrate — projection proposes, structural alignment accepts or refuses — so creativity need not be delegated to an external model. Grounded, not theory.
 
 ### M8 — Verification-first code synthesis: proof of mechanism, 2026-07-08
 

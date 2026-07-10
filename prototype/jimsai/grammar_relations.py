@@ -58,12 +58,27 @@ def extract_relations(text: str, shadow) -> list[tuple[str, str, str]]:
         # Trim leading articles/copulas so "the" or "is" don't bloat the label,
         # but keep the meaningful verb the source used. Reject an empty or
         # implausibly long connective (not a clean binary relation).
-        toks = [t for t in re.split(r"\s+", between) if t]
+        raw_toks = [t for t in re.split(r"\s+", between) if t]
+        # HIGH-PRECISION abstention (language-universal): a passive ("is …
+        # by") or a negation ("does not …") adds MULTIPLE function words to the
+        # connective, whereas a clean active relation is a content verb plus at
+        # most one preposition ("causes", "leads to"). Count COMMON words (the
+        # sourced common-vocabulary set — data, not a hardcoded English list); if
+        # 2+ appear, the construction reverses or negates the relation, so ABSTAIN
+        # rather than assert a wrong-direction or fabricated causal edge. Precision
+        # is what the traversal reasoner needs; recall it can afford to gap.
+        common = getattr(shadow, "_common_words", set())
+        try:
+            from .cll_shadow import surface_key
+            n_common = sum(1 for t in raw_toks if surface_key(t) in common)
+        except Exception:
+            n_common = 0
+        toks = list(raw_toks)
         while toks and toks[0] in _STOP_EDGES:
             toks.pop(0)
         while toks and toks[-1] in _STOP_EDGES:
             toks.pop()
         predicate = " ".join(toks)
-        if predicate and 1 <= len(toks) <= 4 and e1 != e2:
+        if predicate and 1 <= len(toks) <= 4 and e1 != e2 and n_common < 2:
             relations.append((e1, predicate, e2))
     return relations

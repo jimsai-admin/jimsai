@@ -1,0 +1,56 @@
+[
+  {
+    "lang": "en",
+    "action": "ingest_common_vocab",
+    "before": {
+      "precision": 0.5,
+      "recall": 1.0,
+      "tp": 6,
+      "fp": 6,
+      "fn": 0
+    },
+    "after": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "tp": 6,
+      "fp": 0,
+      "fn": 0
+    },
+    "kept": true,
+    "promotable": true,
+    "log": [
+      "[en] MEASURE (gap state): precision=50% recall=100%",
+      "  GAP (precision < 80%) \u2192 TARGET: ingest common vocabulary (en)",
+      "  INGEST 4994 common words \u2192 RE-MEASURE: precision=100% recall=100%",
+      "  KEEP \u2713 (precision 50%\u2192100%, recall held)",
+      "  PROMOTE-GATE: precision 100% \u2265 80% and recall \u2265 80% \u2192 PROMOTABLE"
+    ]
+  },
+  {
+    "lang": "fr",
+    "action": "ingest_common_vocab",
+    "before": {
+      "precision": 0.5,
+      "recall": 1.0,
+      "tp": 6,
+      "fp": 6,
+      "fn": 0
+    },
+    "after": {
+      "precision": 0.857,
+      "recall": 1.0,
+      "tp": 6,
+      "fp": 1,
+      "fn": 0
+    },
+    "kept": true,
+    "promotable": true,
+    "log": [
+      "[fr] MEASURE (gap state): precision=50% recall=100%",
+      "  GAP (precision < 80%) \u2192 TARGET: ingest common vocabulary (fr)",
+      "  INGEST 4796 common words \u2192 RE-MEASURE: precision=86% recall=100%",
+      "  KEEP \u2713 (precision 50%\u219286%, recall held)",
+      "  PROMOTE-GATE: precision 86% \u2265 80% and recall \u2265 80% \u2192 PROMOTABLE"
+    ]
+  }
+]

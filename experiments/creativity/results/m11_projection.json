@@ -1,0 +1,115 @@
+[
+  {
+    "seed": 42,
+    "trials": 30,
+    "threshold": 0.7,
+    "analogous_mean": 1.0,
+    "partial_mean": 0.418,
+    "incoherent_mean": 0.353,
+    "false_accepts": 0,
+    "missed_analogies": 0,
+    "sample": {
+      "source": [
+        "Duraba heavier_than Lahoni",
+        "Juresu causes Lekefu",
+        "Lahoni attracts Jevubu",
+        "Lahoni part_of Jevubu",
+        "Lekefu causes Lahoni",
+        "Lekefu flows_to Jevubu",
+        "Lekefu heavier_than Jevubu"
+      ],
+      "analogy_score": 1.0,
+      "mapping": {
+        "Lekefu": "Jacema",
+        "Duraba": "Kaqisi",
+        "Jevubu": "Hipela",
+        "Juresu": "Zeweho"
+      }
+    }
+  },
+  {
+    "seed": 7,
+    "trials": 30,
+    "threshold": 0.7,
+    "analogous_mean": 1.0,
+    "partial_mean": 0.418,
+    "incoherent_mean": 0.387,
+    "false_accepts": 0,
+    "missed_analogies": 0,
+    "sample": {
+      "source": [
+        "Cuxoce causes Xaveca",
+        "Cuxoce heavier_than Xaveca",
+        "Cuxoce part_of Qadufi",
+        "Qadufi attracts Cuxoce",
+        "Qadufi flows_to Cuxoce",
+        "Rodedu flows_to Cuxoce",
+        "Xaveca part_of Qadufi"
+      ],
+      "analogy_score": 1.0,
+      "mapping": {
+        "Qadufi": "Wonoxo",
+        "Xaveca": "Pikeka",
+        "Rodedu": "Xivono",
+        "Raxaku": "Mudavo"
+      }
+    }
+  },
+  {
+    "seed": 2024,
+    "trials": 30,
+    "threshold": 0.7,
+    "analogous_mean": 1.0,
+    "partial_mean": 0.417,
+    "incoherent_mean": 0.346,
+    "false_accepts": 0,
+    "missed_analogies": 0,
+    "sample": {
+      "source": [
+        "Cirofe causes Kopovu",
+        "Cirofe part_of Jogujo",
+        "Jiwiva heavier_than Cirofe",
+        "Jogujo heavier_than Noniji",
+        "Kopovu attracts Noniji",
+        "Noniji attracts Kopovu",
+        "Xijolu flows_to Jiwiva"
+      ],
+      "analogy_score": 1.0,
+      "mapping": {
+        "Xijolu": "Zekope",
+        "Kopovu": "Jitugi",
+        "Jiwiva": "Qunise",
+        "Jogujo": "Gijuda"
+      }
+    }
+  },
+  {
+    "seed": 99999,
+    "trials": 30,
+    "threshold": 0.7,
+    "analogous_mean": 1.0,
+    "partial_mean": 0.437,
+    "incoherent_mean": 0.365,
+    "false_accepts": 0,
+    "missed_analogies": 0,
+    "sample": {
+      "source": [
+        "Nagelu attracts Nuquli",
+        "Nagelu causes Quzuja",
+        "Nagelu flows_to Vehiwe",
+        "Nagelu flows_to Vepoji",
+        "Nuquli attracts Vepoji",
+        "Quzuja flows_to Nagelu",
+        "Vehiwe attracts Vepoji",
+        "Vehiwe flows_to Nagelu"
+      ],
+      "analogy_score": 1.0,
+      "mapping": {
+        "Vepoji": "Mavalu",
+        "Quzuja": "Setane",
+        "Nuquli": "Puselo",
+        "Vehiwe": "Jifubi"
+      }
+    }
+  }
+]

@@ -44,12 +44,17 @@ logger = logging.getLogger(__name__)
 class AutonomousAgentConfig:
     """Configuration for the autonomous training agent."""
 
-    # Data sources
+    # Data sources — DE-LLM: only real, provenance-stamped, sourced data. The
+    # former "synthetic_generation" (Groq-generated) source is REMOVED: an LLM
+    # fabricating training data is exactly what the Independence Policy forbids.
+    # Base-model coverage is enriched by the de-LLM training loop (measure gap →
+    # ingest from source → re-measure/rollback → promote), see
+    # experiments/training/run_train_loop.py and _de_llm_ingest below.
     data_sources: list[str] = field(default_factory=lambda: [
-        "wikipedia",
-        "opensubtitles",
-        "user_interactions",
-        "synthetic_generation",
+        "common_vocabulary",   # fetch_common_words.py (frequency lists) — messy-input recall
+        "lexicon_breadth",     # broaden_lexicon.py (Wikidata QRank concepts)
+        "wikipedia",           # real corpus → ELE construction discovery
+        "user_interactions",   # real resolved exchanges → SPPE pairs (NOT LLM-generated)
     ])
     
     # Ingestion
@@ -291,41 +296,35 @@ class AutonomousTrainingAgent:
         sources = []
         
         for source_type in self.config.data_sources:
-            if source_type == "wikipedia":
+            if source_type == "common_vocabulary":
+                # De-LLM base-model coverage: frequency lists per language →
+                # fixes messy-input recall (the case-independent-name signal).
                 sources.append({
-                    "source": "wikipedia",
-                    "type": "public_dataset",
-                    "priority": 5,
-                    "estimated_documents": 6000000,
-                    "language_variants": ["en", "fr", "de", "es", "zh", "ar", "yo"],
-                })
-            elif source_type == "opensubtitles":
+                    "source": "common_vocabulary", "type": "sourced_de_llm",
+                    "script": "experiments/concept_model/fetch_common_words.py",
+                    "priority": 8, "language_variants": ["en", "fr", "zh", "yo", "sw"]})
+            elif source_type == "lexicon_breadth":
                 sources.append({
-                    "source": "opensubtitles",
-                    "type": "public_dataset",
-                    "priority": 4,
-                    "estimated_documents": 50000000,
-                    "language_variants": ["en", "fr", "es", "de", "ja", "yo"],
-                })
+                    "source": "lexicon_breadth", "type": "sourced_de_llm",
+                    "script": "experiments/concept_model/broaden_lexicon.py",
+                    "priority": 6, "language_variants": ["en", "fr", "zh", "yo", "sw"]})
+            elif source_type == "wikipedia":
+                # Real corpus — feeds ELE construction discovery (lifts relation
+                # extraction recall → the traversal reasoner from SAFE to USEFUL).
+                sources.append({
+                    "source": "wikipedia", "type": "public_dataset",
+                    "priority": 5, "estimated_documents": 6000000,
+                    "language_variants": ["en", "fr", "de", "es", "zh", "ar", "yo"]})
             elif source_type == "user_interactions":
-                # Get actual user interactions from deployed system
+                # Real resolved exchanges → SPPE pairs. NOT LLM-generated.
                 count = len(self.pipeline.feedback_events)
                 if count > 0:
                     sources.append({
-                        "source": "user_interactions",
-                        "type": "real_system",
-                        "priority": 10,  # Highest priority
-                        "estimated_documents": count,
-                        "language_variants": ["en", "mixed"],
-                    })
-            elif source_type == "synthetic_generation":
-                sources.append({
-                    "source": "synthetic_generation",
-                    "type": "groq_generated",
-                    "priority": 3,
-                    "estimated_documents": 1000,
-                    "language_variants": ["en"],
-                })
+                        "source": "user_interactions", "type": "real_system",
+                        "priority": 10, "estimated_documents": count,
+                        "language_variants": ["en", "mixed"]})
+            # NOTE: no "synthetic_generation" / groq source — removed. An LLM
+            # fabricating training data violates the Independence Policy.
         
         self.event_store.append(
             "agent_find_data_sources",
@@ -472,7 +471,7 @@ class AutonomousTrainingAgent:
                 current_score=state.intent_stability_score,
                 threshold=self.config.intent_stability_min,
                 priority=8,
-                suggested_data_source="synthetic_generation",
+                suggested_data_source="user_interactions",  # de-LLM: real SPPE pairs, not generated
                 estimated_documents_needed=500,
             ))
         
@@ -523,7 +522,7 @@ class AutonomousTrainingAgent:
                     current_score=score,
                     threshold=self.config.capability_coverage_threshold,
                     priority=5,
-                    suggested_data_source="synthetic_generation",
+                    suggested_data_source="wikipedia",  # de-LLM: real corpus → ELE constructions
                     estimated_documents_needed=int(1000 * (1 - score)),
                 ))
         

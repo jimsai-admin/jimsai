@@ -91,6 +91,23 @@ class ConceptShadowIndex:
             logger.info("CLL shadow index loaded: %d surface keys from %s", len(self.surfaces), path)
         else:
             logger.warning("CLL shadow: lexicon not found at %s — shadow disabled", path)
+        # Common vocabulary (from source, per language) — the words the noun-only
+        # lexicon misses (verbs/adverbs/function words). Marking them "known, not
+        # a name" is what makes "OOV ⇒ probably a name" reliable on messy
+        # lowercase prose; without it, "going"/"where" get mistaken for entities.
+        # Data, not a hardcoded stop-list — experiments/concept_model/fetch_common_words.py.
+        self._common_words: set[str] = set()
+        common_path = path.parent / "common_words.jsonl"
+        if common_path.exists():
+            with common_path.open(encoding="utf-8") as fh:
+                for line in fh:
+                    try:
+                        k = surface_key(json.loads(line)["surface"])
+                    except Exception:
+                        continue
+                    if k:
+                        self._common_words.add(k)
+            logger.info("CLL shadow: %d common words loaded", len(self._common_words))
         self._sig_concepts: dict[str, frozenset[str]] = {}
         self._postings: dict[str, set[str]] = defaultdict(set)
         self._assertive: dict[str, set[str]] = defaultdict(set)
@@ -99,6 +116,16 @@ class ConceptShadowIndex:
         # wrong signal — popular entities stay names however often discussed).
         self._name_evidence: set[str] = set()
         self._doc_count = 0
+        # LEARNED common vocabulary — for languages no external frequency list
+        # covers (low-resource: Yoruba, Pidgin, …). Background document frequency
+        # of each OOV literal across ALL indexed documents: a token recurring in
+        # many DISTINCT documents is common vocabulary (Zipf), not a name — the
+        # same distributional signal ELE uses, language-universal, no word list.
+        # Cold-start honest: a brand-new language must be SEEN before its common
+        # words are learned (you cannot know them a priori). Threshold is a
+        # document count; a real entity rarely appears in this many separate docs.
+        self._bg_df: dict[str, int] = defaultdict(int)
+        self._common_df_threshold = int(os.getenv("JIMS_COMMON_DF", "4"))
 
     def _typo_repair(self, word: str) -> str | None:
         """O(1) recovery of a misspelled CONTENT word from its letter anchors.
@@ -192,7 +219,19 @@ class ConceptShadowIndex:
                         # this word." Function words / filler are < 5 chars or
                         # resolve via typo-repair, so they are excluded.
                         repaired = self._typo_repair(raw.lower())
-                        oov_name = len(raw) >= 5 and not repaired and _oov_names_enabled()
+                        # A common word is NOT a name, even though the noun-only
+                        # lexicon proper doesn't carry it. "Common" = in the
+                        # sourced external list (well-resourced languages) OR
+                        # LEARNED distributionally — recurring across many indexed
+                        # documents (low-resource languages with no external list).
+                        is_common = (
+                            surface_key(raw) in self._common_words
+                            or self._bg_df.get(key, 0) >= self._common_df_threshold
+                        )
+                        oov_name = (
+                            len(raw) >= 5 and not repaired and _oov_names_enabled()
+                            and not is_common
+                        )
                         if mode == "document":
                             name_like = has_digit or has_upper or oov_name
                             if (has_upper and i not in sentence_initial) or oov_name:
@@ -247,6 +286,8 @@ class ConceptShadowIndex:
             self._sig_concepts[sig_id] = frozenset(all_keys)
             for key in all_keys:
                 self._postings[key].add(sig_id)
+                if key.startswith("L:"):
+                    self._bg_df[key] += 1   # learn common vocabulary distributionally
             self._doc_count += 1
 
     def known_query_literals(self, query: str) -> int:
