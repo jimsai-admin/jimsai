@@ -53,7 +53,11 @@ class ConstrainedSemanticSynthesisEngine:
         # literals (entities) pass through. Reasoning stays language-neutral;
         # only this surface layer is language-specific. (First realizer: content
         # is translated and in-language; grammar fluency is the M4b layer.)
-        user_steps = self._realize_language(obj, user_steps)
+        # The SAME realizer localises response chrome (hedges, section labels,
+        # gap prompts) via self._localize — so a French/Pidgin/Yoruba answer has
+        # no hardcoded English scaffolding, with no per-language table in code.
+        lang = self._query_lang(obj)
+        user_steps = self._realize_language(obj, user_steps, lang)
 
         # Strict user response format (M7): if the query requested a shape
         # ("as a table", "as JSON", "as a list"), serialize the SAME verified
@@ -71,31 +75,55 @@ class ConstrainedSemanticSynthesisEngine:
 
         # Route to specialist renderers first
         if self._is_math_result(user_steps):
-            return self._render_math(user_steps, obj, tier)
+            return self._render_math(user_steps, obj, tier, lang)
 
         if self._is_causal_result(user_steps):
-            return self._render_causal(user_steps, obj, tier)
+            return self._render_causal(user_steps, obj, tier, lang)
 
         if user_steps:
-            return self._render_claims(user_steps, obj, tier)
+            return self._render_claims(user_steps, obj, tier, lang)
 
-        return self._render_gap(obj)
+        return self._render_gap(obj, lang)
 
-    def _realize_language(self, obj: VerifiedCognitiveObject, steps: list) -> list:
-        """Return steps with each claim re-realized into the query's language.
-        No-op for English or when the realizer/concept-index is unavailable."""
+    def _query_lang(self, obj: VerifiedCognitiveObject) -> str:
+        """Detect the query's language ONCE per render, from the same CLL signal
+        the realizer uses. 'en' (or unknown) means no localisation is applied."""
         query = getattr(obj, "raw_query", "") or ""
-        if not query or not steps:
-            return steps
+        if not query:
+            return "en"
         try:
             from .cll_shadow import get_shadow, index_enabled, shadow_enabled
-            from .surface_realizer import detect_language, realize_in_language
+            from .surface_realizer import detect_language
             if not (index_enabled() or shadow_enabled()):
-                return steps
+                return "en"
+            return detect_language(query, get_shadow())
+        except Exception:
+            return "en"
+
+    def _localize(self, text: str, lang: str) -> str:
+        """Realize a fixed CHROME phrase (hedge, section label, gap prompt) into
+        the response language via the SAME data-driven realizer as claims —
+        content words translate, function words pass through, no per-language
+        table. No-op for English or when the realizer is unavailable, so a wrong
+        language is never emitted (fail-safe)."""
+        if lang == "en" or not text or not text.strip():
+            return text
+        try:
+            from .cll_shadow import get_shadow
+            from .surface_realizer import realize_in_language
+            return realize_in_language(text, lang, get_shadow())
+        except Exception:
+            return text
+
+    def _realize_language(self, obj: VerifiedCognitiveObject, steps: list, lang: str) -> list:
+        """Return steps with each claim re-realized into the query's language.
+        No-op for English or when the realizer/concept-index is unavailable."""
+        if lang == "en" or not steps:
+            return steps
+        try:
+            from .cll_shadow import get_shadow
+            from .surface_realizer import realize_in_language
             shadow = get_shadow()
-            lang = detect_language(query, shadow)
-            if lang == "en":
-                return steps
             realized = []
             for s in steps:
                 new_claim = realize_in_language(s.claim, lang, shadow)
@@ -149,7 +177,7 @@ class ConstrainedSemanticSynthesisEngine:
             for s in steps
         )
 
-    def _render_math(self, steps: list, obj: VerifiedCognitiveObject, tier: int) -> str:
+    def _render_math(self, steps: list, obj: VerifiedCognitiveObject, tier: int, lang: str = "en") -> str:
         lines: list[str] = []
 
         for step in steps:
@@ -162,9 +190,11 @@ class ConstrainedSemanticSynthesisEngine:
                 expr, result = calc.group(1).strip(), calc.group(2).strip()
                 expr = expr.rstrip("=").strip()
                 result = result.lstrip("=").strip()
+                # Math is a UNIVERSAL notation — the equation is the answer in any
+                # language. No English scaffolding ("To work it out …"), which
+                # would be wrong for a French/Pidgin/Yoruba query. Numbers,
+                # operators and "=" carry the whole meaning.
                 lines.append(f"**{expr} = {result}**")
-                lines.append("")
-                lines.append(f"To work it out: `{expr}` evaluates to **{result}**.")
                 continue
 
             # "Verified equation solution for x: expr -> result"
@@ -174,15 +204,23 @@ class ConstrainedSemanticSynthesisEngine:
             )
             if eq:
                 var, expr, result = eq.group(1), eq.group(2).strip(), eq.group(3).strip()
-                lines.append(f"**{var} = {result}**")
-                lines.append("")
-                lines.append(f"Solving `{expr}` gives **{var} = {result}**.")
+                # Language-neutral: show the working as notation (equation ⟹
+                # solution), never an English sentence.
+                if expr and expr not in (result, f"{var} = {result}", f"{var}={result}"):
+                    lines.append(f"**{expr}  ⟹  {var} = {result}**")
+                else:
+                    lines.append(f"**{var} = {result}**")
                 continue
 
             lines.append(self._clean_claim(step.claim))
 
         phrase = self._confidence_phrase(tier)
-        if phrase:
+        # Decorative hedge — shown only in English. For other languages it is
+        # OMITTED rather than leaked as English or garbled by partial
+        # realization; the calibrated confidence score travels in the response
+        # payload, so no signal is lost. (Essential chrome — the honest gap —
+        # is still realized in-language below.)
+        if phrase and lang == "en":
             lines.append("")
             lines.append(phrase)
 
@@ -195,7 +233,7 @@ class ConstrainedSemanticSynthesisEngine:
             s.relation in {"CAUSES", "DEPENDS_ON"} for s in steps[:3] if s.relation
         )
 
-    def _render_causal(self, steps: list, obj: VerifiedCognitiveObject, tier: int) -> str:
+    def _render_causal(self, steps: list, obj: VerifiedCognitiveObject, tier: int, lang: str = "en") -> str:
         causes = [s for s in steps if s.relation == "CAUSES"]
         deps = [s for s in steps if s.relation == "DEPENDS_ON"]
 
@@ -204,9 +242,10 @@ class ConstrainedSemanticSynthesisEngine:
         if causes:
             chain = self._extract_causal_chain(causes)
             if len(chain) > 2:
+                # "→" is a language-neutral causal connective; keep it.
                 lines.append(" → ".join(chain) + ".")
             elif len(chain) == 2:
-                lines.append(f"{chain[0]} causes {chain[1]}.")
+                lines.append(self._localize(f"{chain[0]} causes {chain[1]}.", lang))
             else:
                 for step in causes[:4]:
                     lines.append(self._clean_claim(step.claim))
@@ -221,10 +260,15 @@ class ConstrainedSemanticSynthesisEngine:
                 lines.append(f"- {self._clean_claim(step.claim)}")
 
         else:
-            return self._render_claims(steps, obj, tier)
+            return self._render_claims(steps, obj, tier, lang)
 
         phrase = self._confidence_phrase(tier)
-        if phrase:
+        # Decorative hedge — shown only in English. For other languages it is
+        # OMITTED rather than leaked as English or garbled by partial
+        # realization; the calibrated confidence score travels in the response
+        # payload, so no signal is lost. (Essential chrome — the honest gap —
+        # is still realized in-language below.)
+        if phrase and lang == "en":
             lines.append("")
             lines.append(phrase)
 
@@ -243,7 +287,7 @@ class ConstrainedSemanticSynthesisEngine:
     # ── General claims ─────────────────────────────────────────────────────
 
     def _render_claims(
-        self, steps: list, obj: VerifiedCognitiveObject, tier: int
+        self, steps: list, obj: VerifiedCognitiveObject, tier: int, lang: str = "en"
     ) -> str:
         claims = [
             self._clean_claim(s.claim)
@@ -251,25 +295,44 @@ class ConstrainedSemanticSynthesisEngine:
             if s.claim.strip() and not self._is_internal_claim(s.claim)
         ]
         if not claims:
-            return self._render_gap(obj)
+            return self._render_gap(obj, lang)
+
+        # Discourse ordering (M9): sequence the verified claims by entity
+        # continuity so related facts sit together and the answer reads as a
+        # passage, not a random list. Language-universal — it keys on entity
+        # identity only, injects no function words, and is meaning-preserving
+        # (whole claims reordered, never rewritten). Fails safe to raw order.
+        # (Surface reduction of repetition — M10 elision/pronouns — is NOT done
+        # here: it is language-specific and must come from discovered closed
+        # class, not hardcoded English. See discourse_composer.)
+        rendered = claims
+        if len(claims) > 2:
+            try:
+                from .discourse_composer import compose
+                from .cll_shadow import get_shadow, index_enabled, shadow_enabled
+                shadow = get_shadow() if (index_enabled() or shadow_enabled()) else None
+                rendered = compose(claims, shadow=shadow) or claims
+            except Exception:
+                rendered = claims
 
         lines: list[str] = []
-
-        if len(claims) == 1:
-            lines.append(claims[0])
+        if len(rendered) == 1:
+            lines.append(rendered[0])
         else:
-            lines.append(claims[0])
-            lines.append("")
-            for claim in claims[1:6]:
-                lines.append(f"- {claim}")
+            # A paragraph (space-joined) reads more naturally than a bullet dump
+            # and is language-neutral — each claim already carries its own
+            # terminal punctuation from realization. An explicit "as a list"
+            # request is served earlier by response_format.
+            lines.append(" ".join(rendered[:6]))
 
         # Simulation results — only when they add real user value
         if obj.simulation_results and self._should_show_simulation(obj):
             lines.append("")
-            lines.append("Simulation results:")
+            lines.append(self._localize("Simulation results:", lang))
             for sim in obj.simulation_results:
-                status = "✓ passed" if sim.passed else "✗ failed"
-                lines.append(f"- {sim.scenario}: {status}")
+                status = self._localize("passed" if sim.passed else "failed", lang)
+                mark = "✓" if sim.passed else "✗"
+                lines.append(f"- {sim.scenario}: {mark} {status}")
                 for outcome in sim.outcomes[:2]:
                     lines.append(f"  • {outcome}")
 
@@ -277,14 +340,19 @@ class ConstrainedSemanticSynthesisEngine:
         user_gaps = self._user_relevant_gaps(obj.knowledge_gaps)
         if user_gaps:
             lines.append("")
-            lines.append("What I'm less certain about:")
+            lines.append(self._localize("What I'm less certain about:", lang))
             for gap in user_gaps[:3]:
-                lines.append(f"- {gap}")
+                lines.append(f"- {self._localize(gap, lang)}")
 
         # Natural confidence note — only when genuinely uncertain (tier 4),
         # phrased as a plain helpful sentence, never a stock italic footer.
         phrase = self._confidence_phrase(tier)
-        if phrase:
+        # Decorative hedge — shown only in English. For other languages it is
+        # OMITTED rather than leaked as English or garbled by partial
+        # realization; the calibrated confidence score travels in the response
+        # payload, so no signal is lost. (Essential chrome — the honest gap —
+        # is still realized in-language below.)
+        if phrase and lang == "en":
             lines.append("")
             lines.append(phrase)
 
@@ -292,7 +360,7 @@ class ConstrainedSemanticSynthesisEngine:
 
     # ── Gap response ───────────────────────────────────────────────────────
 
-    def _render_gap(self, obj: VerifiedCognitiveObject) -> str:
+    def _render_gap(self, obj: VerifiedCognitiveObject, lang: str = "en") -> str:
         """
         Produce a genuinely helpful response when memory has nothing.
 
@@ -300,6 +368,10 @@ class ConstrainedSemanticSynthesisEngine:
         hardcoded keyword lists. The intent classifier already ran (T1),
         the capability router already ran, and the knowledge_gaps list
         already describes why retrieval failed. We use those.
+
+        Every message is localised into the response language via _localize
+        (the same data-driven realizer as claims) — the honest gap must be
+        communicated IN THE USER'S LANGUAGE, never as hardcoded English.
         """
         intent = str(getattr(obj, "intent", "") or "").upper()
         capability_kind = ""
@@ -325,67 +397,67 @@ class ConstrainedSemanticSynthesisEngine:
             ]
             if emotional_steps:
                 return emotional_steps[0].claim.strip()
-            return (
+            return self._localize(
                 "It sounds like you're going through something — I'm here. "
-                "Feel free to share more and I'll do my best to help."
+                "Feel free to share more and I'll do my best to help.", lang
             )
 
         # ── Math: solver tried but failed ────────────────────────────────
         if has_solver_gap or "MATH" in capability_kind:
-            return (
+            return self._localize(
                 "I wasn't able to work that out. "
                 "I can handle arithmetic (like `2 + 9`) and simple equations (like `2x + 5 = 11`). "
-                "Try expressing it in that form and I'll solve it."
+                "Try expressing it in that form and I'll solve it.", lang
             )
 
         # ── Capability blocked/unavailable ───────────────────────────────
         if has_route_gap:
             kind_label = self._capability_label(capability_kind)
-            return (
+            return self._localize(
                 f"I understood this as a {kind_label} request, "
                 "but I don't have the resources connected to handle it right now. "
-                "You can still describe what you need and I'll help with what I know."
+                "You can still describe what you need and I'll help with what I know.", lang
             )
 
         # ── Profile query: intent classifier already tagged this ─────────
         if "profile" in intent.lower() or (
             obj.capability_plan and "profile" in str(getattr(obj.capability_plan, "route", "")).lower()
         ):
-            return (
+            return self._localize(
                 "I don't have that information about you yet. "
-                "Tell me — for example, 'My name is [name]' — and I'll remember it."
+                "Tell me — for example, 'My name is [name]' — and I'll remember it.", lang
             )
 
         # ── Code generation with no codebase loaded ──────────────────────
         if "CODE" in capability_kind or "CODING" in capability_kind:
-            return (
+            return self._localize(
                 "I don't have relevant code in my memory for this yet. "
                 "Share a file, paste some code, or describe what you're building "
-                "and I can help straight away."
+                "and I can help straight away.", lang
             )
 
         # ── Memory exists but no direct claim ────────────────────────────
         if obj.sources:
-            return (
+            return self._localize(
                 "I found related information but nothing that directly answers this. "
-                "Could you share more context or rephrase the question?"
+                "Could you share more context or rephrase the question?", lang
             )
 
         # ── World knowledge / general fact: offer to learn ───────────────
         # The intent classifier already classified this — no keyword matching needed.
         # We check intent for GENERAL_FACT, WORLD_KNOWLEDGE, or WORKSPACE_QUERY.
         if any(kw in intent for kw in ("GENERAL", "WORLD", "FACT", "WORKSPACE")):
-            return (
+            return self._localize(
                 "I don't have that in my memory yet. "
                 "You can teach me by sharing a document or stating the facts directly, "
-                "and I'll remember them going forward."
+                "and I'll remember them going forward.", lang
             )
 
         # ── Fallback — always leave the user with a path forward ─────────
-        return (
+        return self._localize(
             "I don't have enough to give you a confident answer on this yet. "
             "Share what you know and I'll build on it, "
-            "or ask a more specific question and I'll do my best."
+            "or ask a more specific question and I'll do my best.", lang
         )
 
     # ── Helpers ────────────────────────────────────────────────────────────

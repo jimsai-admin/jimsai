@@ -1,0 +1,126 @@
+[
+  {
+    "seed": 42,
+    "n": 40,
+    "all_names": {
+      "resolution": 1.0,
+      "naturalness": 0.0,
+      "pron_mentions": 0,
+      "eligible": 188,
+      "pron_total": 0
+    },
+    "always_pron": {
+      "resolution": 0.7394,
+      "naturalness": 1.0,
+      "pron_mentions": 188,
+      "eligible": 188,
+      "pron_total": 188
+    },
+    "centering": {
+      "resolution": 1.0,
+      "naturalness": 0.4574,
+      "pron_mentions": 86,
+      "eligible": 188,
+      "pron_total": 86
+    },
+    "sample": {
+      "all_names": "Defolo founded Netose. Qiwena manages Netose. Qiwena founded Netose. Qiwena reports to Defolo. Qiwena manages Netose.",
+      "always_pron": "Defolo founded Netose. Qiwena manages Netose. she founded Netose. she reports to it. she manages Netose.",
+      "centering": "Defolo founded Netose. Qiwena manages Netose. she founded Netose. she reports to Defolo. she manages Netose.",
+      "chosen": true
+    }
+  },
+  {
+    "seed": 7,
+    "n": 40,
+    "all_names": {
+      "resolution": 1.0,
+      "naturalness": 0.0,
+      "pron_mentions": 0,
+      "eligible": 181,
+      "pron_total": 0
+    },
+    "always_pron": {
+      "resolution": 0.768,
+      "naturalness": 1.0,
+      "pron_mentions": 181,
+      "eligible": 181,
+      "pron_total": 181
+    },
+    "centering": {
+      "resolution": 1.0,
+      "naturalness": 0.4586,
+      "pron_mentions": 83,
+      "eligible": 181,
+      "pron_total": 83
+    },
+    "sample": {
+      "all_names": "Gocawa works on Gufumu. Gocawa founded Kawemo. Gocawa met Xakucu. Gocawa leads Gufumu. Gocawa mentored Xaveca. Gocawa manages Gufumu.",
+      "always_pron": "Gocawa works on Gufumu. he founded Kawemo. he met Xakucu. he leads Gufumu. he mentored Xaveca. he manages Gufumu.",
+      "centering": "Gocawa works on Gufumu. he founded Kawemo. he met Xakucu. he leads Gufumu. Gocawa mentored Xaveca. Gocawa manages Gufumu.",
+      "chosen": true
+    }
+  },
+  {
+    "seed": 2024,
+    "n": 40,
+    "all_names": {
+      "resolution": 1.0,
+      "naturalness": 0.0,
+      "pron_mentions": 0,
+      "eligible": 184,
+      "pron_total": 0
+    },
+    "always_pron": {
+      "resolution": 0.6902,
+      "naturalness": 1.0,
+      "pron_mentions": 184,
+      "eligible": 184,
+      "pron_total": 184
+    },
+    "centering": {
+      "resolution": 1.0,
+      "naturalness": 0.375,
+      "pron_mentions": 69,
+      "eligible": 184,
+      "pron_total": 69
+    },
+    "sample": {
+      "all_names": "Humeri works on Sagiqi. Humeri replaced Kopovu. Humeri manages Sagiqi. Humeri works on Sagiqi. Munude met Kopovu. Munude replaced Sewera.",
+      "always_pron": "Humeri works on Sagiqi. it replaced Kopovu. it manages Sagiqi. it works on Sagiqi. Munude met it. it replaced Sewera.",
+      "centering": "Humeri works on Sagiqi. Humeri replaced Kopovu. Humeri manages Sagiqi. it works on Sagiqi. Munude met Kopovu. Munude replaced Sewera.",
+      "chosen": true
+    }
+  },
+  {
+    "seed": 99999,
+    "n": 40,
+    "all_names": {
+      "resolution": 1.0,
+      "naturalness": 0.0,
+      "pron_mentions": 0,
+      "eligible": 174,
+      "pron_total": 0
+    },
+    "always_pron": {
+      "resolution": 0.7414,
+      "naturalness": 1.0,
+      "pron_mentions": 174,
+      "eligible": 174,
+      "pron_total": 174
+    },
+    "centering": {
+      "resolution": 1.0,
+      "naturalness": 0.4368,
+      "pron_mentions": 76,
+      "eligible": 174,
+      "pron_total": 76
+    },
+    "sample": {
+      "all_names": "Nuquli advises Quzuja. Nuquli manages Hiwena. Nuquli mentored Quzuja. Nuquli founded Geluhu. Quzuja replaced Nuquli. Mukire reports to Nuquli.",
+      "always_pron": "Nuquli advises Quzuja. it manages Hiwena. it mentored he. it founded Geluhu. he replaced it. Mukire reports to it.",
+      "centering": "Nuquli advises Quzuja. it manages Hiwena. it mentored Quzuja. it founded Geluhu. Quzuja replaced Nuquli. Mukire reports to Nuquli.",
+      "chosen": true
+    }
+  }
+]
