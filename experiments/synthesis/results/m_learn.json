@@ -1,0 +1,38 @@
+[
+  {
+    "seed": 42,
+    "depth": 2,
+    "patterns_learned": 3,
+    "hard_base_solved": 7,
+    "hard_learned_solved": 10,
+    "wrong_solutions": 0,
+    "overgeneralization_safe": true
+  },
+  {
+    "seed": 7,
+    "depth": 2,
+    "patterns_learned": 4,
+    "hard_base_solved": 3,
+    "hard_learned_solved": 6,
+    "wrong_solutions": 0,
+    "overgeneralization_safe": true
+  },
+  {
+    "seed": 2024,
+    "depth": 2,
+    "patterns_learned": 5,
+    "hard_base_solved": 2,
+    "hard_learned_solved": 6,
+    "wrong_solutions": 0,
+    "overgeneralization_safe": true
+  },
+  {
+    "seed": 99999,
+    "depth": 2,
+    "patterns_learned": 4,
+    "hard_base_solved": 4,
+    "hard_learned_solved": 9,
+    "wrong_solutions": 0,
+    "overgeneralization_safe": true
+  }
+]

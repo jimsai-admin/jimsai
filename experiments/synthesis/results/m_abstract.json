@@ -1,0 +1,56 @@
+[
+  {
+    "seed": 42,
+    "rule": "neg if x>0",
+    "learned_condition": "x>0",
+    "over_general": 0.4,
+    "over_specific": 0.6,
+    "evidence_bounded": 1.0,
+    "learned_correct": true
+  },
+  {
+    "seed": 7,
+    "rule": "dbl if x>5",
+    "learned_condition": "x>0",
+    "over_general": 0.5,
+    "over_specific": 0.517,
+    "evidence_bounded": 1.0,
+    "learned_correct": false
+  },
+  {
+    "seed": 2024,
+    "rule": "dbl if div3",
+    "learned_condition": "div3",
+    "over_general": 0.283,
+    "over_specific": 0.717,
+    "evidence_bounded": 1.0,
+    "learned_correct": true
+  },
+  {
+    "seed": 99999,
+    "rule": "inc if x>0",
+    "learned_condition": "x>0",
+    "over_general": 0.617,
+    "over_specific": 0.383,
+    "evidence_bounded": 1.0,
+    "learned_correct": true
+  },
+  {
+    "seed": 111,
+    "rule": "inc if even",
+    "learned_condition": "even",
+    "over_general": 0.533,
+    "over_specific": 0.483,
+    "evidence_bounded": 1.0,
+    "learned_correct": true
+  },
+  {
+    "seed": 555,
+    "rule": "inc if even",
+    "learned_condition": "even",
+    "over_general": 0.45,
+    "over_specific": 0.567,
+    "evidence_bounded": 1.0,
+    "learned_correct": true
+  }
+]

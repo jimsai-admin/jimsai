@@ -1,0 +1,42 @@
+[
+  {
+    "seed": 42,
+    "k_outputs": 3,
+    "depth": 2,
+    "budget": 6000,
+    "monolithic_solved": 3,
+    "decomposed_solved": 15,
+    "of": 15,
+    "wrong": 0
+  },
+  {
+    "seed": 7,
+    "k_outputs": 3,
+    "depth": 2,
+    "budget": 6000,
+    "monolithic_solved": 5,
+    "decomposed_solved": 15,
+    "of": 15,
+    "wrong": 0
+  },
+  {
+    "seed": 2024,
+    "k_outputs": 3,
+    "depth": 2,
+    "budget": 6000,
+    "monolithic_solved": 3,
+    "decomposed_solved": 15,
+    "of": 15,
+    "wrong": 0
+  },
+  {
+    "seed": 99999,
+    "k_outputs": 3,
+    "depth": 2,
+    "budget": 6000,
+    "monolithic_solved": 3,
+    "decomposed_solved": 15,
+    "of": 15,
+    "wrong": 0
+  }
+]

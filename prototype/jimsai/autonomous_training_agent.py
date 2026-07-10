@@ -26,6 +26,12 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
 
+from .de_llm_training_loop import (
+    TrainResult,
+    measurable_languages,
+    measure_language,
+    train_all,
+)
 from .event_store import AuditEventStore
 from .models import (
     MemorySignature,
@@ -90,16 +96,26 @@ class AutonomousAgentConfig:
 
 @dataclass
 class SystemState:
-    """Snapshot of current system performance."""
+    """Snapshot of current system performance.
+
+    HONESTY CONTRACT: a field is a real measured number, or it is None
+    ("not yet measurable offline") — NEVER a fabricated placeholder. The old
+    version returned invented scores (0.88 stability, per-language 0.45/0.52,
+    domain 0.62 …); those are gone. `language_variant_scores` are now the CLL's
+    real messy-extraction precision; metrics that need a live backend / eval
+    harness we do not yet have offline are None, and gap detection skips them
+    rather than acting on a made-up value.
+    """
 
     timestamp: datetime
-    intent_stability_score: float
-    provider_dependency_rate: float
-    retrieval_accuracy: float
     world_model_confidence_avg: float
-    language_variant_scores: dict[str, float] = field(default_factory=dict)
-    domain_coverage: dict[str, float] = field(default_factory=dict)
-    capability_coverage: dict[str, float] = field(default_factory=dict)
+    intent_stability_score: float | None = None      # needs live eval harness
+    provider_dependency_rate: float | None = None    # measured from real calls
+    retrieval_accuracy: float | None = None          # needs live backend eval
+    language_variant_scores: dict[str, float] = field(default_factory=dict)  # REAL (CLL)
+    language_variant_recall: dict[str, float] = field(default_factory=dict)  # REAL (CLL)
+    domain_coverage: dict[str, float] = field(default_factory=dict)      # empty until real eval
+    capability_coverage: dict[str, float] = field(default_factory=dict)  # empty until real eval
     review_queue_depth: int = 0
     sppe_pairs_ready: int = 0
 
@@ -149,6 +165,7 @@ class AutonomousTrainingAgent:
         self.identified_gaps: list[IdentifiedGap] = []
         self.ingestion_history: list[dict[str, Any]] = []
         self.training_cycles: list[dict[str, Any]] = []
+        self._last_train_results: list[TrainResult] = []  # real de-LLM loop output
         self.is_running = False
 
     async def run_continuous_loop(self) -> None:
@@ -217,14 +234,38 @@ class AutonomousTrainingAgent:
         logger.info(f"   ✓ Processed {ingestion_results['total_documents']} documents")
         logger.info(f"   ✓ Generated {ingestion_results['signatures_created']} signatures")
         logger.info(f"   ✓ Created {ingestion_results['sppe_pairs_generated']} SPPE pairs")
-        
+
+        # Step 2b: DE-LLM IMPROVEMENT (common-vocabulary track) — REAL, measured
+        # THIS cycle by the loop that ran during ingest, with the gap-honesty
+        # guard already applied. Decoupled from the Kaggle neural-weight path
+        # (steps 7-10), which legitimately still needs 1000+ SPPE pairs + human
+        # approval and does not trigger on a vocabulary hot-update.
+        if self._last_train_results:
+            imp = await self._measure_improvement({"deployment_id": "de-llm-vocab-hot-update"})
+            logger.info("   ✓ de-LLM vocabulary improvement (REAL, measured this cycle):")
+            for lang, d in sorted(imp["per_language"].items()):
+                logger.info(f"      • {lang}: precision {d['precision_delta']:+.0%} "
+                            f"recall {d['recall_delta']:+.0%} "
+                            f"{'KEPT' if d['kept'] else 'rolled-back'}, "
+                            f"{'promotable' if d['promotable'] else 'gated'}")
+            logger.info(f"      • recall never regressed: {imp['recall_never_regressed']} "
+                        f"(gap-honesty guard) | promotable: {imp['languages_promotable']}")
+
         # Step 3: EVALUATE
         logger.info("\n3️⃣ EVALUATE - Measuring current system state...")
         self.current_state = await self._evaluate_system_state()
-        logger.info(f"   ✓ Intent Stability: {self.current_state.intent_stability_score:.4f}")
-        logger.info(f"   ✓ Provider Dependency: {self.current_state.provider_dependency_rate:.2%}")
-        logger.info(f"   ✓ Retrieval Accuracy: {self.current_state.retrieval_accuracy:.2%}")
-        logger.info(f"   ✓ World Model Confidence: {self.current_state.world_model_confidence_avg:.4f}")
+
+        def _fmt(v: float | None) -> str:
+            return "unmeasured" if v is None else f"{v:.4f}"
+
+        st = self.current_state
+        logger.info(f"   ✓ Intent Stability: {_fmt(st.intent_stability_score)}")
+        logger.info(f"   ✓ Provider Dependency: {_fmt(st.provider_dependency_rate)}")
+        logger.info(f"   ✓ Retrieval Accuracy: {_fmt(st.retrieval_accuracy)}")
+        logger.info(f"   ✓ World Model Confidence: {st.world_model_confidence_avg:.4f}")
+        for lang in sorted(st.language_variant_scores):
+            logger.info(f"   ✓ extraction[{lang}]: precision={st.language_variant_scores[lang]:.0%} "
+                        f"recall={st.language_variant_recall.get(lang, 0.0):.0%}  (REAL, CLL offline)")
         
         # Step 4: IDENTIFY GAPS
         logger.info("\n4️⃣ IDENTIFY GAPS - Finding weak areas...")
@@ -274,11 +315,14 @@ class AutonomousTrainingAgent:
                 # Step 10: MEASURE IMPROVEMENT
                 logger.info("\n🔟 MEASURE IMPROVEMENT - Comparing metrics...")
                 improvement = await self._measure_improvement(deploy_result)
-                logger.info(f"   ✓ Improvement summary:")
-                logger.info(f"      • Intent Stability: {improvement['intent_stability_delta']:+.4f}")
-                logger.info(f"      • Retrieval Accuracy: {improvement['retrieval_accuracy_delta']:+.2%}")
-                logger.info(f"      • World Model Confidence: {improvement['world_model_delta']:+.4f}")
-                
+                logger.info(f"   ✓ Improvement summary (real per-language deltas):")
+                for lang, d in sorted(improvement["per_language"].items()):
+                    logger.info(f"      • {lang}: precision {d['precision_delta']:+.0%}, "
+                                f"recall {d['recall_delta']:+.0%}")
+                logger.info(f"      • recall never regressed: {improvement['recall_never_regressed']}")
+                logger.info("      • NOTE: neural-weight improvement measurement pending a real "
+                            "offline eval harness (not fabricated here)")
+
                 # Record training cycle
                 self.training_cycles.append({
                     "cycle": len(self.training_cycles) + 1,
@@ -382,78 +426,89 @@ class AutonomousTrainingAgent:
         return ingestion_result
 
     async def _ingest_source(self, source: dict[str, Any]) -> dict[str, Any]:
-        """Ingest a single data source (runs in parallel worker)."""
-        
-        # Simulate ingestion - in production, would actually fetch and process
-        # This is a placeholder that shows the pattern
-        
-        logger.debug(f"🔄 Ingesting from {source['source']}...")
-        
-        # In real implementation:
-        # - Fetch documents from source
-        # - Normalize (Unicode NFKC)
-        # - Extract entities, relations, causal links
-        # - Create embeddings (multilingual)
-        # - Build semantic IR
-        # - Create memory signatures
-        # - Generate SPPE pairs
-        # - Create world model candidates
-        
-        batch_size = min(self.config.batch_size, source.get("estimated_documents", 100))
-        
+        """Ingest a single data source.
+
+        common_vocabulary runs the REAL de-LLM loop (measure→ingest→re-measure→
+        keep/rollback), so its numbers are measured, not simulated. Sources not
+        yet wired to a real offline ingest return zeros with status
+        'not_implemented_offline' — an honest 'nothing happened' rather than a
+        fabricated 95% success rate.
+        """
+        name = source["source"]
+        logger.debug(f"🔄 Ingesting from {name}...")
+
+        if name == "common_vocabulary":
+            # REAL: run the validated de-LLM training pass and keep its results
+            # so _measure_improvement can report the actual before/after deltas.
+            results = await asyncio.to_thread(train_all)
+            self._last_train_results = results
+            kept = [r for r in results if r.kept and r.action != "none"]
+            promotable = [r for r in results if r.promotable]
+            terms = sum(r.ingested_terms for r in kept)
+            for r in results:
+                for line in r.log:
+                    logger.info("      " + line)
+            return {
+                "source": name,
+                "documents_processed": terms,          # real common-vocab terms ingested
+                "signatures_created": terms,           # each term is a real base-artifact entry
+                "sppe_pairs_generated": 0,             # SPPE generation is not this source's job
+                "world_model_candidates": 0,
+                "languages_improved": [r.lang for r in kept],
+                "languages_promotable": [r.lang for r in promotable],
+                "status": "real",
+            }
+
+        # Not yet wired to a real offline ingest — report the honest zero.
         return {
-            "source": source["source"],
-            "documents_processed": batch_size,
-            "signatures_created": int(batch_size * 0.95),  # 95% success rate
-            "sppe_pairs_generated": int(batch_size * 0.85),  # SPPE for 85%
-            "world_model_candidates": int(batch_size * 0.40),  # WM for 40%
+            "source": name,
+            "documents_processed": 0,
+            "signatures_created": 0,
+            "sppe_pairs_generated": 0,
+            "world_model_candidates": 0,
+            "status": "not_implemented_offline",
         }
 
     async def _evaluate_system_state(self) -> SystemState:
-        """Measure current system performance across all dimensions."""
-        
-        # Get baseline metrics from pipeline
-        memory_stats = self.pipeline.memory.stats()
-        
-        # Simulate evaluation metrics
-        # In production, would measure:
-        # - Intent stability across all languages
-        # - Provider call frequency
-        # - Retrieval precision/recall
-        # - World model confidence distribution
-        
+        """Measure current system performance from REAL signals — no placeholders.
+
+        The only scores populated here are ones we can actually measure offline:
+        per-language messy-extraction precision/recall (the CLL, milliseconds, no
+        backend) and world-model confidence (the real promotion store). Metrics
+        that need a live backend / eval harness we do not yet have are left None,
+        and `_identify_gaps` skips them — the agent reports what it knows, and is
+        honest about what it does not, rather than inventing a number.
+        """
+
+        # REAL per-language extraction quality from the CLL (offline). Runs in a
+        # thread because it touches the concept index + reads the source file.
+        def _measure_all_langs() -> tuple[dict[str, float], dict[str, float]]:
+            prec, rec = {}, {}
+            for lang in measurable_languages():
+                m = measure_language(lang)
+                prec[lang] = m["precision"]
+                rec[lang] = m["recall"]
+            return prec, rec
+
+        lang_prec, lang_rec = await asyncio.to_thread(_measure_all_langs)
+
+        wm_conf = 0.0
+        try:
+            wm_conf = self.pipeline.world_model_promotion.stats().get("avg_confidence", 0.0)
+        except Exception:
+            wm_conf = 0.0
+
         return SystemState(
             timestamp=utc_now(),
-            intent_stability_score=0.88,  # Placeholder
-            provider_dependency_rate=0.12,  # 12% provider calls
-            retrieval_accuracy=0.82,
-            world_model_confidence_avg=(
-                self.pipeline.world_model_promotion.stats()["avg_confidence"]
-                if getattr(self, "pipeline", None) is not None
-                else 0.0
-            ),
-            language_variant_scores={
-                "en": 0.91,
-                "fr": 0.78,
-                "de": 0.75,
-                "es": 0.76,
-                "yo": 0.45,  # Below threshold
-                "ar": 0.52,  # Below threshold
-            },
-            domain_coverage={
-                "general_knowledge": 0.88,
-                "medical": 0.62,  # Below threshold
-                "legal": 0.58,  # Below threshold
-                "coding": 0.85,
-                "creative_writing": 0.68,
-            },
-            capability_coverage={
-                "memory_chat": 0.90,
-                "world_knowledge": 0.75,
-                "coding": 0.87,
-                "math_science": 0.72,
-                "creative_text": 0.65,  # Below threshold
-            },
+            world_model_confidence_avg=wm_conf,
+            # None = not yet measurable offline (honest gap, not a fabricated 0.88).
+            intent_stability_score=None,
+            provider_dependency_rate=None,
+            retrieval_accuracy=None,
+            language_variant_scores=lang_prec,   # REAL
+            language_variant_recall=lang_rec,    # REAL
+            domain_coverage={},                  # no offline domain eval yet
+            capability_coverage={},              # no offline capability eval yet
             review_queue_depth=len(self.pipeline.ambiguity_queue),
             sppe_pairs_ready=len(self.pipeline.feedback_history),
         )
@@ -462,9 +517,9 @@ class AutonomousTrainingAgent:
         """Identify weak areas in the system."""
         
         gaps = []
-        
-        # Check intent stability
-        if state.intent_stability_score < self.config.intent_stability_min:
+
+        # Check intent stability — only if actually measured (None = skip, no fake gate).
+        if state.intent_stability_score is not None and state.intent_stability_score < self.config.intent_stability_min:
             gaps.append(IdentifiedGap(
                 gap_type="stability",
                 name="Intent Classification",
@@ -474,9 +529,9 @@ class AutonomousTrainingAgent:
                 suggested_data_source="user_interactions",  # de-LLM: real SPPE pairs, not generated
                 estimated_documents_needed=500,
             ))
-        
-        # Check provider dependency
-        if state.provider_dependency_rate > self.config.provider_dependency_max:
+
+        # Check provider dependency — only if measured.
+        if state.provider_dependency_rate is not None and state.provider_dependency_rate > self.config.provider_dependency_max:
             gaps.append(IdentifiedGap(
                 gap_type="provider_dependency",
                 name="Provider Call Rate",
@@ -486,8 +541,11 @@ class AutonomousTrainingAgent:
                 suggested_data_source="wikipedia",
                 estimated_documents_needed=2000,
             ))
-        
-        # Check language variants
+
+        # Check language variants — REAL CLL extraction precision. The de-LLM
+        # remedy is common-vocabulary ingestion (the loop that actually moves this
+        # metric); low-resource languages with no source are surfaced as gaps that
+        # need LEARNED coverage, not a fabricated dataset.
         for lang, score in state.language_variant_scores.items():
             if score < self.config.language_variant_threshold:
                 gaps.append(IdentifiedGap(
@@ -496,7 +554,7 @@ class AutonomousTrainingAgent:
                     current_score=score,
                     threshold=self.config.language_variant_threshold,
                     priority=7,
-                    suggested_data_source="opensubtitles",
+                    suggested_data_source="common_vocabulary",
                     estimated_documents_needed=int(1000 * (1 - score)),
                 ))
         
@@ -566,14 +624,19 @@ class AutonomousTrainingAgent:
         return plan
 
     async def _generate_training_signal(self, ingestion_results: dict[str, Any]) -> dict[str, Any]:
-        """Generate SPPE pairs and world model candidates from ingestion."""
-        
+        """Generate SPPE pairs and world model candidates from ingestion.
+
+        NOTE: the quality-band split below is a PLACEHOLDER distribution for the
+        neural-weight path, not a real scorer. It is honest today only because
+        `sppe_pairs_generated` is 0 offline (0 in → 0 out); a real SPPE quality
+        scorer must replace these ratios before this path produces live numbers.
+        """
         total_sppe = ingestion_results["sppe_pairs_generated"]
-        
-        # Simulate quality distribution
-        auto_accept = int(total_sppe * 0.50)  # 50% high confidence
-        human_review = int(total_sppe * 0.35)  # 35% medium confidence
-        reject = int(total_sppe * 0.15)  # 15% low confidence
+
+        # PLACEHOLDER quality distribution (see docstring) — safe at 0.
+        auto_accept = int(total_sppe * 0.50)  # high confidence
+        human_review = int(total_sppe * 0.35)  # medium confidence
+        reject = int(total_sppe * 0.15)  # low confidence
         
         return {
             "sppe_ready": total_sppe,
@@ -596,14 +659,16 @@ class AutonomousTrainingAgent:
         }
 
     async def _prepare_kaggle_training(self, training_signal: dict[str, Any]) -> dict[str, Any]:
-        """Prepare training batch for Kaggle upload."""
-        
-        # In production: would actually package and upload
+        """Prepare training batch for Kaggle upload.
+
+        Reachable only once ≥1000 REAL SPPE pairs exist (not producible offline
+        yet). `avg_quality` is a PLACEHOLDER until a real quality scorer exists.
+        """
         return {
             "kaggle_dataset_id": f"jimsai-training-{datetime.now().strftime('%Y%m%d-%H%M%S')}",
             "sppe_count": training_signal["sppe_ready"],
             "world_model_count": training_signal["world_model_candidates"],
-            "avg_quality": 0.84,
+            "avg_quality": 0.84,  # PLACEHOLDER — pending real SPPE quality scorer
             "auto_accept_count": training_signal["auto_accept"],
             "human_review_count": training_signal["human_review"],
             "reject_count": training_signal["reject"],
@@ -634,16 +699,30 @@ class AutonomousTrainingAgent:
         }
 
     async def _measure_improvement(self, deploy_result: dict[str, Any]) -> dict[str, Any]:
-        """Measure system improvement after deployment."""
-        
-        # Compare current state with previous state
-        prev_state = self.current_state
-        
+        """Report the REAL improvement from the last de-LLM training pass.
+
+        No hardcoded deltas: each number is the measured before→after precision/
+        recall change per language from the loop that was actually run this cycle,
+        with the gap-honesty guard already applied (rolled-back passes show 0).
+        """
+        per_lang = {
+            r.lang: {
+                "precision_delta": r.precision_delta,
+                "recall_delta": r.recall_delta,
+                "kept": r.kept,
+                "promotable": r.promotable,
+            }
+            for r in self._last_train_results
+        }
+        kept = [r for r in self._last_train_results if r.kept and r.action != "none"]
+        mean_prec_gain = round(sum(r.precision_delta for r in kept) / len(kept), 3) if kept else 0.0
+        # Guarantee: no language's recall regressed (guard enforced in the loop).
+        recall_safe = all(r.recall_delta >= 0 for r in self._last_train_results)
         return {
-            "intent_stability_delta": +0.02,
-            "retrieval_accuracy_delta": +0.03,
-            "world_model_delta": +0.04,
-            "provider_dependency_delta": -0.02,
+            "per_language": per_lang,
+            "mean_precision_gain_kept": mean_prec_gain,
+            "languages_promotable": [r.lang for r in self._last_train_results if r.promotable],
+            "recall_never_regressed": recall_safe,
             "deployment_id": deploy_result["deployment_id"],
         }
 
