@@ -71,3 +71,40 @@ def relation_is_functional(signature: Any, predicate: str) -> bool:
     if not isinstance(metadata, dict):
         metadata = {}
     return metadata_marks_functional(metadata, predicate) or predicate in configured_functional_predicates()
+
+
+def metadata_marks_multivalued(metadata: dict, predicate: str) -> bool:
+    relation_cardinality = metadata.get("relation_cardinality")
+    if isinstance(relation_cardinality, dict):
+        value = relation_cardinality.get(predicate) or relation_cardinality.get("*")
+        if normalize_relation_cardinality(value) == "many":
+            return True
+    schemas = metadata.get("relation_schemas")
+    if isinstance(schemas, dict):
+        schema = schemas.get(predicate)
+        if isinstance(schema, dict):
+            card = schema.get("cardinality") or schema.get("object_cardinality")
+            if normalize_relation_cardinality(card) == "many":
+                return True
+    multi = metadata.get("multivalued_predicates")
+    if isinstance(multi, (list, tuple, set)) and predicate in {str(m).strip() for m in multi}:
+        return True
+    return False
+
+
+def configured_multivalued_predicates() -> set[str]:
+    configured = os.getenv("JIMS_MULTIVALUED_RELATION_PREDICATES", "")
+    return {item.strip() for item in configured.split(",") if item.strip()}
+
+
+def relation_is_multivalued(signature: Any, predicate: str) -> bool:
+    """True when the ontology/metadata EXPLICITLY marks this relation as a set
+    (a subject may hold many objects — "speaks", "member_of"). Used to EXEMPT
+    such relations from latest-wins supersession. Absent an explicit marker a
+    relation is treated as single-valued (its current value is its latest
+    assertion) — the projection engine's default, made precise by ontology
+    cardinality data (M5) rather than a hardcoded predicate list."""
+    metadata = getattr(signature, "metadata", {})
+    if not isinstance(metadata, dict):
+        metadata = {}
+    return metadata_marks_multivalued(metadata, predicate) or predicate in configured_multivalued_predicates()

@@ -9,6 +9,31 @@ from .memory import FourLayerMemoryStore
 from .models import RetrievalResult, SemanticIR
 
 
+# Interaction/result-log signatures the system writes about its OWN activity
+# (a stored query, or a "resolved prompt memory" learning record). These are
+# not external knowledge and must never be voiced as facts — the answer path
+# serves what was TAUGHT, not what was ASKED or previously answered. The markers
+# are system-controlled provenance/intent tags (like the capability taxonomy),
+# not answer data, so gating on them is principled, not hardcoded.
+_INTERACTION_INTENTS = {"resolved_prompt_memory", "query", "prompt", "user_query"}
+_INTERACTION_EXCERPT_PREFIXES = ("resolved prompt memory", "prompt:")
+
+
+def _is_knowledge_signature(sig) -> bool:
+    """True for taught-fact/knowledge records; False for the system's own
+    interaction and result-log records."""
+    intent = getattr(getattr(sig.structured, "intent", None), "type", "") or ""
+    if intent.strip().lower() in _INTERACTION_INTENTS:
+        return False
+    prov = str(getattr(sig, "provenance", "") or "").strip().lower()
+    if prov.startswith("resolution:") or prov.startswith("query:"):
+        return False
+    excerpt = str(getattr(sig, "raw_excerpt", "") or "").strip().lower()
+    if excerpt.startswith(_INTERACTION_EXCERPT_PREFIXES):
+        return False
+    return True
+
+
 def cosine(left: list[float], right: list[float]) -> float:
     dot = sum(a * b for a, b in zip(left, right))
     lnorm = math.sqrt(sum(a * a for a in left)) or 1.0
@@ -271,14 +296,25 @@ class MultiIndexRetrievalEngine:
                 by_id = {sig.id: sig for sig in visible_signatures}
                 for rank, sid in enumerate(
                         get_shadow().concept_hits(query, visible_signatures, limit=5)):
-                    if sid in results or sid not in by_id:
+                    # Respect exclude_ids (the current query's own input
+                    # signature) and skip interaction/result-log records — the
+                    # concept index must inject KNOWLEDGE, never the query being
+                    # asked or a prior interaction echoed back.
+                    if sid in results or sid not in by_id or sid in exclude_ids:
                         continue
                     sig = by_id[sid]
+                    # Consistency with the main retrieval loop (above), which
+                    # skips `local_extraction` records: those are the system's
+                    # own encoded INPUT queries, not taught knowledge. Without
+                    # this guard the concept index re-surfaces a prior turn's
+                    # stored question (its concepts/literals match the current
+                    # one), and a punctuation-stripped question ("what db does X
+                    # use", no '?') slips past the interrogative filter and gets
+                    # voiced as a fact. Taught facts never carry this provenance,
+                    # so recall is unaffected.
+                    if sig.provenance == "local_extraction" or not _is_knowledge_signature(sig):
+                        continue
                     score = max(0.3, 0.6 - 0.05 * rank)
-                    # Same hazard rule as production scoring: prior-query
-                    # records must not surface as answers.
-                    if str(getattr(sig, "raw_excerpt", "") or "").startswith("prompt:"):
-                        score *= 0.15
                     results[sid] = RetrievalResult(
                         signature=sig, score=round(score, 4), reasons=["concept_index"])
         except Exception:  # concept index must never break retrieval
@@ -298,6 +334,14 @@ class MultiIndexRetrievalEngine:
             user_profile_query=user_profile_query,
         )
         deduped = self._deduplicate_by_predicate(ranked, user_id)
+        deduped = self._supersede_functional_conflicts(deduped)
+        deduped = self._supersede_concept_conflicts(deduped)
+        # Never voice the system's own interaction/result-log records as facts
+        # (regardless of which index surfaced them). Keep them only if nothing
+        # else matched, so an all-log corpus still returns *something* rather
+        # than crashing — the honest gap path then handles it.
+        knowledge = [r for r in deduped if _is_knowledge_signature(r.signature)]
+        deduped = knowledge if knowledge else deduped
         final = deduped[:effective_limit]
 
         # CLL evidence report (both shadow and on modes): what the concept
@@ -581,6 +625,118 @@ class MultiIndexRetrievalEngine:
         if _is_document_wide_relation(relation_filter) and "relation_index" in reasons:
             return True
         return False
+
+    def _supersede_functional_conflicts(
+        self,
+        results: list[RetrievalResult],
+    ) -> list[RetrievalResult]:
+        """Latest-wins over single-valued relations (the projection engine's
+        contradiction-resolution policy, applied to production signatures).
+
+        When several retrieved signatures assert DIFFERENT objects for the same
+        (subject, predicate) slot — a correction, e.g. "X uses A" superseded by
+        "X uses B" — only the most recent assertion is voiced; superseded ones
+        are dropped from the answer (but never deleted from the ledger, so the
+        audit trail is intact). Relations the ontology EXPLICITLY marks
+        multi-valued ("Alice speaks French" + "German") are exempt and keep all
+        values. No hardcoded predicate list — single-valued is the default,
+        ontology cardinality (M5) makes it precise. Language-agnostic: operates
+        on the structured relation graph, not raw text; a slot with only one
+        object asserted (no conflict) is never touched.
+        """
+        from .relation_schema import relation_is_multivalued
+
+        # Per (subject, predicate) slot: the set of distinct objects seen and
+        # the newest assertion time. A slot is a CONFLICT only if >1 object.
+        slot_objects: dict[tuple[str, str], set[str]] = {}
+        slot_newest: dict[tuple[str, str], datetime] = {}
+        for r in results:
+            for rel in r.signature.structured.relations:
+                pred = rel.predicate.strip()
+                if relation_is_multivalued(r.signature, pred):
+                    continue
+                key = (rel.subject.strip().lower(), pred)
+                slot_objects.setdefault(key, set()).add(rel.object.strip().lower())
+                ts = r.signature.created_at
+                if key not in slot_newest or ts > slot_newest[key]:
+                    slot_newest[key] = ts
+
+        conflicted = {k for k, objs in slot_objects.items() if len(objs) > 1}
+        if not conflicted:
+            return results
+
+        kept: list[RetrievalResult] = []
+        for r in results:
+            superseded = False
+            for rel in r.signature.structured.relations:
+                key = (rel.subject.strip().lower(), rel.predicate.strip())
+                if key in conflicted and r.signature.created_at < slot_newest[key]:
+                    superseded = True  # a strictly-newer value exists for this slot
+                    break
+            if not superseded:
+                kept.append(r)
+        return kept
+
+    def _supersede_concept_conflicts(
+        self,
+        results: list[RetrievalResult],
+    ) -> list[RetrievalResult]:
+        """Latest-wins over conflicting facts in the DE-LLM path, where records
+        carry no structured (subject, predicate, object) triples — only raw
+        text and concept encoding. Two records are the *same statement with a
+        corrected value* when they share the same CONCEPT SIGNATURE (identical
+        concept set — same meaning frame) AND a subject literal (same entity)
+        but differ in a value literal ("Wexomla uses NoxliDB" → "…RiveDB"). The
+        older assertion is dropped from the voiced answer, retained in the
+        ledger. Data-driven via the CLL encoder — no predicate list, no text
+        patterns; records with different subjects (different projects) share no
+        subject literal and are never collapsed. No-op when the concept index
+        is unavailable.
+        """
+        try:
+            from .cll_shadow import get_shadow, index_enabled, shadow_enabled
+            if not (index_enabled() or shadow_enabled()):
+                return results
+            shadow = get_shadow()
+            if not shadow.loaded:
+                return results
+        except Exception:
+            return results
+
+        # (concepts, literals) per record, keyed by index in `results`
+        encoded: list[tuple[frozenset, frozenset]] = []
+        for r in results:
+            try:
+                concepts, literals = shadow.encode(
+                    str(r.signature.raw_excerpt or ""), mode="document")
+            except Exception:
+                concepts, literals = frozenset(), frozenset()
+            encoded.append((frozenset(concepts), frozenset(literals)))
+
+        superseded: set[int] = set()
+        n = len(results)
+        for i in range(n):
+            if not encoded[i][0]:
+                continue
+            for j in range(i + 1, n):
+                ci, li = encoded[i]
+                cj, lj = encoded[j]
+                # A CORRECTION is two records that are otherwise identical —
+                # same concept frame, same shared literals — differing by
+                # EXACTLY ONE swapped value literal on each side. This strict
+                # single-swap signature avoids collapsing unrelated facts that
+                # merely happen to share a concept structure and one word.
+                if not (ci and ci == cj):
+                    continue
+                only_i, only_j = li - lj, lj - li
+                if (li & lj) and len(only_i) == 1 and len(only_j) == 1:
+                    ti, tj = results[i].signature.created_at, results[j].signature.created_at
+                    if ti != tj:
+                        superseded.add(i if ti < tj else j)
+
+        if not superseded:
+            return results
+        return [r for k, r in enumerate(results) if k not in superseded]
 
     def _deduplicate_by_predicate(
         self,

@@ -1,0 +1,93 @@
+{
+  "results": [
+    {
+      "seed": 42,
+      "discovered_laws": [
+        "occlusion",
+        "shadow_direction",
+        "shadow_length",
+        "support"
+      ],
+      "real_laws_found": [
+        "shadow_direction",
+        "shadow_length",
+        "support",
+        "occlusion"
+      ],
+      "spurious_rejected": true,
+      "accept_rate_consistent": 1.0,
+      "refuse_rate_impossible": 1.0,
+      "correct_law_named_rate": 1.0,
+      "impossible_accepted": 0,
+      "n_train": 60,
+      "n_test": 60
+    },
+    {
+      "seed": 7,
+      "discovered_laws": [
+        "occlusion",
+        "shadow_direction",
+        "shadow_length",
+        "support"
+      ],
+      "real_laws_found": [
+        "shadow_direction",
+        "shadow_length",
+        "support",
+        "occlusion"
+      ],
+      "spurious_rejected": true,
+      "accept_rate_consistent": 1.0,
+      "refuse_rate_impossible": 1.0,
+      "correct_law_named_rate": 1.0,
+      "impossible_accepted": 0,
+      "n_train": 60,
+      "n_test": 60
+    },
+    {
+      "seed": 2024,
+      "discovered_laws": [
+        "occlusion",
+        "shadow_direction",
+        "shadow_length",
+        "support"
+      ],
+      "real_laws_found": [
+        "shadow_direction",
+        "shadow_length",
+        "support",
+        "occlusion"
+      ],
+      "spurious_rejected": true,
+      "accept_rate_consistent": 1.0,
+      "refuse_rate_impossible": 1.0,
+      "correct_law_named_rate": 1.0,
+      "impossible_accepted": 0,
+      "n_train": 60,
+      "n_test": 60
+    },
+    {
+      "seed": 99999,
+      "discovered_laws": [
+        "occlusion",
+        "shadow_direction",
+        "shadow_length",
+        "support"
+      ],
+      "real_laws_found": [
+        "shadow_direction",
+        "shadow_length",
+        "support",
+        "occlusion"
+      ],
+      "spurious_rejected": true,
+      "accept_rate_consistent": 1.0,
+      "refuse_rate_impossible": 1.0,
+      "correct_law_named_rate": 1.0,
+      "impossible_accepted": 0,
+      "n_train": 60,
+      "n_test": 60
+    }
+  ],
+  "demo_text": "A scene lit from the SW at golden hour (14\u00b0 elevation); 3 objects rest on the ground, casting shadows toward NE."
+}

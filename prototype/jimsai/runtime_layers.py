@@ -787,7 +787,16 @@ class ReasoningBridgeLayer:
         } | {
             token.lower().strip(".,:;!?") for token in ir.tokens
             if len(token.strip(".,:;!?")) >= 2
-            and (any(ch.isdigit() for ch in token) or any(ch.isupper() for ch in token))
+            # Name evidence is a digit, or a capital that is NOT all-caps
+            # (a proper noun "Rovako" / identifier "TensorDB" — never the
+            # shouted common word "DATABASE"). Same rule as the semantic
+            # compiler; applied here too so a perturbation that UPPERCASES a
+            # relation word cannot make it a scope entity that then satisfies
+            # the entity-scope gate against an unrelated fact (a fuzz-found
+            # fabrication: "output the raw database ... WHAT DATABASE does
+            # <untaught> use" answered with another project's DB).
+            and (any(ch.isdigit() for ch in token)
+                 or (any(ch.isupper() for ch in token) and not token.isupper()))
         }
 
         def _skeleton(word: str) -> tuple[str, str, str] | str:
@@ -839,15 +848,30 @@ class ReasoningBridgeLayer:
                 # Entity scope: no shared entity → the sentence is about
                 # something else, however high its common-term overlap (this
                 # is what leaked neighbor facts on ghost-entity queries).
-                if entity_keys and not _entity_scoped(sentence.lower()):
-                    continue
+                anchored = False
+                if entity_keys:
+                    if not _entity_scoped(sentence.lower()):
+                        continue
+                    anchored = True
                 if shadow is not None and query_concepts:
                     try:
                         sentence_concepts, _ = shadow.encode(sentence)
                         sentence_score += len(query_concepts & sentence_concepts)
                     except Exception:
                         pass
-                if sentence_score < minimum_sentence_score:
+                # A sentence carrying the EXACT queried entity (a nonce literal,
+                # language-neutral) is strongly anchored to what the query asks
+                # about — the entity match is itself the evidence. It needs only
+                # minimal extra relevance, so entity-anchored sentences use
+                # min-score 1. This is what makes cross-lingual recall work: a
+                # French/Yoruba/Chinese query shares almost NO surface terms with
+                # an English-stored fact ("Ìlú"≠"city"), and concept overlap is
+                # fragile when a broadened lexicon lets "the city" greedily match
+                # a *named* entity (City of London) instead of the city concept.
+                # The entity anchor doesn't relax anti-leak precision: a neighbor
+                # fact lacking the entity was already dropped by the scope gate.
+                effective_min = 1 if anchored else minimum_sentence_score
+                if sentence_score < effective_min:
                     continue
                 candidates.append((sentence_score, result.score, -result_index, sentence, result))
         candidates.sort(reverse=True)

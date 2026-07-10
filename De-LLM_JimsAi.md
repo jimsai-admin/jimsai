@@ -118,12 +118,16 @@ The instinct that generation needs an LLM is backwards: **formal outputs have gr
 | Verified facts | claim from the reasoning chain, realized by template/constrained realizer | **[BUILT]** P1/P4/P8 |
 | Math / formulas | expression extracted by **grammar** (formal language, not model), solved by SymPy, rendered from the executed tree | **[BUILT]** P6 100%, `math_extract.py` |
 | Physics / chemistry / engineering | same grammar, admitting symbols by lookup against the solver's constant + element namespaces (data tables, no per-domain code) | **[BUILT]** namespace extension |
-| Tables / JSON / YAML / CSV | deterministic serialization of VCO content, one emitter per format | **[ROADMAP]** M7 |
+| Tables / JSON / bullet lists | deterministic serialization of VCO content, one emitter per format — the SAME verified claims, only the shape bends | **[BUILT]** P10 100%, `response_format.py` |
+| YAML / CSV | same emitter pattern, additional formats | **[ROADMAP]** M7 |
 | Diagrams / charts | projection of an actual subgraph → Mermaid/graphviz/chart spec (the diagram an LLM fakes from prose, emitted from the real graph) | **[ROADMAP]** M7 |
-| Code + comments | scaffolding from schema templates; retrieval of *verified* (sandbox-passed) patterns; small-function synthesis by bounded search verified in the sandbox (CEGIS-shape) | **[ROADMAP]** M8; sandbox+graph **[PRODUCTION]** |
+| Code (small functions) | bounded typed search + execution-verification (CEGIS-shape) — no LLM. Synthesised program must pass held-out examples; at the grammar boundary it REFUSES, never voices a wrong program | **[BUILT — proof of mechanism]** M8: 160/160 in-grammar (0% overfit), 80/80 out-of-grammar refused, 0 wrongly-voiced, 4 seeds. `experiments/synthesis/run_m8.py` |
+| Code at scale (architecture, multi-module) | verified-pattern library from sandbox passes + larger typed search + learned software-engineering templates | **[ROADMAP]** M8-scale; sandbox+graph **[PRODUCTION]** |
 | Mixed responses (prose+code+table+math) | a **document plan** — an ordered list of typed blocks, each routed to its emitter, assembled as Markdown; discourse templates discovered by the same construction machinery at document scale | **[ROADMAP]** M7 |
 | Dialogue / follow-ups | discourse focus resolves "it"/"she" against the conversation; underspecified follow-ups inherit the focus entity | **[BUILT]** P8 100% incl. cold-thread honesty control |
-| Creative / open-ended prose | out of scope by policy until the constrained realizer composes it from licensed content; never delegated to an external model | **[ROADMAP]** |
+| Response in the language ASKED | knowledge is language-agnostic (concept IDs); realization is language-specific. Content words re-realized into the query's language via the CLL reverse lexicon, entities preserved (fr "…utilise…base de données", zh "…項目…资料库") | **[BUILT — first pass]** `surface_realizer.py`, verified en/fr/zh; function-word + grammar fluency is the M4b layer. P11 judge in harness |
+| Fluent long-form / discourse | Discourse Engine: discover discourse-move patterns as evidence (like ELE constructions), order+connect verified claims, realize in target language | **[ROADMAP]** M9, `docs/generation_decomposition.md` |
+| Creative / open-ended prose | projection (novel composition of known structures) **+ a verifier** (structural-alignment acceptance); metaphor/humor are projection, not randomness; never delegated to an external model | **[ROADMAP]** M11 |
 | Media generation (image/audio/video) | the one honest carve-out: generative by nature — either an *effector* invoked on explicit request and marked generated-not-factual, or refused. The truth path is never delegated | decision pending |
 
 ---
@@ -190,10 +194,14 @@ JimsAI is judged by **`benchmarks/genuine_eval.py`** — a property-based, gener
 - **P6 math** — generated problems vs local ground truth.
 - **P7 scoping** — workspace A facts must not leak into workspace B.
 - **P8 dialogue** — an underspecified follow-up resolves via discourse focus; a cold thread honestly fails to resolve it.
+- **P9 edge cases / adversarial** — empty, punctuation-only, symbol-noise, gibberish, injection, and 120-word entity-less prompts must not crash or fabricate; taught facts must survive heavy distortion (burial in chaos, code-switching, symbol noise); a correction must return the latest value, not the superseded one.
+- **P10 response format** — a fact requested "as a table" / "as JSON" / "as a list" comes back in that structure AND still contains the taught value (content fixed by verification, only form bends).
+
+The real prompt-and-response evidence of all of these against the running de-LLM backend is in **`De-LLM_JimsAi_StressTest.md`** (17 actual captures, imperfect cases labelled honestly).
 
 The mechanism-level proofs live in `experiments/ele/run_all.py` (ELE + Projection, 60 pass / 12 report / 0 fail across 4 seeds) and `experiments/ele/realizer.py` (the constrained realizer). Reports (rows are REPORT, not PASS, for equal-budget neural comparisons) are recorded honestly — a neural win is never hidden.
 
-### Current measured board (fully de-LLM / local, fresh seed 724613, 2026-07-07)
+### Current measured board (fully de-LLM / local, fresh seed 44241, 2026-07-08)
 
 | Property | Result |
 |---|---|
@@ -201,12 +209,14 @@ The mechanism-level proofs live in `experiments/ele/run_all.py` (ELE + Projectio
 | P2 gap honesty | **100%** |
 | P3 robustness | **100%** |
 | P4 multilingual | 78% (2 Yoruba — lexicon data, not code) |
-| P5 multi-intent | 50% |
+| P5 multi-intent | 0% (recall dropped under the math route — multi-attention-span roadmap) |
 | P6 math | **100%** |
 | P7 scoping | **100%** |
 | P8 dialogue | **100%** (incl. cold-thread honesty control) |
+| P9 edge / adversarial | **100%** (11/11) |
+| P10 response format | **100%** (table / JSON / bullets) |
 
-Six of eight properties at 100%, fully de-LLM, on fresh seeds. The two remaining gaps are a lexicon-data item (Yoruba coverage: 1.8k entries vs 17k for Chinese — closed by the same provenance-stamped enrichment script, no code) and one multi-intent recall case.
+**Eight of ten properties at 100%, fully de-LLM, on fresh seeds.** The two remaining gaps are a lexicon-data item (Yoruba coverage: 1.8k entries vs 17k for Chinese — closed by the same provenance-stamped enrichment script, no code) and multi-intent decomposition (P5 — the multi-attention-span roadmap item; the math half is answered, the recall half dropped). P5's swing between runs reflects seed-dependent routing of the multi-intent prompt, not a data change. Real prompt/response evidence: `De-LLM_JimsAi_StressTest.md`.
 
 ---
 

@@ -409,6 +409,7 @@ class VerifiedCognitiveObject(BaseModel):
     capability_plan: CapabilityPlan | None = None
     capability_results: list[CapabilityExecutionResult] = Field(default_factory=list)
     layer_results: list[LayerResult] = Field(default_factory=list)
+    raw_query: str = ""  # original user text, for response-format detection
 
 
 class PipelineRequest(BaseModel):

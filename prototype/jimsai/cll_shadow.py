@@ -267,6 +267,7 @@ class ConceptShadowIndex:
             # co-occurring words — gap honesty as an index property.
             return []
         candidates: dict[str, float] = defaultdict(float)
+        assertive_hit: set[str] = set()
         for key in q_concepts | q_literals:
             df = len(self._postings.get(key, ()))
             if not df:
@@ -278,9 +279,20 @@ class ConceptShadowIndex:
                 # Assertive occurrences (declarative sentences) outweigh mere
                 # mentions in questions — records that STATE things about the
                 # asked-about entity rank above records that ASK about it.
-                weight = 2.0 if sig_id in self._assertive.get(key, ()) else 1.0
-                candidates[sig_id] += idf * weight
-        return [sid for sid, _ in sorted(candidates.items(), key=lambda kv: -kv[1])[:limit]]
+                if sig_id in self._assertive.get(key, ()):
+                    assertive_hit.add(sig_id)
+                    candidates[sig_id] += idf * 2.0
+                else:
+                    candidates[sig_id] += idf
+        # "Questions don't assert" at the index: a record that only MENTIONS the
+        # query's concepts inside a question (a stored prompt / prior query, or
+        # the current query echoed into memory) states nothing and must never be
+        # returned as a fact answer. Keep only records with >=1 assertive match.
+        # (If nothing asserts — a corpus of only questions — fall back to all, so
+        # the honest gap path still runs rather than a hard crash.)
+        answerable = {s: sc for s, sc in candidates.items() if s in assertive_hit}
+        ranked = answerable or candidates
+        return [sid for sid, _ in sorted(ranked.items(), key=lambda kv: -kv[1])[:limit]]
 
     def observe(
         self,

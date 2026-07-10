@@ -188,29 +188,36 @@ class CapabilityRouter:
         # device..." is not a coding request when 'Bevorno' is a taught
         # entity). Data-driven — the evidence exists only because the
         # workspace contains the entity; no vocabulary, no language branches.
-        # Structural signals (code fences, math syntax) stay dominant.
-        if not strong_structural:
+        #
+        # This runs EVEN with a strong structural signal (math syntax, code
+        # fence): a structural hit identifies ONE intent (the math span); a
+        # named workspace entity identifies ANOTHER (a recall span). That is
+        # the multi-attention-span primitive — "what is 12*8+4? and what db
+        # does Aperture use?" carries both a math and a memory intent. When a
+        # structural signal is already dominant, the workspace-literal boost
+        # surfaces memory as a SECONDARY intent so the pipeline composes both
+        # answers instead of dropping the recall.
+        if True:
             try:
                 from .cll_shadow import get_shadow, index_enabled, shadow_enabled
                 if index_enabled() or shadow_enabled():
                     shadow = get_shadow()
-                    # Literals named in THIS utterance, plus entities carried
-                    # from the conversation (dialogue focus) — "what is the
-                    # codename replacing IT?" is a memory question because
-                    # 'it' resolves to a known workspace entity. Inherited
-                    # entities are checked against postings directly (they
-                    # arrive lowercased and would not re-tokenize as literals).
                     scope_entities = [str(e) for e in ir.scope_constraints.get("entities", [])]
                     known = max(
                         shadow.known_query_literals(request.query),
                         shadow.known_terms(scope_entities),
                     )
                     if known:
-                        boost = min(0.55, 0.3 + 0.1 * (known - 1))
+                        # When a structural signal is dominant, cap the boost so
+                        # memory becomes a strong SECONDARY (not primary) intent;
+                        # otherwise it can be the primary as before.
+                        cap = 0.55 if not strong_structural else 0.5
+                        boost = min(cap, 0.3 + 0.1 * (known - 1))
                         scores[CapabilityKind.MEMORY_CHAT] = min(
                             1.0, scores.get(CapabilityKind.MEMORY_CHAT, 0.0) + boost)
                         signals["workspace_literal_evidence"] = {
-                            "known_literals": known, "boost": round(boost, 4)}
+                            "known_literals": known, "boost": round(boost, 4),
+                            "with_structural": strong_structural}
             except Exception:
                 pass
 
@@ -274,6 +281,25 @@ class CapabilityRouter:
         if applied_policy:
             signals["learned_policy"] = {kind.value: round(value, 4) for kind, value in applied_policy.items()}
 
+        # A known workspace entity as the query's subject — a surface literal, or
+        # a discourse-resolved pronoun ("And which city is she based in?", where
+        # "she" resolves to a workspace entity via thread focus) — makes this a
+        # question about the user's PRIVATE world. WORLD_KNOWLEDGE is about PUBLIC
+        # entities, so its premise is false here however much the surface
+        # resembles a general-knowledge question. It must not be the PRIMARY
+        # intent; capping it just below memory keeps memory primary and lets a
+        # genuine "compare to <public thing>" span still survive as a secondary
+        # (the >=0.44 secondary gate below decides that). This completes the
+        # standing principle — a query naming a known workspace entity is a
+        # memory question regardless of wording — which a mere score boost did
+        # not enforce when a spurious embedding score let WORLD_KNOWLEDGE win.
+        if "workspace_literal_evidence" in signals:
+            wk = scores.get(CapabilityKind.WORLD_KNOWLEDGE, 0.0)
+            mem = scores.get(CapabilityKind.MEMORY_CHAT, 0.0)
+            if wk >= mem:
+                scores[CapabilityKind.WORLD_KNOWLEDGE] = mem - 1e-3
+                signals["workspace_literal_evidence"]["world_knowledge_capped_from"] = round(wk, 4)
+
         ranked = sorted(scores.items(), key=lambda item: (-item[1], item[0].value))
         kind = ranked[0][0] if ranked else CapabilityKind.MEMORY_CHAT
         top_score = ranked[0][1] if ranked else 0.0
@@ -331,6 +357,17 @@ class CapabilityRouter:
                 if seg_kind not in secondary:
                     secondary.append(seg_kind)
             secondary = secondary[:3]
+
+        # Direct workspace-literal evidence forces a memory SECONDARY intent:
+        # the query names a known workspace entity, so a recall span exists
+        # even when a structural signal (math/code) is the primary. This is
+        # unambiguous evidence, so it bypasses the margin heuristic — the
+        # multi-attention-span primitive that makes "compute X; and what does
+        # Y use?" answer BOTH parts instead of dropping the recall.
+        if ("workspace_literal_evidence" in signals
+                and kind != CapabilityKind.MEMORY_CHAT
+                and CapabilityKind.MEMORY_CHAT not in secondary):
+            secondary = [CapabilityKind.MEMORY_CHAT, *secondary][:3]
 
         plan = self._plan_for(
             kind, confidence, reason,

@@ -47,6 +47,28 @@ class ConstrainedSemanticSynthesisEngine:
         tier = self._compute_tier(obj.confidence)
         user_steps = self._user_facing_steps(obj)
 
+        # Respond in the language ASKED. Knowledge is stored language-neutrally
+        # (concept IDs); the Surface Realizer re-realizes each verified claim's
+        # content into the query's language via the CLL reverse lexicon —
+        # literals (entities) pass through. Reasoning stays language-neutral;
+        # only this surface layer is language-specific. (First realizer: content
+        # is translated and in-language; grammar fluency is the M4b layer.)
+        user_steps = self._realize_language(obj, user_steps)
+
+        # Strict user response format (M7): if the query requested a shape
+        # ("as a table", "as JSON", "as a list"), serialize the SAME verified
+        # claims into it — content fixed by verification, only form bends. Math
+        # and causal results keep their specialist rendering.
+        if user_steps and not self._is_math_result(user_steps) and not self._is_causal_result(user_steps):
+            from .response_format import apply_format, detect_format
+            fmt = detect_format(getattr(obj, "raw_query", "") or "")
+            if fmt:
+                claims = [self._clean_claim(s.claim) for s in user_steps
+                          if s.claim.strip() and not self._is_internal_claim(s.claim)]
+                formatted = apply_format(fmt, claims)
+                if formatted:
+                    return formatted
+
         # Route to specialist renderers first
         if self._is_math_result(user_steps):
             return self._render_math(user_steps, obj, tier)
@@ -58,6 +80,29 @@ class ConstrainedSemanticSynthesisEngine:
             return self._render_claims(user_steps, obj, tier)
 
         return self._render_gap(obj)
+
+    def _realize_language(self, obj: VerifiedCognitiveObject, steps: list) -> list:
+        """Return steps with each claim re-realized into the query's language.
+        No-op for English or when the realizer/concept-index is unavailable."""
+        query = getattr(obj, "raw_query", "") or ""
+        if not query or not steps:
+            return steps
+        try:
+            from .cll_shadow import get_shadow, index_enabled, shadow_enabled
+            from .surface_realizer import detect_language, realize_in_language
+            if not (index_enabled() or shadow_enabled()):
+                return steps
+            shadow = get_shadow()
+            lang = detect_language(query, shadow)
+            if lang == "en":
+                return steps
+            realized = []
+            for s in steps:
+                new_claim = realize_in_language(s.claim, lang, shadow)
+                realized.append(s.model_copy(update={"claim": new_claim}) if new_claim != s.claim else s)
+            return realized
+        except Exception:
+            return steps
 
     # ── Tier ───────────────────────────────────────────────────────────────
 

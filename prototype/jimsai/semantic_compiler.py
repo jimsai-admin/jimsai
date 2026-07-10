@@ -46,7 +46,15 @@ def _looks_like_structural_identifier(value: str) -> bool:
         or "#" in cleaned
         or "@" in cleaned
         or any(ch.isdigit() for ch in cleaned)
-        or any(ch.isupper() for ch in cleaned[1:])
+        # An internal capital marks a code identifier only in MIXED case
+        # ("TensorDB", "NoxliDB", "iPhone"). All-caps ("DATABASE", "SUDO",
+        # "PERVIOUS") is emphasis/shouting, not a name — treating it as a scoped
+        # entity let a shouted COMMON word satisfy the entity-scope gate against
+        # an unrelated fact and voice it (an adversarial-fuzz fabrication: "what
+        # DATABASE does <untaught> use" answered with another project's DB).
+        # Genuine unknown all-caps nonces are still caught via the CLL
+        # name-evidence path; only known/common all-caps words are excluded here.
+        or (any(ch.isupper() for ch in cleaned[1:]) and any(ch.islower() for ch in cleaned))
     )
 
 

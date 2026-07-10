@@ -417,18 +417,26 @@ class JimsAIPipeline:
         session["ACTIVE_INTENT"] = ir.target_ir
         if not session.get("_prevent_active_object"):
             # Discourse focus: the referent for later underspecified turns
-            # ("what does IT use?"). L1 entities first; when L1 extracts
-            # nothing, fall back to CLL name-evidenced literals from the same
-            # query — one name-evidence machinery everywhere, any language.
-            focus = [str(e) for e in ir.scope_constraints.get("entities", [])]
+            # ("what does IT use?"). A referent is a NAMED entity, and the CLL's
+            # name-evidence literals are exactly that: a nonce/name encodes as
+            # L:..., while a wh-word ("what") or common noun does not. Prefer
+            # them so "it"/"she" resolves to a real name — L1 over-extracts
+            # function words like "what" into its entity list, and taking
+            # entities[0] would make the wh-word the focus (observed: the
+            # device-codename opener set focus="what", so the follow-up's "it"
+            # resolved to nothing). Fall back to L1 entities only when the query
+            # names nothing the lexicon recognises. One name-evidence machinery
+            # everywhere, any language, no wh-word list.
+            focus: list[str] = []
+            try:
+                from .cll_shadow import get_shadow, index_enabled, shadow_enabled
+                if index_enabled() or shadow_enabled():
+                    _, literals = get_shadow().encode(request.query)
+                    focus = [lit[2:] for lit in sorted(literals)]
+            except Exception:
+                focus = []
             if not focus:
-                try:
-                    from .cll_shadow import get_shadow, index_enabled, shadow_enabled
-                    if index_enabled() or shadow_enabled():
-                        _, literals = get_shadow().encode(request.query)
-                        focus = [lit[2:] for lit in sorted(literals)]
-                except Exception:
-                    focus = []
+                focus = [str(e) for e in ir.scope_constraints.get("entities", [])]
             if focus:
                 session["ACTIVE_OBJECT"] = focus[0]
         session.pop("_prevent_active_object", None)
@@ -621,6 +629,7 @@ class JimsAIPipeline:
         record(reasoning_layer_result)
         obj.capability_plan = capability_plan
         obj.capability_results = capability_results
+        obj.raw_query = request.query  # for response-format detection in the CSSE
         obj.style_signature = {
             **obj.style_signature,
             "user_prompt": request.query,
