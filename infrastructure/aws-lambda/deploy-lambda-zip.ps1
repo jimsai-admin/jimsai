@@ -82,7 +82,7 @@ Get-ChildItem -Path $BuildDir -Recurse -File -Filter *.pyc -Force -ErrorAction S
 $unzipMB = [math]::Round((Get-ChildItem -Path $BuildDir -Recurse -File -Force -ErrorAction SilentlyContinue |
     Measure-Object -Property Length -Sum).Sum / 1MB, 1)
 Write-Host "    Unzipped build size: ${unzipMB} MB (Lambda limit 250 MB)"
-if ($unzipMB -ge 250) { throw "Unzipped build ${unzipMB} MB exceeds Lambda's 250 MB limit — prune more before deploying." }
+if ($unzipMB -ge 250) { throw "Unzipped build ${unzipMB} MB exceeds Lambda 250 MB unzipped limit - prune more before deploying." }
 
 # ── Step 4: Zip everything ────────────────────────────────────────────────────
 Write-Host "[4/6] Creating zip package..." -ForegroundColor Yellow
