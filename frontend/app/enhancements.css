@@ -191,6 +191,9 @@ body:has(.chatRoot) { overflow: hidden; }
   .chatRoot { flex-direction: column; }
   .sidebar { display: none !important; }
   .mobileTopBar { display: flex !important; width: 100%; }
+  /* Drawer/backdrop are conditionally rendered (only when open); globals shows
+     them only <=767px, so extend to this breakpoint or the hamburger is dead on tablet. */
+  .mobileNavBackdrop, .mobileNavDrawer { display: flex; }
   .chatMain { width: 100%; height: auto; flex: 1 1 auto; min-height: 0; }
   .messages { padding-left: 14px; padding-right: 14px; }
   .messageBubbleWrapper, .message { max-width: 100%; }
