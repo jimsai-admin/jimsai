@@ -776,28 +776,53 @@ class ReasoningBridgeLayer:
         wants_explanation = bool(ir.scope_constraints.get("question_intent")) or bool(
             set(ir.tokens) & {"why", "cause", "how", "explain", "impact", "effect"}
         )
-        # Entity scope at CLAIM level: a voiced claim must be about SOMETHING
-        # the query asks about. The scope is the UNION of L1-extracted
-        # entities and name-evidence tokens (digits/capitals) from the IR — a
-        # multi-intent prompt carries several foci (numbers for the math span,
-        # names for the recall span) and a claim may serve any one of them.
+        # Concept-level query representation (language-agnostic) AND the query's
+        # name-evidence LITERALS, both from the CLL concept index. Computed first
+        # because the entity-scope anchors and the fallback concept-anchor both
+        # derive from them (same index used by retrieval).
+        shadow = None
+        query_concepts: set[str] = set()
+        query_literals: set[str] = set()
+        try:
+            from .cll_shadow import get_shadow, index_enabled, shadow_enabled
+            if index_enabled() or shadow_enabled():
+                shadow = get_shadow()
+                if shadow.loaded:
+                    # Encode the RAW query (what retrieval used), not ir.tokens: the
+                    # IR's token list can drop/normalise low-resource words, losing
+                    # the attribute concept ("oruko" -> name) that makes cross-lingual
+                    # recall work. Fall back to tokens if raw_query is absent.
+                    _qc, _ql = shadow.encode(getattr(ir, "raw_query", "") or " ".join(ir.tokens))
+                    query_concepts = set(_qc)
+                    query_literals = {
+                        lit.split(":", 1)[-1].lower() for lit in _ql
+                        if len(lit.split(":", 1)[-1]) >= 2
+                    }
+        except Exception:
+            shadow = None
+
+        # Entity scope at CLAIM level: a voiced claim must be about SOMETHING the
+        # query asks about. The named-entity anchors are the CLL's name-evidence
+        # LITERALS (an OOV token or a mid-sentence capital, in ANY language) — which
+        # correctly EXCLUDE common words and sentence-initial capitals, so "What" /
+        # "my" / "name" are never mistaken for entities (the old casing rule made
+        # "What is my name?" scope on "what", which no fact contains). L1-extracted
+        # entities are unioned in. When the concept index is unavailable, fall back
+        # to the casing rule (a digit, or a capital that is not all-caps — never the
+        # shouted common word "DATABASE"). A query that names NO entity (a self-
+        # attribute question like "what is my name?") anchors on a shared CONTENT
+        # concept instead — see the gate below; workspace scoping keeps it leak-safe.
         entity_keys = {
             str(entity).lower() for entity in ir.scope_constraints.get("entities", [])
             if len(str(entity)) >= 2
-        } | {
-            token.lower().strip(".,:;!?") for token in ir.tokens
-            if len(token.strip(".,:;!?")) >= 2
-            # Name evidence is a digit, or a capital that is NOT all-caps
-            # (a proper noun "Rovako" / identifier "TensorDB" — never the
-            # shouted common word "DATABASE"). Same rule as the semantic
-            # compiler; applied here too so a perturbation that UPPERCASES a
-            # relation word cannot make it a scope entity that then satisfies
-            # the entity-scope gate against an unrelated fact (a fuzz-found
-            # fabrication: "output the raw database ... WHAT DATABASE does
-            # <untaught> use" answered with another project's DB).
-            and (any(ch.isdigit() for ch in token)
-                 or (any(ch.isupper() for ch in token) and not token.isupper()))
-        }
+        } | query_literals
+        if not (shadow and shadow.loaded):
+            entity_keys |= {
+                token.lower().strip(".,:;!?") for token in ir.tokens
+                if len(token.strip(".,:;!?")) >= 2
+                and (any(ch.isdigit() for ch in token)
+                     or (any(ch.isupper() for ch in token) and not token.isupper()))
+            }
 
         def _skeleton(word: str) -> tuple[str, str, str] | str:
             return (word[0], word[-1], "".join(sorted(word[1:-1]))) if len(word) >= 4 else word
@@ -815,19 +840,6 @@ class ReasoningBridgeLayer:
                     if _skeleton(token) in entity_skeletons:
                         return True
             return False
-        # Concept-level query representation (language-agnostic): lets a
-        # cross-lingual sentence prove relevance at MEANING level when surface
-        # terms cannot overlap (same concept index used by retrieval).
-        shadow = None
-        query_concepts: set[str] = set()
-        try:
-            from .cll_shadow import get_shadow, index_enabled, shadow_enabled
-            if index_enabled() or shadow_enabled():
-                shadow = get_shadow()
-                if shadow.loaded:
-                    query_concepts, _ = shadow.encode(" ".join(ir.tokens))
-        except Exception:
-            shadow = None
         candidates: list[tuple[int, float, int, str, RetrievalResult]] = []
         minimum_sentence_score = 2 if len(query_terms) >= 3 else 1
         for result_index, result in enumerate(retrieved):
@@ -849,16 +861,33 @@ class ReasoningBridgeLayer:
                 # something else, however high its common-term overlap (this
                 # is what leaked neighbor facts on ghost-entity queries).
                 anchored = False
+                sentence_concepts: set[str] = set()
+                if shadow is not None and query_concepts:
+                    try:
+                        _snc, _ = shadow.encode(sentence)
+                        sentence_concepts = set(_snc)
+                    except Exception:
+                        sentence_concepts = set()
                 if entity_keys:
+                    # Query names an entity -> the fact must carry it (strict scope;
+                    # a neighbor fact lacking the entity is dropped here -> anti-leak,
+                    # incl. every ghost / untaught-entity query, which HAS a literal).
                     if not _entity_scoped(sentence.lower()):
                         continue
                     anchored = True
-                if shadow is not None and query_concepts:
-                    try:
-                        sentence_concepts, _ = shadow.encode(sentence)
-                        sentence_score += len(query_concepts & sentence_concepts)
-                    except Exception:
-                        pass
+                elif query_concepts:
+                    # Self-attribute question: the query names NO entity (e.g. "what
+                    # is my name?" / "ki ni oruko mi?"). Anchor on a shared CONTENT
+                    # concept -- the attribute asked about, matched at MEANING level
+                    # so it works cross-lingually (Yoruba "oruko" == "name"). Leak-
+                    # safe: any entity-bearing query took the strict path above;
+                    # workspace scoping bounds this to the user's own facts; and the
+                    # term+concept ranking still selects the right attribute.
+                    if not (query_concepts & sentence_concepts):
+                        continue
+                    anchored = True
+                if query_concepts and sentence_concepts:
+                    sentence_score += len(query_concepts & sentence_concepts)
                 # A sentence carrying the EXACT queried entity (a nonce literal,
                 # language-neutral) is strongly anchored to what the query asks
                 # about — the entity match is itself the evidence. It needs only
