@@ -2,8 +2,10 @@
 "use client";
 
 import { useState } from "react";
-import { Plus, MessageSquare, BookOpen, X, Search, Trash2, Pencil } from "lucide-react";
+import { Plus, MessageSquare, BookOpen, X, Search, Trash2, Pencil, Settings, LogOut } from "lucide-react";
 import { useChatStore } from "./store";
+import SettingsControls from "../SettingsControls";
+import { useI18n } from "../i18n";
 
 function createThreadId(): string {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) return crypto.randomUUID();
@@ -40,7 +42,9 @@ export default function Sidebar({
   onSignOut,
 }: Props) {
   const store = useChatStore();
+  const { t } = useI18n();
   const { sidebarPanel, threads, activeThreadId } = store;
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [search, setSearch] = useState("");
   const [learnContent, setLearnContent] = useState("");
   const [learnStatus, setLearnStatus] = useState("");
@@ -118,10 +122,30 @@ export default function Sidebar({
           <BookOpen size={16} />
         </button>
         <div className="sidebarBottom">
-          <button className="avatarCircle" title="Sign out" type="button" onClick={onSignOut}>
+          <button
+            className={`iconButton compact${settingsOpen ? " active" : ""}`}
+            title={t("theme")}
+            type="button"
+            onClick={() => setSettingsOpen((v) => !v)}
+          >
+            <Settings size={16} />
+          </button>
+          <button className="avatarCircle" title={userId} type="button" onClick={() => setSettingsOpen((v) => !v)}>
             {userInitials}
           </button>
         </div>
+
+        {settingsOpen && (
+          <>
+            <div className="settingsBackdrop" onClick={() => setSettingsOpen(false)} />
+            <div className="settingsPopover" role="dialog" aria-label={t("theme")}>
+              <SettingsControls />
+              <button className="signOutRow" type="button" onClick={onSignOut}>
+                <LogOut size={15} /> <span>{t("signOut")}</span>
+              </button>
+            </div>
+          </>
+        )}
       </div>
 
       {/* ── Thread history panel ───────────────────────────────────────── */}

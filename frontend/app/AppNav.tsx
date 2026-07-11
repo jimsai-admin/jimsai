@@ -12,14 +12,20 @@ export default function AppNav() {
   const isChat = pathname === "/" || pathname.startsWith("/user") || pathname.startsWith("/chat");
   const [insightsOpen, setInsightsOpen] = useState(false);
   const [authenticated, setAuthenticated] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false);
+  // Training is engineer/admin-only; normal users only ever see Chat.
   const items = [
-    { href: "/user", label: "Chat", active: isChat },
-    { href: "/training", label: "Training", active: pathname.startsWith("/training") }
-  ] as const;
+    { href: "/user" as const, label: "Chat", active: isChat },
+    ...(isAdmin
+      ? [{ href: "/training" as const, label: "Training", active: pathname.startsWith("/training") }]
+      : []),
+  ];
 
   useEffect(() => {
     function updateAuthState() {
-      setAuthenticated(supabaseUserContext().authenticated);
+      const ctx = supabaseUserContext();
+      setAuthenticated(ctx.authenticated);
+      setIsAdmin(ctx.isAdmin);
     }
 
     updateAuthState();

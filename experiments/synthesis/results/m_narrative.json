@@ -1,0 +1,82 @@
+[
+  {
+    "seed": 42,
+    "beats": 121,
+    "planned": {
+      "consistency_violations": 0,
+      "seeds_planted": 6,
+      "payoff_rate": 1.0,
+      "motif_recurrences": 6,
+      "motif_spread": 33.4,
+      "arcs_converged": true
+    },
+    "naive": {
+      "consistency_violations": 86,
+      "seeds_planted": 6,
+      "payoff_rate": 0.833,
+      "motif_recurrences": 6,
+      "motif_spread": 34.9,
+      "arcs_converged": false
+    }
+  },
+  {
+    "seed": 7,
+    "beats": 121,
+    "planned": {
+      "consistency_violations": 0,
+      "seeds_planted": 6,
+      "payoff_rate": 1.0,
+      "motif_recurrences": 6,
+      "motif_spread": 26.9,
+      "arcs_converged": true
+    },
+    "naive": {
+      "consistency_violations": 82,
+      "seeds_planted": 6,
+      "payoff_rate": 0.667,
+      "motif_recurrences": 7,
+      "motif_spread": 44.3,
+      "arcs_converged": false
+    }
+  },
+  {
+    "seed": 2024,
+    "beats": 121,
+    "planned": {
+      "consistency_violations": 0,
+      "seeds_planted": 6,
+      "payoff_rate": 1.0,
+      "motif_recurrences": 6,
+      "motif_spread": 25.8,
+      "arcs_converged": true
+    },
+    "naive": {
+      "consistency_violations": 98,
+      "seeds_planted": 6,
+      "payoff_rate": 0.5,
+      "motif_recurrences": 5,
+      "motif_spread": 33.4,
+      "arcs_converged": false
+    }
+  },
+  {
+    "seed": 99999,
+    "beats": 121,
+    "planned": {
+      "consistency_violations": 0,
+      "seeds_planted": 6,
+      "payoff_rate": 1.0,
+      "motif_recurrences": 6,
+      "motif_spread": 28.5,
+      "arcs_converged": true
+    },
+    "naive": {
+      "consistency_violations": 86,
+      "seeds_planted": 6,
+      "payoff_rate": 0.5,
+      "motif_recurrences": 6,
+      "motif_spread": 15.3,
+      "arcs_converged": false
+    }
+  }
+]

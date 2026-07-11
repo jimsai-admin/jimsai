@@ -17,7 +17,10 @@ import {
   supabaseUserContext,
 } from "../authHeaders";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
+// Production default = the deployed Lambda; NEXT_PUBLIC_API_BASE_URL overrides it.
+const API_BASE =
+  process.env.NEXT_PUBLIC_API_BASE_URL ??
+  "https://7x27vovhmfnhcymm5ox3qiw4fy0agvcy.lambda-url.us-east-1.on.aws";
 
 export default function ChatLayout() {
   const store = useChatStore();

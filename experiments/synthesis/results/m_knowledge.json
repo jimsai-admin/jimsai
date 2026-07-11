@@ -1,0 +1,74 @@
+[
+  {
+    "seed": 42,
+    "triggers": 24,
+    "novel_contexts": 2,
+    "learning_phase_xerr": 0,
+    "organizer": {
+      "applied": 300,
+      "correct": 300
+    },
+    "naive": {
+      "applied": 300,
+      "correct": 212,
+      "wrong": 88,
+      "cross_context_error": 88,
+      "overgeneralized": 14
+    },
+    "low_conf_patterns": 0
+  },
+  {
+    "seed": 7,
+    "triggers": 24,
+    "novel_contexts": 2,
+    "learning_phase_xerr": 0,
+    "organizer": {
+      "applied": 300,
+      "correct": 300
+    },
+    "naive": {
+      "applied": 300,
+      "correct": 242,
+      "wrong": 58,
+      "cross_context_error": 58,
+      "overgeneralized": 8
+    },
+    "low_conf_patterns": 0
+  },
+  {
+    "seed": 2024,
+    "triggers": 24,
+    "novel_contexts": 2,
+    "learning_phase_xerr": 1,
+    "organizer": {
+      "applied": 300,
+      "correct": 300
+    },
+    "naive": {
+      "applied": 300,
+      "correct": 244,
+      "wrong": 56,
+      "cross_context_error": 56,
+      "overgeneralized": 11
+    },
+    "low_conf_patterns": 0
+  },
+  {
+    "seed": 99999,
+    "triggers": 24,
+    "novel_contexts": 2,
+    "learning_phase_xerr": 0,
+    "organizer": {
+      "applied": 300,
+      "correct": 300
+    },
+    "naive": {
+      "applied": 300,
+      "correct": 213,
+      "wrong": 87,
+      "cross_context_error": 87,
+      "overgeneralized": 14
+    },
+    "low_conf_patterns": 0
+  }
+]

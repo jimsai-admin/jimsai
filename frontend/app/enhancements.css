@@ -1,0 +1,161 @@
+/* frontend/app/enhancements.css
+   Professional polish layered over globals.css: streaming, badges, composer,
+   empty state, and the theme/language settings. Uses the existing design tokens. */
+
+/* ── Composer wrap + grounded note + stop button ─────────────────────────── */
+.composerWrap {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+}
+.composerHint {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  margin: 0;
+  font-size: 11px;
+  color: var(--subtle);
+  letter-spacing: 0.01em;
+}
+.composerHint svg { color: var(--good); }
+.sendButton.stopButton {
+  background: var(--danger);
+  border-color: var(--danger);
+}
+.sendButton:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* ── Streaming: typing dots + caret ──────────────────────────────────────── */
+.typingDots { display: inline-flex; gap: 5px; align-items: center; padding: 6px 0; }
+.typingDots span {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--subtle);
+  animation: typingBounce 1.2s infinite ease-in-out;
+}
+.typingDots span:nth-child(2) { animation-delay: 0.15s; }
+.typingDots span:nth-child(3) { animation-delay: 0.3s; }
+@keyframes typingBounce {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.5; }
+  30% { transform: translateY(-4px); opacity: 1; }
+}
+.streamCaret {
+  display: inline-block; width: 7px; height: 15px;
+  margin-left: 2px; vertical-align: text-bottom;
+  background: var(--accent);
+  animation: caretBlink 1s steps(2, start) infinite;
+  border-radius: 1px;
+}
+@keyframes caretBlink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+
+/* ── Honesty badges ──────────────────────────────────────────────────────── */
+.msgBadges { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 2px; }
+.badge {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 11px; font-weight: 600; line-height: 1;
+  padding: 4px 8px; border-radius: 999px;
+  background: var(--surface-soft); color: var(--muted);
+  border: 1px solid var(--line);
+}
+.badge.good { color: var(--good); background: var(--good-soft); border-color: transparent; }
+.badge.warn { color: var(--warn); background: var(--warn-soft); border-color: transparent; }
+
+/* ── Message actions (also for user messages / edit) ─────────────────────── */
+.messageActions.userActions { justify-content: flex-end; }
+[dir="rtl"] .messageActions.userActions { justify-content: flex-start; }
+
+/* ── Empty state ─────────────────────────────────────────────────────────── */
+.emptyState {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  flex: 1; gap: 12px; text-align: center; padding: 72px 20px 20px;
+}
+.emptyBrand { width: 52px !important; height: 52px !important; font-size: 24px !important; }
+.emptyTitle { margin: 4px 0 0; font-size: 20px; font-weight: 650; color: var(--ink); }
+.emptySubtitle { margin: 0; font-size: 14px; line-height: 1.55; color: var(--muted); max-width: 440px; }
+
+/* ── Settings popover (theme + language + sign out) ──────────────────────── */
+.sidebarBottom { position: relative; display: flex; flex-direction: column; align-items: center; gap: 8px; }
+.settingsBackdrop { position: fixed; inset: 0; z-index: 40; }
+.settingsPopover {
+  position: absolute; bottom: 8px; left: calc(100% + 10px); z-index: 50;
+  display: flex; flex-direction: column; gap: 12px;
+  padding: 14px; width: 232px;
+  background: var(--surface-raised); border: 1px solid var(--line);
+  border-radius: 12px; box-shadow: var(--shadow);
+}
+[dir="rtl"] .settingsPopover { left: auto; right: calc(100% + 10px); }
+.settingsControls { display: flex; flex-direction: column; gap: 10px; }
+.themeSwitch {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px;
+  padding: 4px; background: var(--surface-soft); border-radius: 10px; border: 1px solid var(--line);
+}
+.themeSwitchBtn {
+  display: flex; align-items: center; justify-content: center;
+  height: 34px; border: none; border-radius: 7px; cursor: pointer;
+  background: transparent; color: var(--muted);
+  transition: background 0.15s, color 0.15s;
+}
+.themeSwitchBtn:hover { color: var(--ink); }
+.themeSwitchBtn.active { background: var(--surface); color: var(--accent); box-shadow: var(--shadow-soft); }
+.langSelect {
+  display: flex; align-items: center; gap: 8px;
+  padding: 0 10px; height: 38px;
+  background: var(--surface-soft); border: 1px solid var(--line); border-radius: 10px;
+  color: var(--muted);
+}
+.langSelect select {
+  flex: 1; border: none; background: transparent; color: var(--ink);
+  font-size: 13px; font-weight: 500; cursor: pointer; outline: none;
+  appearance: none; -webkit-appearance: none;
+}
+.langSelect select option { background: var(--surface-raised); color: var(--ink); }
+.signOutRow {
+  display: flex; align-items: center; gap: 8px;
+  width: 100%; padding: 9px 10px; border-radius: 9px; cursor: pointer;
+  background: transparent; border: 1px solid var(--line); color: var(--danger);
+  font-size: 13px; font-weight: 600;
+}
+.signOutRow:hover { background: color-mix(in srgb, var(--danger) 10%, transparent); }
+
+/* ── Clickable source cards (response tracing) ───────────────────────────── */
+.sourceList { display: flex; flex-direction: column; gap: 8px; }
+.sourceCard {
+  border: 1px solid var(--line); border-radius: 10px; overflow: hidden;
+  background: var(--surface); transition: border-color 0.15s;
+}
+.sourceCard.open { border-color: var(--accent); }
+.sourceHead {
+  display: flex; align-items: center; gap: 9px; width: 100%;
+  padding: 10px 12px; border: none; background: transparent; cursor: pointer;
+  color: var(--ink); font-size: 13px; text-align: left;
+}
+.sourceHead:hover { background: var(--surface-soft); }
+.sourceIcon { color: var(--accent); flex-shrink: 0; }
+.sourceLabel { font-weight: 600; }
+.sourceRef {
+  margin-left: auto; font-family: ui-monospace, monospace; font-size: 11px; color: var(--subtle);
+}
+[dir="rtl"] .sourceRef { margin-left: 0; margin-right: auto; }
+.sourceChevron { color: var(--subtle); transition: transform 0.18s; flex-shrink: 0; }
+.sourceCard.open .sourceChevron { transform: rotate(90deg); }
+.sourceBody {
+  display: flex; flex-direction: column; gap: 10px;
+  padding: 4px 12px 12px; border-top: 1px solid var(--line);
+}
+.sourceIdRow { display: flex; align-items: center; gap: 8px; }
+.sourceIdRow code {
+  flex: 1; font-family: ui-monospace, monospace; font-size: 11px; color: var(--muted);
+  word-break: break-all; background: var(--surface-soft); padding: 7px 9px; border-radius: 7px;
+}
+.sourceUsage { margin: 0; font-size: 12.5px; line-height: 1.5; color: var(--muted); }
+.sourceUsageStage {
+  display: inline-block; font-size: 10px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.04em; color: var(--accent); background: var(--accent-soft);
+  padding: 2px 6px; border-radius: 5px; margin-right: 6px;
+}
+.sourceActions { display: flex; gap: 8px; }
+
+/* Reduced motion respect */
+@media (prefers-reduced-motion: reduce) {
+  .typingDots span, .streamCaret, .sourceChevron { animation: none; transition: none; }
+}

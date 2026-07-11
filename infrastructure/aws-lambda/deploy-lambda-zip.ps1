@@ -35,6 +35,13 @@ New-Item -ItemType Directory -Path $BuildDir | Out-Null
 
 # ── Step 2: Install dependencies ─────────────────────────────────────────────
 Write-Host "[2/6] Installing dependencies into build directory..." -ForegroundColor Yellow
+# pip streams progress to stderr; under $ErrorActionPreference='Stop', PowerShell 5.1
+# wraps that as a terminating NativeCommandError even when pip exits 0. Run it under
+# 'Continue' and gate on the REAL exit code (as the check below already intends).
+$prevEAP = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
+$prevProg = $ProgressPreference
+$ProgressPreference = "SilentlyContinue"
 pip install `
     --target $BuildDir `
     --platform manylinux2014_x86_64 `
@@ -42,9 +49,13 @@ pip install `
     --python-version 3.11 `
     --only-binary=:all: `
     --upgrade `
+    --quiet --no-input `
     -r "$ServiceDir\requirements.lambda.txt"
+$pipExit = $LASTEXITCODE
+$ErrorActionPreference = $prevEAP
+$ProgressPreference = $prevProg
 
-if ($LASTEXITCODE -ne 0) { throw "pip install failed" }
+if ($pipExit -ne 0) { throw "pip install failed (exit $pipExit)" }
 
 # ── Step 3: Copy app code ─────────────────────────────────────────────────────
 Write-Host "[3/6] Copying app code..." -ForegroundColor Yellow

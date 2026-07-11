@@ -2,7 +2,7 @@
 "use client";
 
 import { useState } from "react";
-import { X } from "lucide-react";
+import { X, ChevronRight, Copy, Check, Database, BookOpen, Trash2 } from "lucide-react";
 import { useChatStore } from "./store";
 import type { Message } from "./types";
 
@@ -42,8 +42,17 @@ export default function InsightsDrawer({ apiBase, authHeaders, userId, workspace
   const api = message?.apiResponse ?? null;
 
   const [sourceLearnStatus, setSourceLearnStatus] = useState<Record<string, string>>({});
+  const [expandedSource, setExpandedSource] = useState<string | null>(null);
+  const [copiedSource, setCopiedSource] = useState<string | null>(null);
 
   if (!drawerOpen) return null;
+
+  const copySource = (s: string) => {
+    navigator.clipboard.writeText(s).then(() => {
+      setCopiedSource(s);
+      setTimeout(() => setCopiedSource((c) => (c === s ? null : c)), 1400);
+    }, () => {});
+  };
 
   const handleLearnSource = async (sourceId: string) => {
     setSourceLearnStatus((s) => ({ ...s, [sourceId]: "learning…" }));
@@ -116,37 +125,72 @@ export default function InsightsDrawer({ apiBase, authHeaders, userId, workspace
 
       case "Sources":
         return api.sources.length ? (
-          <div className="pillGroup">
-            {api.sources.map((s) => {
+          <div className="sourceList">
+            {api.sources.map((s, i) => {
               const status = sourceLearnStatus[s];
               const learned = status && status !== "learning…" && status !== "error";
+              const open = expandedSource === s;
+              // Where in the reasoning was this source used? (feels alive)
+              const usedIn = api.trace.find((t) => JSON.stringify(t.data ?? {}).includes(s));
               return (
-                <div key={s} style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                  <span className="pill">{s.slice(0, 22)}…</span>
-                  {!learned ? (
-                    <button
-                      className="iconTextButton compact"
-                      type="button"
-                      onClick={() => handleLearnSource(s)}
-                      disabled={status === "learning…"}
-                    >
-                      {status === "learning…" ? "…" : "Learn"}
-                    </button>
-                  ) : (
-                    <button
-                      className="iconTextButton compact danger"
-                      type="button"
-                      onClick={() => handleUnlearnSource(s)}
-                    >
-                      Unlearn
-                    </button>
+                <div key={s} className={`sourceCard${open ? " open" : ""}`}>
+                  <button
+                    className="sourceHead"
+                    type="button"
+                    onClick={() => setExpandedSource(open ? null : s)}
+                    aria-expanded={open}
+                  >
+                    <Database size={14} className="sourceIcon" />
+                    <span className="sourceLabel">{`Source ${i + 1}`}</span>
+                    <span className="sourceRef">{s.slice(0, 14)}…</span>
+                    <ChevronRight size={15} className="sourceChevron" />
+                  </button>
+                  {open && (
+                    <div className="sourceBody">
+                      <div className="sourceIdRow">
+                        <code>{s}</code>
+                        <button
+                          className="iconButton compact"
+                          type="button"
+                          title="Copy id"
+                          onClick={() => copySource(s)}
+                        >
+                          {copiedSource === s ? <Check size={13} /> : <Copy size={13} />}
+                        </button>
+                      </div>
+                      {usedIn && (
+                        <p className="sourceUsage">
+                          <span className="sourceUsageStage">{usedIn.stage}</span> {usedIn.message}
+                        </p>
+                      )}
+                      <div className="sourceActions">
+                        {!learned ? (
+                          <button
+                            className="iconTextButton compact"
+                            type="button"
+                            onClick={() => handleLearnSource(s)}
+                            disabled={status === "learning…"}
+                          >
+                            <BookOpen size={13} /> {status === "learning…" ? "Learning…" : "Keep in memory"}
+                          </button>
+                        ) : (
+                          <button
+                            className="iconTextButton compact danger"
+                            type="button"
+                            onClick={() => handleUnlearnSource(s)}
+                          >
+                            <Trash2 size={13} /> Unlearn
+                          </button>
+                        )}
+                      </div>
+                    </div>
                   )}
                 </div>
               );
             })}
           </div>
         ) : (
-          <div className="muted">No source signatures.</div>
+          <div className="muted">This answer used no stored sources.</div>
         );
 
       case "Reasoning":

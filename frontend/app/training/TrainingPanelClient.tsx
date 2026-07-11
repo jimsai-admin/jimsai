@@ -101,7 +101,12 @@ export default function TrainingPanelClient({ panelId }: { panelId: string }) {
   const [sourceTrust, setSourceTrust] = useState(0.92);
   const [modality, setModality] = useState("text");
   const [status, setStatus] = useState("Ready.");
-  const apiBase = useMemo(() => process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000", []);
+  const apiBase = useMemo(
+    () =>
+      process.env.NEXT_PUBLIC_API_BASE_URL ??
+      "https://7x27vovhmfnhcymm5ox3qiw4fy0agvcy.lambda-url.us-east-1.on.aws",
+    []
+  );
   const sentinelRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const trainingTextRef = useRef<HTMLTextAreaElement | null>(null);
@@ -135,6 +140,13 @@ export default function TrainingPanelClient({ panelId }: { panelId: string }) {
     setHasMore(false);
     setTotal(0);
     router.replace("/user");
+  }, [router]);
+
+  // Training is engineer/admin-only. Normal users are sent back to Chat. The
+  // backend also enforces this with require_scope on every training endpoint.
+  useEffect(() => {
+    const ctx = supabaseUserContext();
+    if (ctx.authenticated && !ctx.isAdmin) router.replace("/user");
   }, [router]);
 
   const fetchPage = useCallback(

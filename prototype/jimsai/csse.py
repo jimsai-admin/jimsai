@@ -120,11 +120,16 @@ class ConstrainedSemanticSynthesisEngine:
             return steps
         try:
             from .cll_shadow import get_shadow
+            from .construction_realizer import guard_realization
             from .surface_realizer import realize_in_language
             shadow = get_shadow()
             realized = []
             for s in steps:
                 new_claim = realize_in_language(s.claim, lang, shadow)
+                # FIDELITY GUARD (M-GEN, live): never voice a realization that
+                # drops or corrupts a verified entity/value — fall back to the
+                # faithful source rather than emit a wrong-meaning surface.
+                new_claim = guard_realization(s.claim, new_claim, shadow)
                 realized.append(s.model_copy(update={"claim": new_claim}) if new_claim != s.claim else s)
             return realized
         except Exception:

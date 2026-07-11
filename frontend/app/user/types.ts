@@ -45,6 +45,7 @@ export type ApiResponse = {
   sources: string[];
   suggestions: string[];
   used_groq: boolean;
+  used_llm?: boolean;
   ir: {
     trace_id: string;
     target_ir: string;

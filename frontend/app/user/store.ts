@@ -22,6 +22,32 @@ function persistThreadId(id: string): void {
   }
 }
 
+// Live SSE stream handle, kept outside React state so Stop can abort it.
+let activeStream: AbortController | null = null;
+
+// Build a full ApiResponse from the stream's `meta` event + accumulated text, so
+// insights, badges, and feedback (trace_id) all work with the streamed answer.
+function apiResponseFromMeta(
+  meta: { trace_id?: string; confidence?: number; gaps?: string[]; sources?: string[]; used_llm?: boolean },
+  text: string
+): ApiResponse {
+  const confidence = meta.confidence ?? 0;
+  return {
+    response: text,
+    confidence,
+    gaps: meta.gaps ?? [],
+    sources: meta.sources ?? [],
+    suggestions: [],
+    used_groq: Boolean(meta.used_llm),
+    used_llm: Boolean(meta.used_llm),
+    ir: { trace_id: meta.trace_id ?? "", target_ir: "", confidence, transformer_interface_used: false },
+    world_model_activations: [],
+    simulation_results: [],
+    trace: [],
+    layer_results: [],
+  };
+}
+
 interface ChatStore {
   // Thread / message state — online-first via backend API, no localStorage for data
   activeThreadId: string;
@@ -41,6 +67,8 @@ interface ChatStore {
 
   // Query state
   loading: boolean;
+  streaming: boolean;
+  pendingEdit: string; // text to load into the composer (edit-prompt)
   feedbackStatus: string;
   learnedSignatureIds: Record<string, string>; // keyed by trace_id
 
@@ -63,6 +91,8 @@ interface ChatStore {
   setSidebarPanel: (panel: "threads" | "learn" | null) => void;
   setMobileNavOpen: (open: boolean) => void;
   setLoading: (v: boolean) => void;
+  stopStreaming: () => void;
+  setPendingEdit: (s: string) => void;
   setFeedbackStatus: (s: string) => void;
   storeLearned: (traceId: string, sigId: string) => void;
   removeLearned: (traceId: string) => void;
@@ -92,6 +122,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   sidebarPanel: null,
   mobileNavOpen: false,
   loading: false,
+  streaming: false,
+  pendingEdit: "",
   feedbackStatus: "",
   learnedSignatureIds: {},
   canvasHint: false,
@@ -136,6 +168,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   setSidebarPanel: (panel) => set({ sidebarPanel: panel }),
   setMobileNavOpen: (open) => set({ mobileNavOpen: open }),
   setLoading: (v) => set({ loading: v }),
+  stopStreaming: () => { activeStream?.abort(); },
+  setPendingEdit: (s) => set({ pendingEdit: s }),
   setFeedbackStatus: (s) => set({ feedbackStatus: s }),
   storeLearned: (traceId, sigId) =>
     set((s) => ({ learnedSignatureIds: { ...s.learnedSignatureIds, [traceId]: sigId } })),
@@ -211,11 +245,26 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       updated_at: new Date().toISOString(),
     });
 
-    get().setLoading(true);
+    // Placeholder assistant message that fills token-by-token as the SSE arrives.
+    get().appendMessage(activeThreadId, { role: "assistant", content: "" });
+    const abort = new AbortController();
+    activeStream = abort;
+    set({ loading: true, streaming: true });
+
+    let acc = "";
+    let meta: Parameters<typeof apiResponseFromMeta>[0] | null = null;
+    const flush = () =>
+      get().replaceLastAssistantMessage(activeThreadId, {
+        role: "assistant",
+        content: acc,
+        apiResponse: meta ? apiResponseFromMeta(meta, acc) : undefined,
+      });
+
     try {
-      const res = await fetch(`${apiBase}/v1/query`, {
+      const res = await fetch(`${apiBase}/v1/query/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...headers },
+        signal: abort.signal,
         body: JSON.stringify({
           user_id: userId,
           workspace_id: workspaceId,
@@ -226,20 +275,54 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           return_trace: true,
         }),
       });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = (await res.json()) as ApiResponse;
-      get().appendMessage(activeThreadId, {
-        role: "assistant",
-        content: data.response,
-        apiResponse: data,
-      });
+      if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const parts = buf.split("\n\n");
+        buf = parts.pop() ?? "";
+        for (const part of parts) {
+          const line = part.split("\n").find((l) => l.startsWith("data:"));
+          if (!line) continue;
+          let evt: Record<string, unknown>;
+          try { evt = JSON.parse(line.slice(5).trim()); } catch { continue; }
+          if (evt.type === "meta") {
+            meta = evt as unknown as typeof meta;
+            flush(); // surface first token area + badges as soon as verification lands
+          } else if (evt.type === "token") {
+            acc += String(evt.text ?? "");
+            flush();
+          } else if (evt.type === "done") {
+            acc = String(evt.response ?? acc);
+            flush();
+          } else if (evt.type === "error") {
+            throw new Error(String(evt.detail ?? "stream error"));
+          }
+        }
+      }
+      if (!acc) flush();
     } catch (err) {
-      get().appendMessage(activeThreadId, {
-        role: "assistant",
-        content: err instanceof Error ? `Error: ${err.message}` : "Request failed.",
-      });
+      if ((err as { name?: string })?.name === "AbortError") {
+        // User pressed Stop — keep whatever streamed so far, mark it.
+        get().replaceLastAssistantMessage(activeThreadId, {
+          role: "assistant",
+          content: acc ? `${acc}\n\n_[stopped]_` : "_[stopped]_",
+          apiResponse: meta ? apiResponseFromMeta(meta, acc) : undefined,
+        });
+      } else {
+        get().replaceLastAssistantMessage(activeThreadId, {
+          role: "assistant",
+          content: `⚠️ ${err instanceof Error ? err.message : "Request failed."}`,
+        });
+      }
     } finally {
-      get().setLoading(false);
+      activeStream = null;
+      set({ loading: false, streaming: false });
     }
   },
 

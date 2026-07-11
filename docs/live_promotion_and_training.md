@@ -25,6 +25,7 @@ Rule for promotion: a mechanism goes live only when it **passes on MESSY input**
 | Discourse ordering (M9) | `csse` → `discourse_composer` | language-universal, meaning-preserving, no English injected | **Keep** |
 | Language-neutral chrome (math notation, `_localize`, decorative-English-only) | `csse` | French no longer leaks English hedge; math = notation | **Keep** |
 | P8 fixes (world_knowledge cap, name-evidence focus, local_extraction skip) | `capability_router` / `pipeline` / `retrieval` | P8 families recall 2/2; no query-echo | **Keep** |
+| **Round-trip fidelity guard on realization (M-GEN, promoted 2026-07-11)** | `construction_realizer.py` → wired in `csse._realize_language` | 12/12 live checks: a realization that drops/corrupts a verified entity or number is rejected → falls back to the faithful source; faithful transforms pass; English no-op | **Keep, default-on** — generation can never voice a surface that changes a verified value; language-independent, no LLM |
 
 ### Proven mechanism, NOT live — GATED (named blocker)
 

@@ -1,0 +1,66 @@
+[
+  {
+    "lang": "en",
+    "constructions": 4,
+    "relations": 3,
+    "round_trip_fidelity": 1.0,
+    "hallucinated_facts": 0,
+    "unknown_relation_voiced": 0
+  },
+  {
+    "lang": "xy",
+    "constructions": 3,
+    "relations": 3,
+    "round_trip_fidelity": 1.0,
+    "hallucinated_facts": 0,
+    "unknown_relation_voiced": 0
+  },
+  {
+    "lang": "en",
+    "constructions": 4,
+    "relations": 3,
+    "round_trip_fidelity": 1.0,
+    "hallucinated_facts": 0,
+    "unknown_relation_voiced": 0
+  },
+  {
+    "lang": "xy",
+    "constructions": 3,
+    "relations": 3,
+    "round_trip_fidelity": 1.0,
+    "hallucinated_facts": 0,
+    "unknown_relation_voiced": 0
+  },
+  {
+    "lang": "en",
+    "constructions": 4,
+    "relations": 3,
+    "round_trip_fidelity": 1.0,
+    "hallucinated_facts": 0,
+    "unknown_relation_voiced": 0
+  },
+  {
+    "lang": "xy",
+    "constructions": 3,
+    "relations": 3,
+    "round_trip_fidelity": 1.0,
+    "hallucinated_facts": 0,
+    "unknown_relation_voiced": 0
+  },
+  {
+    "lang": "en",
+    "constructions": 4,
+    "relations": 3,
+    "round_trip_fidelity": 1.0,
+    "hallucinated_facts": 0,
+    "unknown_relation_voiced": 0
+  },
+  {
+    "lang": "xy",
+    "constructions": 3,
+    "relations": 3,
+    "round_trip_fidelity": 1.0,
+    "hallucinated_facts": 0,
+    "unknown_relation_voiced": 0
+  }
+]

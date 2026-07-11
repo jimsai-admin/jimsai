@@ -55,12 +55,38 @@ export function supabaseAnonKey(): string {
   return process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? "";
 }
 
-export function supabaseUserContext(): { userId: string; workspaceId: string | null; authenticated: boolean } {
+export function supabaseUserContext(): {
+  userId: string;
+  workspaceId: string | null;
+  authenticated: boolean;
+  email: string;
+  isAdmin: boolean;
+} {
   const session = supabaseSessionPayload();
   const user = session?.currentSession?.user ?? session?.session?.user ?? session?.user;
   const id = typeof user?.id === "string" ? user.id : "";
-  if (!id) return { userId: "anonymous-browser", workspaceId: null, authenticated: false };
-  return { userId: `supabase:${id}`, workspaceId: `workspace:${id}`, authenticated: true };
+  const email = typeof user?.email === "string" ? user.email : "";
+  if (!id)
+    return { userId: "anonymous-browser", workspaceId: null, authenticated: false, email: "", isAdmin: false };
+  return {
+    userId: `supabase:${id}`,
+    workspaceId: `workspace:${id}`,
+    authenticated: true,
+    email,
+    isAdmin: isAdminEmail(email),
+  };
+}
+
+// Engineers/admins (the base-model trainers) see the Training UI; everyone else
+// gets the chat only. The list is configurable via env; the backend still
+// enforces the real permission with `require_scope("training:*")` on every call,
+// so this is presentation-only.
+export function isAdminEmail(email: string): boolean {
+  const configured = (process.env.NEXT_PUBLIC_ADMIN_EMAILS ?? "jimstechinnovations@gmail.com")
+    .split(",")
+    .map((e) => e.trim().toLowerCase())
+    .filter(Boolean);
+  return Boolean(email) && configured.includes(email.toLowerCase());
 }
 
 function supabaseAccessToken(): string {
@@ -76,9 +102,9 @@ function supabaseRefreshToken(): string {
 function supabaseSessionPayload(): {
   access_token?: string;
   refresh_token?: string;
-  currentSession?: { access_token?: string; refresh_token?: string; user?: { id?: string } };
-  session?: { access_token?: string; refresh_token?: string; user?: { id?: string } };
-  user?: { id?: string };
+  currentSession?: { access_token?: string; refresh_token?: string; user?: { id?: string; email?: string } };
+  session?: { access_token?: string; refresh_token?: string; user?: { id?: string; email?: string } };
+  user?: { id?: string; email?: string };
 } | null {
   if (typeof window === "undefined") return null;
   const custom = accessTokenFromStorageValue(window.localStorage.getItem(CUSTOM_SESSION_KEY));
@@ -110,18 +136,18 @@ function supabaseStorageKeys(configuredUrl: string): string[] {
 function accessTokenFromStorageValue(value: string | null): {
   access_token?: string;
   refresh_token?: string;
-  currentSession?: { access_token?: string; refresh_token?: string; user?: { id?: string } };
-  session?: { access_token?: string; refresh_token?: string; user?: { id?: string } };
-  user?: { id?: string };
+  currentSession?: { access_token?: string; refresh_token?: string; user?: { id?: string; email?: string } };
+  session?: { access_token?: string; refresh_token?: string; user?: { id?: string; email?: string } };
+  user?: { id?: string; email?: string };
 } | null {
   if (!value) return null;
   try {
     const parsed = JSON.parse(value) as {
       access_token?: string;
       refresh_token?: string;
-      currentSession?: { access_token?: string; refresh_token?: string; user?: { id?: string } };
-      session?: { access_token?: string; refresh_token?: string; user?: { id?: string } };
-      user?: { id?: string };
+      currentSession?: { access_token?: string; refresh_token?: string; user?: { id?: string; email?: string } };
+      session?: { access_token?: string; refresh_token?: string; user?: { id?: string; email?: string } };
+      user?: { id?: string; email?: string };
     };
     return parsed.currentSession?.access_token || parsed.session?.access_token || parsed.access_token ? parsed : null;
   } catch {

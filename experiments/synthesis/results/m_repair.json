@@ -1,0 +1,46 @@
+[
+  {
+    "seed": 42,
+    "depth": 7,
+    "corrupt_k": 2,
+    "budget": 6000,
+    "of": 15,
+    "repaired": 6,
+    "from_scratch": 6,
+    "wrong": 0,
+    "mean_evals_to_repair": 122
+  },
+  {
+    "seed": 7,
+    "depth": 7,
+    "corrupt_k": 2,
+    "budget": 6000,
+    "of": 15,
+    "repaired": 11,
+    "from_scratch": 11,
+    "wrong": 0,
+    "mean_evals_to_repair": 115
+  },
+  {
+    "seed": 2024,
+    "depth": 7,
+    "corrupt_k": 2,
+    "budget": 6000,
+    "of": 15,
+    "repaired": 10,
+    "from_scratch": 4,
+    "wrong": 0,
+    "mean_evals_to_repair": 117
+  },
+  {
+    "seed": 99999,
+    "depth": 7,
+    "corrupt_k": 2,
+    "budget": 6000,
+    "of": 15,
+    "repaired": 9,
+    "from_scratch": 6,
+    "wrong": 0,
+    "mean_evals_to_repair": 130
+  }
+]
