@@ -128,13 +128,18 @@ class ConstrainedSemanticSynthesisEngine:
             shadow = get_shadow()
             realized = []
             for s in steps:
-                new_claim = flip_person(s.claim, lang)
+                # The person-flip is a TRUSTED deixis transform (it only swaps a
+                # 1st-person function word for a 2nd-person one and preserves the
+                # entity), so it is not subject to the fidelity guard — guarding it
+                # against the original would revert "Your" back to "My".
+                flipped = flip_person(s.claim, lang)
+                new_claim = flipped
                 if lang != "en":
-                    new_claim = realize_in_language(new_claim, lang, shadow)
-                # FIDELITY GUARD (M-GEN, live): never voice a realization that
-                # drops or corrupts a verified entity/value — fall back to the
-                # faithful source rather than emit a wrong-meaning surface.
-                new_claim = guard_realization(s.claim, new_claim, shadow)
+                    realized_claim = realize_in_language(flipped, lang, shadow)
+                    # FIDELITY GUARD (M-GEN): the CONTENT realization must never drop
+                    # or corrupt a verified entity/value — guard it against the flipped
+                    # claim (not the original), else the flip trips the guard.
+                    new_claim = guard_realization(flipped, realized_claim, shadow)
                 realized.append(s.model_copy(update={"claim": new_claim}) if new_claim != s.claim else s)
             return realized
         except Exception:
