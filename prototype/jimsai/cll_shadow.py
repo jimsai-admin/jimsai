@@ -124,7 +124,11 @@ class ConceptShadowIndex:
         # Cold-start honest: a brand-new language must be SEEN before its common
         # words are learned (you cannot know them a priori). Threshold is a
         # document count; a real entity rarely appears in this many separate docs.
-        self._bg_df: dict[str, int] = defaultdict(int)
+        # Distributionally-learned common vocabulary (any language). Cloud-backed so
+        # it SURVIVES Lambda cold starts and accumulates over time instead of
+        # resetting each invocation; degrades to in-memory if Redis is unavailable.
+        from .cloud_counter import CloudCounter
+        self._bg_df = CloudCounter(os.getenv("JIMS_BG_DF_NS", "jims:cll:bg_df"))
         self._common_df_threshold = int(os.getenv("JIMS_COMMON_DF", "4"))
 
     def _typo_repair(self, word: str) -> str | None:
@@ -287,8 +291,9 @@ class ConceptShadowIndex:
             for key in all_keys:
                 self._postings[key].add(sig_id)
                 if key.startswith("L:"):
-                    self._bg_df[key] += 1   # learn common vocabulary distributionally
+                    self._bg_df.incr(key)   # learn common vocabulary distributionally
             self._doc_count += 1
+            self._bg_df.flush()   # write-behind the learned df to cloud (cold-start durable)
 
     def known_query_literals(self, query: str) -> int:
         """How many of the query's hard literals the corpus already knows.
