@@ -263,26 +263,27 @@ class DualRepresentationEncoder:
                         signature = task.result()
                     elif task is vector_task:
                         vector = task.result()
-                        if not vector:
-                            raise CriticalServiceUnavailable("embedding service unavailable for L1 encoder")
-            if signature is None:
-                raise CriticalServiceUnavailable("T1 structured extraction unavailable for L1 encoder")
-            if not vector:
-                raise CriticalServiceUnavailable("embedding service unavailable for L1 encoder")
         except Exception:
             for task in pending:
                 task.cancel()
             if pending:
                 await asyncio.gather(*pending, return_exceptions=True)
             raise
+        # De-LLM: neither the T1 structured frame nor the embedding is a hard
+        # dependency. encode_text always returns a signature; an empty vector yields
+        # an unembedded signature (retrieval + the CLL concept index still rank it).
+        # The L1 encoder must never 500 on a missing optional service.
+        if signature is None:
+            signature = await self.encode_text(content, modality=modality)
         if modality not in {Modality.TEXT, Modality.CODE, Modality.DATA}:
             signature.raw_excerpt = content[:500]
 
-        signature.latent_embedding = vector
-        signature.confidence.source = "dual_encoder_external_latent"
+        embedded = bool(vector)
+        signature.latent_embedding = vector or []
+        signature.confidence.source = "dual_encoder_external_latent" if embedded else "dual_encoder_unembedded"
         signature.metadata["latent_encoder"] = self._latent_model_name(modality)
-        signature.metadata["latent_embedding_source"] = "external_service"
-        signature.metadata["reembedding_required"] = False
+        signature.metadata["latent_embedding_source"] = "external_service" if embedded else "none"
+        signature.metadata["reembedding_required"] = not embedded
 
         return signature
 
@@ -298,7 +299,31 @@ class DualRepresentationEncoder:
         extraction = await self._extract(text, modality)
 
         if extraction is None:
-            raise CriticalServiceUnavailable("T1 structured extraction unavailable for L1 encoder")
+            # De-LLM: the T1 structured frame is OPTIONAL. When the T1 bridge is
+            # unavailable, encode WITHOUT it — an unstructured signature carrying the
+            # raw text (+ embedding, set by encode()). CLL/ELE and retrieval provide
+            # structure deterministically; the L1 encoder must never hard-require the
+            # T1 LLM, or it 500s every query in a de-LLM deployment.
+            sig_id = stable_id("sig", f"{provenance}:{intent_type}:{modality.value}:{text}")
+            return MemorySignature(
+                id=sig_id,
+                provenance=provenance,
+                structured=StructuredSignature(
+                    entities=[],
+                    relations=[],
+                    causal_chain=[],
+                    intent=SignatureIntent(type=intent_type, certainty="candidate"),
+                ),
+                latent_embedding=[],
+                abstraction_tags={modality.value, "dual_representation", "no_t1_structured"},
+                confidence=Confidence(score=0.5, source="dual_encoder_no_t1"),
+                modality=modality,
+                linked_signatures=[],
+                raw_excerpt=bounded_excerpt(text),
+                workspace_id=workspace_id,
+                user_id=user_id,
+                metadata={"encoder_version": "layer1_v9_no_t1", "structured_extractors": []},
+            )
 
         structured = StructuredSignature(
             entities=extraction.entities,
