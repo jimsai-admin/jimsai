@@ -221,7 +221,36 @@ body:has(.chatRoot) { overflow: hidden; }
 /* Sidebar rail: keep it a fixed full-height column that never overflows. */
 .sidebar { height: 100vh; height: 100dvh; flex-shrink: 0; }
 
+/* ── Training panels: loading skeletons + rich per-panel empty states ──────── */
+.panelSkeleton { display: flex; flex-direction: column; gap: 12px; }
+.skeletonCard {
+  border: 1px solid var(--line); border-radius: 12px; padding: 16px;
+  display: flex; flex-direction: column; gap: 10px; background: var(--surface);
+}
+.skeletonLine {
+  height: 12px; border-radius: 6px;
+  background: linear-gradient(90deg, var(--surface-soft) 25%, var(--line) 37%, var(--surface-soft) 63%);
+  background-size: 400% 100%; animation: skeletonShimmer 1.4s ease infinite;
+}
+.skeletonLine.w40 { width: 40%; }
+.skeletonLine.w55 { width: 55%; }
+.skeletonLine.w70 { width: 70%; }
+@keyframes skeletonShimmer { 0% { background-position: 100% 0; } 100% { background-position: 0 0; } }
+
+.panelEmpty {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  text-align: center; gap: 10px; padding: 56px 20px; color: var(--muted);
+}
+.panelEmptyIcon {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 48px; height: 48px; border-radius: 14px;
+  background: var(--surface-soft); color: var(--accent); border: 1px solid var(--line);
+}
+.panelEmptyIcon svg { width: 22px; height: 22px; }
+.panelEmpty h3 { margin: 6px 0 0; font-size: 16px; font-weight: 650; color: var(--ink); }
+.panelEmpty p { margin: 0; font-size: 13.5px; line-height: 1.55; max-width: 340px; }
+
 /* Reduced motion respect */
 @media (prefers-reduced-motion: reduce) {
-  .typingDots span, .streamCaret, .sourceChevron { animation: none; transition: none; }
+  .typingDots span, .streamCaret, .sourceChevron, .skeletonLine { animation: none; transition: none; }
 }

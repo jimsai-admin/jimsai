@@ -87,6 +87,46 @@ function wait(ms: number) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
+const panelEmptyCopy: Record<string, { title: string; hint: string }> = {
+  ingestion: { title: "No data ingested yet", hint: "Upload a file or paste text below to teach JimsAI." },
+  review: { title: "Review queue is clear", hint: "World-model candidates needing human review will appear here." },
+  ambiguity: { title: "Nothing to disambiguate", hint: "Ambiguous extractions awaiting a decision will appear here." },
+  memory: { title: "Memory is empty", hint: "Ingested knowledge signatures will appear here as JimsAI learns." },
+  "world-model": { title: "No world-model rules yet", hint: "Discovered causal candidates will appear here for review." },
+  pipeline: { title: "Pipeline is idle", hint: "Training runs and live system health will appear here." },
+  sessions: { title: "No runs yet", hint: "Canvas and invention runs and their artifacts will appear here." },
+  feedback: { title: "No feedback yet", hint: "User feedback and provider readiness will appear here." },
+  autonomous: { title: "No autonomous jobs", hint: "Autonomous training runs and jobs will appear here." },
+  artifacts: { title: "No artifacts pending", hint: "Trained artifacts awaiting approval will appear here." },
+  evaluation: { title: "No evaluation reports", hint: "Benchmark and evaluation reports will appear here." }
+};
+
+function PanelEmptyState({ panelId }: { panelId: string }) {
+  const copy = panelEmptyCopy[panelId] ?? { title: "No records", hint: "Records will appear here." };
+  const icon = panelIcons[panelId as TrainingPanelId] ?? <Database size={16} />;
+  return (
+    <div className="panelEmpty">
+      <div className="panelEmptyIcon">{icon}</div>
+      <h3>{copy.title}</h3>
+      <p>{copy.hint}</p>
+    </div>
+  );
+}
+
+function PanelSkeleton() {
+  return (
+    <div className="panelSkeleton" aria-hidden="true">
+      {[0, 1, 2].map((i) => (
+        <div className="skeletonCard" key={i}>
+          <div className="skeletonLine w40" />
+          <div className="skeletonLine w70" />
+          <div className="skeletonLine w55" />
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export default function TrainingPanelClient({ panelId }: { panelId: string }) {
   const panel = panelById(panelId);
   const [items, setItems] = useState<TrainingPanelItem[]>([]);
@@ -564,7 +604,7 @@ export default function TrainingPanelClient({ panelId }: { panelId: string }) {
         <p className="statusLine">{status}</p>
 
         <section className="storedDataList">
-          {loading && !items.length ? <div className="panelLoading"><RefreshCw size={18} /> {loadingLabel || "Loading records."}</div> : null}
+          {loading && !items.length ? <PanelSkeleton /> : null}
           {items.length ? items.map((item, index) => (
             <StoredDataItem
               actionBusy={actionBusy}
@@ -573,7 +613,7 @@ export default function TrainingPanelClient({ panelId }: { panelId: string }) {
               onAction={handleRecordAction}
               panelId={panelId}
             />
-          )) : !loading ? <div className="emptyState">No records.</div> : null}
+          )) : !loading ? <PanelEmptyState panelId={panelId} /> : null}
           <div ref={sentinelRef} className="scrollSentinel">
             {loading && items.length ? <><RefreshCw size={15} /> {loadingLabel || "Loading more records."}</> : hasMore ? "" : "End"}
           </div>
