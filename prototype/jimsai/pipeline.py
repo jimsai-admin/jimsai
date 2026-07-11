@@ -1817,7 +1817,17 @@ class JimsAIPipeline:
         return response
 
     async def canvas_status(self, session_id: str) -> CanvasRunResponse | None:
-        return self.canvas_sessions.get(session_id)
+        cached = self.canvas_sessions.get(session_id)
+        if cached:
+            return cached
+        # Durable fallback: the session persists as a "sessions" panel item (full
+        # model_dump), so a poll after a cold start reconstructs it.
+        data = self._load_collection_item("sessions", session_id)
+        if data:
+            resp = CanvasRunResponse.model_validate(data)
+            self.canvas_sessions[session_id] = resp
+            return resp
+        return None
 
     async def schedule_invention(self, request: InventionRunRequest) -> InventionRunResponse:
         session_id = f"invention_{len(self.invention_sessions) + 1:06d}"
@@ -1848,7 +1858,15 @@ class JimsAIPipeline:
         return response
 
     async def invention_status(self, session_id: str) -> InventionRunResponse | None:
-        return self.invention_sessions.get(session_id)
+        cached = self.invention_sessions.get(session_id)
+        if cached:
+            return cached
+        data = self._load_collection_item("sessions", session_id)
+        if data:
+            resp = InventionRunResponse.model_validate(data)
+            self.invention_sessions[session_id] = resp
+            return resp
+        return None
 
     async def training_dashboard(self) -> TrainingDashboardResponse:
         signatures = sorted(self.memory.all_signatures(), key=lambda sig: sig.created_at, reverse=True)
@@ -2796,6 +2814,11 @@ class JimsAIPipeline:
         return items[:max_items]
 
     async def sync_modal_training(self, run_id: str) -> KaggleTrainingResponse | None:
+        # Warm the in-memory list from the durable store if a cold start emptied it.
+        if not any(run.run_id == run_id for run in self.training_runs):
+            data = self._load_collection_item("sessions", run_id)
+            if data:
+                self.training_runs.append(KaggleTrainingResponse.model_validate(data))
         for index, run in enumerate(self.training_runs):
             if run.run_id != run_id:
                 continue
@@ -2803,6 +2826,11 @@ class JimsAIPipeline:
             self.training_runs[index] = synced
             if synced.status == "completed" and synced.local_path:
                 self.active_training_artifacts[synced.task_type] = synced.local_path
+                self._persist_collection_item(
+                    "active-artifacts", synced.task_type,
+                    {"task_type": synced.task_type, "local_path": synced.local_path},
+                    kind="active_artifact", title=synced.task_type, subtitle=synced.local_path,
+                )
             event_type = "saga_completed" if synced.status == "completed" else "saga_step_completed"
             self.event_store.append(
                 event_type,
