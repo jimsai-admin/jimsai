@@ -178,8 +178,29 @@ body:has(.chatRoot) { overflow: hidden; }
   flex: 1 1 auto; min-height: 0;
   overflow-y: auto; overflow-x: hidden;
   scroll-behavior: smooth;
+  /* Hide the scrollbar in the conversation area (still scrollable). */
+  scrollbar-width: none;
+  -ms-overflow-style: none;
 }
+.messages::-webkit-scrollbar { width: 0; height: 0; display: none; }
 .composer, .composerWrap { flex: 0 0 auto; }
+
+/* ── Tablet & mobile: never squeeze the chat; full-width bubbles, tidy padding ── */
+@media (max-width: 900px) {
+  .chatMain { width: 100%; }
+  .messages { padding-left: 14px; padding-right: 14px; }
+  .messageBubbleWrapper, .message { max-width: 100%; }
+  /* assistant answers span the column on small screens */
+  .messageBubbleWrapper.assistant .message { width: 100%; }
+  .composer { padding-left: 10px; padding-right: 10px; }
+  .settingsPopover { left: 8px; right: 8px; bottom: 64px; width: auto; }
+  [dir="rtl"] .settingsPopover { left: 8px; right: 8px; }
+}
+@media (max-width: 560px) {
+  .messages { padding-left: 10px; padding-right: 10px; }
+  .msgBadges { gap: 4px; }
+  .badge { padding: 3px 7px; font-size: 10px; }
+}
 
 /* Response Insights: a proper bottom-sheet with its own scroll + tidy empty state. */
 .insightsDrawer {

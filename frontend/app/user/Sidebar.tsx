@@ -1,9 +1,11 @@
 // frontend/app/user/Sidebar.tsx
 "use client";
 
-import { useState } from "react";
-import { Plus, MessageSquare, BookOpen, X, Search, Trash2, Pencil, Settings, LogOut } from "lucide-react";
+import { useState, useEffect } from "react";
+import Link from "next/link";
+import { Plus, MessageSquare, BookOpen, GraduationCap, X, Search, Trash2, Pencil, Settings, LogOut } from "lucide-react";
 import { useChatStore } from "./store";
+import { supabaseUserContext } from "../authHeaders";
 import SettingsControls from "../SettingsControls";
 import { useI18n } from "../i18n";
 
@@ -45,7 +47,10 @@ export default function Sidebar({
   const { t } = useI18n();
   const { sidebarPanel, threads, activeThreadId } = store;
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false);
   const [search, setSearch] = useState("");
+
+  useEffect(() => setIsAdmin(supabaseUserContext().isAdmin), []);
   const [learnContent, setLearnContent] = useState("");
   const [learnStatus, setLearnStatus] = useState("");
   const [renamingId, setRenamingId] = useState<string | null>(null);
@@ -121,6 +126,11 @@ export default function Sidebar({
         >
           <BookOpen size={16} />
         </button>
+        {isAdmin && (
+          <Link className="iconButton compact" href="/training" title="Training dashboard" aria-label="Training dashboard">
+            <GraduationCap size={16} />
+          </Link>
+        )}
         <div className="sidebarBottom">
           <button
             className={`iconButton compact${settingsOpen ? " active" : ""}`}
