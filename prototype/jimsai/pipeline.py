@@ -2158,6 +2158,48 @@ class JimsAIPipeline:
 
         loop.create_task(_write())
 
+    # ── Durable collections ───────────────────────────────────────────────────
+    # The general "no local growing list" path for row-shaped runtime state
+    # (ingest jobs, canvas/invention sessions, training runs, …). Each item is
+    # written through to the generic durable panel-item store (Supabase) so it
+    # survives Lambda cold starts; the in-memory dict/list is only a warm cache.
+    # This reuses the existing panel_items row (id, panel, kind, data) — no new
+    # tables — and mirrors CloudCounter (counters→Redis) / cloud_artifact
+    # (blobs→R2) for the row-store shape.
+    def _persist_collection_item(
+        self,
+        panel: str,
+        item_id: str,
+        data: dict[str, Any],
+        *,
+        kind: str = "record",
+        title: str = "",
+        subtitle: str = "",
+    ) -> None:
+        """Best-effort write-through of one collection item to the durable store.
+        A dropped cloud write never breaks the request — the in-memory tier holds."""
+        item = TrainingPanelItem(
+            id=f"{panel}:{item_id}",
+            panel=panel,
+            kind=kind,
+            title=title or item_id,
+            subtitle=subtitle,
+            data=data,
+        )
+        self._cloud_write(f"collection:{panel}", lambda: self.production.save_panel_items([item]))
+
+    def _load_collection_item(self, panel: str, item_id: str) -> dict[str, Any] | None:
+        """Read one collection item back from the durable store by id (cold-start safe)."""
+        target = f"{panel}:{item_id}"
+        for it in self._persistent_panel_items(panel, 500):
+            if it.id == target:
+                return it.data
+        return None
+
+    def _load_collection(self, panel: str, limit: int = 200) -> list[dict[str, Any]]:
+        """Read a whole collection back from the durable store (cold-start safe)."""
+        return [it.data for it in self._persistent_panel_items(panel, limit)]
+
     def queue_training_ingest(self, request: TrainingIngestRequest) -> dict[str, Any]:
         now = utc_now()
         job_id = stable_id(
@@ -2176,6 +2218,10 @@ class JimsAIPipeline:
             "content_bytes": len(request.content.encode("utf-8")),
         }
         self.training_ingest_jobs[job_id] = job
+        self._persist_collection_item(
+            "ingest-job", job_id, job, kind="ingest_job",
+            title="Training ingest", subtitle=str(job.get("status", "")),
+        )
         self.event_store.append(
             "training_ingest_queued",
             job_id,
@@ -2185,8 +2231,15 @@ class JimsAIPipeline:
         return job
 
     async def process_training_ingest_job(self, job_id: str, request: TrainingIngestRequest) -> None:
-        job = self.training_ingest_jobs.setdefault(job_id, {"job_id": job_id})
+        # Load durable-first: a cold start between queue and process must not lose the job.
+        job = (
+            self.training_ingest_jobs.get(job_id)
+            or self._load_collection_item("ingest-job", job_id)
+            or {"job_id": job_id}
+        )
+        self.training_ingest_jobs[job_id] = job
         job.update({"status": "running", "updated_at": utc_now().isoformat()})
+        self._persist_collection_item("ingest-job", job_id, job, kind="ingest_job", subtitle="running")
         try:
             response = await self.ingest_training(request)
         except CriticalServiceUnavailable as exc:
@@ -2198,6 +2251,7 @@ class JimsAIPipeline:
                     "updated_at": utc_now().isoformat(),
                 }
             )
+            self._persist_collection_item("ingest-job", job_id, job, kind="ingest_job", subtitle="failed")
             self.event_store.append(
                 "training_ingest_failed",
                 job_id,
@@ -2214,6 +2268,7 @@ class JimsAIPipeline:
                     "updated_at": utc_now().isoformat(),
                 }
             )
+            self._persist_collection_item("ingest-job", job_id, job, kind="ingest_job", subtitle="failed")
             self.event_store.append(
                 "training_ingest_failed",
                 job_id,
@@ -2231,6 +2286,7 @@ class JimsAIPipeline:
                 "updated_at": utc_now().isoformat(),
             }
         )
+        self._persist_collection_item("ingest-job", job_id, job, kind="ingest_job", subtitle="completed")
         self.event_store.append(
             "training_ingest_completed",
             job_id,
@@ -2242,7 +2298,8 @@ class JimsAIPipeline:
         )
 
     def training_ingest_job(self, job_id: str) -> dict[str, Any] | None:
-        return self.training_ingest_jobs.get(job_id)
+        # In-memory warm cache first, then the durable store (survives cold starts).
+        return self.training_ingest_jobs.get(job_id) or self._load_collection_item("ingest-job", job_id)
 
     def _apply_ingestion_overlay(self, signature, overlay: dict[str, Any] | None, source_trust: float) -> bool:
         if not overlay:
