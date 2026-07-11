@@ -59,6 +59,7 @@ class AutonomousAgentConfig:
     data_sources: list[str] = field(default_factory=lambda: [
         "common_vocabulary",   # fetch_common_words.py (frequency lists) — messy-input recall
         "lexicon_breadth",     # broaden_lexicon.py (Wikidata QRank concepts)
+        "grammar_paradigms",   # fetch_grammar.py (Wiktionary person-deixis) — in-language + 2nd-person answers
         "wikipedia",           # real corpus → ELE construction discovery
         "user_interactions",   # real resolved exchanges → SPPE pairs (NOT LLM-generated)
     ])
@@ -352,6 +353,16 @@ class AutonomousTrainingAgent:
                     "source": "lexicon_breadth", "type": "sourced_de_llm",
                     "script": "experiments/concept_model/broaden_lexicon.py",
                     "priority": 6, "language_variants": ["en", "fr", "zh", "yo", "sw"]})
+            elif source_type == "grammar_paradigms":
+                # Person-deixis + function-word paradigms (Wiktionary, CC-BY-SA) —
+                # the closed-class grammar the noun-only lexicon lacks. Lets the
+                # realizer answer in the user's language AND second person ("your
+                # name" not "my name"). Publishes grammar.jsonl to R2; the realizer
+                # picks it up on next cold start. Grows coverage every agent cycle.
+                sources.append({
+                    "source": "grammar_paradigms", "type": "sourced_de_llm",
+                    "script": "experiments/concept_model/fetch_grammar.py",
+                    "priority": 7, "language_variants": ["en", "fr", "yo", "sw", "zh", "es"]})
             elif source_type == "wikipedia":
                 # Real corpus — feeds ELE construction discovery (lifts relation
                 # extraction recall → the traversal reasoner from SAFE to USEFUL).

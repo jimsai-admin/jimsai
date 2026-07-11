@@ -114,18 +114,23 @@ class ConstrainedSemanticSynthesisEngine:
             return text
 
     def _realize_language(self, obj: VerifiedCognitiveObject, steps: list, lang: str) -> list:
-        """Return steps with each claim re-realized into the query's language.
-        No-op for English or when the realizer/concept-index is unavailable."""
-        if lang == "en" or not steps:
+        """Return steps with each claim (a) flipped from the user's FIRST person to
+        the SECOND person JimsAI answers in, and (b) content-realized into the query
+        language. The perspective flip applies even for English ("My name is X" ->
+        "Your name is X") — that is the 'another person answering' fix; content
+        realization is non-English only. No-op when the realizer is unavailable."""
+        if not steps:
             return steps
         try:
             from .cll_shadow import get_shadow
             from .construction_realizer import guard_realization
-            from .surface_realizer import realize_in_language
+            from .surface_realizer import flip_person, realize_in_language
             shadow = get_shadow()
             realized = []
             for s in steps:
-                new_claim = realize_in_language(s.claim, lang, shadow)
+                new_claim = flip_person(s.claim, lang)
+                if lang != "en":
+                    new_claim = realize_in_language(new_claim, lang, shadow)
                 # FIDELITY GUARD (M-GEN, live): never voice a realization that
                 # drops or corrupts a verified entity/value — fall back to the
                 # faithful source rather than emit a wrong-meaning surface.

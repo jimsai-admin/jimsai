@@ -189,6 +189,113 @@ def get_reverse() -> ReverseLexicon:
     return _reverse
 
 
+# ── Person-deixis paradigms (grammar.jsonl, Wiktionary-sourced) ─────────────────
+class GrammarParadigm:
+    """1st/2nd-person possessives + pronouns per language, from grammar.jsonl
+    (Wiktionary, CC-BY-SA — the closed-class grammar the noun lexicon lacks). Lets
+    the realizer flip a recalled FIRST-person self-fact ("my name is X") into the
+    SECOND person JimsAI answers in ("your name is X" / "votre nom …"). Singleton,
+    loaded once from R2 — data, not a code-baked table; a language works as soon as
+    its paradigm is present, and degrades gracefully when absent (no invention)."""
+
+    def __init__(self) -> None:
+        self.second: dict[str, dict[str, dict[str, str]]] = defaultdict(lambda: defaultdict(dict))
+        self.first_en: dict[str, tuple[str, str]] = {}
+        self.loaded = False
+        repo_data = Path(__file__).resolve().parents[2] / "experiments" / "concept_model" / "data"
+        try:
+            from .cloud_artifact import artifact_path
+
+            prefix = os.getenv("JIMS_LEXICON_R2_PREFIX", "concept-model")
+            path = artifact_path(
+                f"{prefix}/grammar.jsonl", local_fallback=repo_data / "grammar.jsonl"
+            ) or (repo_data / "grammar.jsonl")
+        except Exception:
+            path = repo_data / "grammar.jsonl"
+        if not path.exists():
+            return
+        try:
+            with path.open(encoding="utf-8") as fh:
+                for line in fh:
+                    try:
+                        row = json.loads(line)
+                    except Exception:
+                        continue
+                    lang, role = row.get("lang"), row.get("role")
+                    person, number = row.get("person"), row.get("number", "") or ""
+                    surface = (row.get("surface") or "").strip()
+                    if not (lang and role and surface and person in (1, 2)):
+                        continue
+                    if person == 2:
+                        cur = self.second[lang][role].get(number)
+                        if cur is None or len(surface) < len(cur):
+                            self.second[lang][role][number] = surface
+                    if person == 1 and lang == "en":
+                        self.first_en[surface.lower()] = (role, number)
+            self.loaded = bool(self.first_en)
+        except Exception:
+            self.loaded = False
+
+    def second_person(self, lang: str, role: str, number: str) -> str | None:
+        cands = self.second.get(lang, {}).get(role, {})
+        # Prefer the UNMARKED, single-word determiner (modern "your" / "votre") over
+        # a number-specific archaic form ("thy") or a multi-word pronominal one
+        # ("le tien", "both of yours"). "" is the general form that fits any number.
+        for key in ("", number, "s", "p"):
+            v = cands.get(key)
+            if v and " " not in v:
+                return v
+        for v in cands.values():
+            if " " not in v:
+                return v
+        return None
+
+
+_grammar: GrammarParadigm | None = None
+
+
+def get_grammar() -> GrammarParadigm:
+    global _grammar
+    if _grammar is None:
+        _grammar = GrammarParadigm()
+    return _grammar
+
+
+def _match_case(src: str, repl: str) -> str:
+    return repl[:1].upper() + repl[1:] if src[:1].isupper() else repl
+
+
+def flip_person(text: str, target_lang: str) -> str:
+    """Flip English first-person deictics in a recalled self-fact to the target
+    language's SECOND person: "My name is X" -> "Your name is X" (en) / "Votre name
+    is X" (fr, before content realization). Preposed-possessive languages realize in
+    place; postposed ones (e.g. Yoruba, "orúkọ rẹ") get the right word but may need
+    reordering — the next grammar layer. No-op when the paradigm is unavailable."""
+    g = get_grammar()
+    if not g.loaded or not text.strip():
+        return text
+    toks = _TOKEN.findall(text)
+    out: list[str] = []
+    changed = False
+    for i, tok in enumerate(toks):
+        role_num = g.first_en.get(tok.lower()) if tok[:1].isalpha() else None
+        if role_num:
+            role, number = role_num
+            # Possessives only for now ("my name" -> "your name"). Subject-pronoun
+            # flips ("I am X" -> "You am X") need verb agreement — the next grammar
+            # layer. A possessive DETERMINER is prenominal, so require a following
+            # word; a mis-sourced standalone form then cannot be flipped.
+            next_word = any(t[:1].isalpha() for t in toks[i + 1 : i + 3])
+            if role == "possessive" and next_word:
+                repl = g.second_person(target_lang, role, number) or g.second_person("en", role, number)
+                if repl:
+                    out.append(_match_case(tok, repl))
+                    changed = True
+                    continue
+        out.append(tok)
+    return _detokenize(out) if changed else text
+
+
 def realize_in_language(claim: str, target_lang: str, shadow) -> str:
     """Re-realize an English claim's content into target_lang via concept
     round-trip. Literals (entities, numbers) and unknown words pass through.
