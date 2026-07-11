@@ -157,6 +157,9 @@ class JimsAIPipeline:
         self.invention_sessions: dict[str, InventionRunResponse] = {}
         self.training_runs: list[KaggleTrainingResponse] = []
         self.active_training_artifacts: dict[str, str] = {}
+        # One-time guard: refill the in-memory training working sets from their
+        # durable panels on first admin-facing access after a cold start (below).
+        self._working_sets_hydrated = False
         self.retrieval_misses = 0
         self.cloud_authoritative = self.production.settings.cloud_authoritative
         # Defer memory hydration when cloud_authoritative but providers not yet
@@ -1601,6 +1604,7 @@ class JimsAIPipeline:
         return signature
 
     async def review_action(self, request: ReviewActionRequest) -> ReviewActionResponse:
+        self._rehydrate_working_sets()
         target_index = next(
             (
                 index
@@ -1869,6 +1873,7 @@ class JimsAIPipeline:
         return None
 
     async def training_dashboard(self) -> TrainingDashboardResponse:
+        self._rehydrate_working_sets()
         signatures = sorted(self.memory.all_signatures(), key=lambda sig: sig.created_at, reverse=True)
         reviewed = [candidate for candidate in self.world_model_candidates if not candidate.review_required]
         pending = [candidate for candidate in self.world_model_candidates if candidate.review_required]
@@ -2217,6 +2222,35 @@ class JimsAIPipeline:
     def _load_collection(self, panel: str, limit: int = 200) -> list[dict[str, Any]]:
         """Read a whole collection back from the durable store (cold-start safe)."""
         return [it.data for it in self._persistent_panel_items(panel, limit)]
+
+    def _rehydrate_working_sets(self) -> None:
+        """One-time, side-effect-free refill of the in-memory training working sets
+        from their durable panels, so admin-facing views (aggregate counts, review,
+        dedup) reflect accumulated state after a Lambda cold start. Idempotent and
+        guarded; it ONLY repopulates the lists — it never re-runs promotion or
+        disambiguation. Best-effort: a list is left untouched if its durable read
+        fails or is empty. Panel items already store full model_dumps, so this is a
+        faithful reconstruction. Not called on the query hot path — only from the
+        low-frequency training/admin entry points."""
+        if self._working_sets_hydrated:
+            return
+        self._working_sets_hydrated = True
+        try:
+            if not self.world_model_candidates:
+                rows = self._load_collection("world-model", 500)
+                if rows:
+                    self.world_model_candidates = [WorldModelCandidate.model_validate(r) for r in rows]
+                    self.world_model_fast_path.rebuild(self.world_model_candidates)
+            if not self.training_history:
+                rows = self._load_collection("ingestion", 500)
+                if rows:
+                    self.training_history = [TrainingIngestResponse.model_validate(r) for r in rows]
+            if not self.ambiguity_queue:
+                rows = self._load_collection("ambiguity", 500)
+                if rows:
+                    self.ambiguity_queue = rows  # _ambiguity_item persists dict(item)
+        except Exception:
+            logger.debug("working-set rehydration skipped", exc_info=True)
 
     def queue_training_ingest(self, request: TrainingIngestRequest) -> dict[str, Any]:
         now = utc_now()
