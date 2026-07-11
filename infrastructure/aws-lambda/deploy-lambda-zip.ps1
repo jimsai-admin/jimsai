@@ -222,6 +222,9 @@ $envVars["JIMS_LEXICON_R2_PREFIX"] = "concept-model"
 $envVars["JIMS_ENABLE_SEMANTIC_CAPABILITY_ROUTER"] = "false"
 $envVars["JIMS_ENABLE_ZERO_SHOT_CAPABILITY_ROUTER"] = "false"
 $envVars["JIMS_ENABLE_LLM_CAPABILITY_ROUTER"] = "false"
+# Embeddings via Cloudflare Workers AI (bge-base-en-v1.5, 768-d) — de-Modal, no
+# generative model. CLL/ELE remain primary; this is the semantic-similarity tail.
+$envVars["JIMS_EMBEDDING_PROVIDER"] = "cloudflare"
 $envVars["JIMS_ENABLE_GROQ_T1"] = "false"
 $envVars["JIMS_ENABLE_GROQ_T2"] = "false"
 $envVars["JIMS_ENABLE_GROQ_CANVAS"] = "false"

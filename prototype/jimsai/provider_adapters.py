@@ -967,7 +967,12 @@ class ExternalMultimodalEncoderAdapter:
           - CODE  -> codebert                 (768-d, code-aware)
           - DATA  -> jina-v3                  (768-d, when JIMS_JINA_EMBEDDINGS_ENABLED=true)
           - other -> multilingual-e5-small    (768-d, multilingual semantic)
+
+        De-Modal: when JIMS_EMBEDDING_PROVIDER=cloudflare, embed via Cloudflare
+        Workers AI (bge-base-en-v1.5, 768-d) instead of the Modal service.
         """
+        if self._cloudflare_embed_enabled():
+            return await self._encode_cloudflare(content)
         if not self.configured:
             return []
         base = self._base_url()
@@ -1039,6 +1044,42 @@ class ExternalMultimodalEncoderAdapter:
                 )
                 return []
         return []
+
+    @staticmethod
+    def _cloudflare_embed_enabled() -> bool:
+        return os.getenv("JIMS_EMBEDDING_PROVIDER", "").strip().lower() == "cloudflare"
+
+    async def _encode_cloudflare(self, content: str) -> list[float]:
+        """Embed via Cloudflare Workers AI (@cf/baai/bge-base-en-v1.5, 768-d).
+
+        De-Modal, de-LLM: an embedding endpoint on a provider already in use — no
+        Modal, no generative model. Returns [] on failure so the caller degrades to
+        an unembedded signature (CLL/lexical evidence still carries recall); it never
+        raises, so an embedding hiccup can never 500 a query."""
+        account = os.getenv("CF_ACCOUNT_ID")
+        token = os.getenv("CF_VECTORIZE_API_TOKEN") or os.getenv("CF_TOKEN")
+        if not (account and token):
+            return []
+        try:
+            timeout = float(os.getenv("JIMS_INTERACTIVE_SERVICE_TIMEOUT_CAP", "8") or "8")
+        except ValueError:
+            timeout = 8.0
+        url = f"https://api.cloudflare.com/client/v4/accounts/{account}/ai/run/@cf/baai/bge-base-en-v1.5"
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                response = await client.post(
+                    url,
+                    headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                    json={"text": [content[:16000]]},
+                )
+            response.raise_for_status()
+            data = response.json()
+            vectors = (data.get("result") or {}).get("data") or []
+            vec = vectors[0] if isinstance(vectors, list) and vectors else []
+            return vec if isinstance(vec, list) else []
+        except Exception as exc:
+            logger.warning("Cloudflare Workers AI embed failed: %s", exc)
+            return []
 
     def embed_batch(
         self,

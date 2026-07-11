@@ -275,7 +275,9 @@ class VectorizeAdapter(ProviderAdapter):
                 headers = {"Authorization": f"Bearer {self.api_token}"}
                 url = f"https://api.cloudflare.com/client/v4/accounts/{self.account_id}/ai/run/@cf/baai/bge-base-en-v1.5"
                 
-                data = {"texts": [text]}
+                # Cloudflare Workers AI bge models expect {"text": [...]}; the old
+                # {"texts": [...]} returned HTTP 400 and silently fell back to zeros.
+                data = {"text": [text]}
                 async with session.post(url, json=data, headers=headers) as resp:
                     if resp.status == 200:
                         result = await resp.json()
