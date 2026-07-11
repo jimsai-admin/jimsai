@@ -155,6 +155,44 @@
 }
 .sourceActions { display: flex; gap: 8px; }
 
+/* ── App-shell layout: chat is a FIXED-VIEWPORT app; only the message list scrolls ── */
+html, body { height: 100%; }
+/* The chat route (/user) has its own sidebar — hide the global top nav so it
+   never overlaps the sidebar. Nav to Training lives in the sidebar for admins. */
+body:has(.chatRoot) .appHeaderGlobal { display: none !important; }
+/* Lock the whole page: the viewport does not scroll, only .messages does. */
+body:has(.chatRoot) { overflow: hidden; }
+.chatRoot {
+  height: 100vh; height: 100dvh;
+  max-height: 100vh; max-height: 100dvh;
+  overflow: hidden;
+}
+.chatMain {
+  flex: 1 1 auto; min-width: 0;
+  height: 100vh; height: 100dvh;
+  min-height: 0;
+  display: flex; flex-direction: column;
+  overflow: hidden;
+}
+.messages {
+  flex: 1 1 auto; min-height: 0;
+  overflow-y: auto; overflow-x: hidden;
+  scroll-behavior: smooth;
+}
+.composer, .composerWrap { flex: 0 0 auto; }
+
+/* Response Insights: a proper bottom-sheet with its own scroll + tidy empty state. */
+.insightsDrawer {
+  display: flex; flex-direction: column;
+  max-height: 82vh; max-height: 82dvh;
+}
+.drawerBody { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+.drawerTabs { flex: 0 0 auto; overflow-x: auto; }
+.drawerBody .muted { padding: 20px 4px; color: var(--subtle); }
+
+/* Sidebar rail: keep it a fixed full-height column that never overflows. */
+.sidebar { height: 100vh; height: 100dvh; flex-shrink: 0; }
+
 /* Reduced motion respect */
 @media (prefers-reduced-motion: reduce) {
   .typingDots span, .streamCaret, .sourceChevron { animation: none; transition: none; }

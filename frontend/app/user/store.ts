@@ -24,6 +24,8 @@ function persistThreadId(id: string): void {
 
 // Live SSE stream handle, kept outside React state so Stop can abort it.
 let activeStream: AbortController | null = null;
+// Distinguishes a user-initiated Stop from a timeout abort (which triggers fallback).
+let streamStopped = false;
 
 // Build a full ApiResponse from the stream's `meta` event + accumulated text, so
 // insights, badges, and feedback (trace_id) all work with the streamed answer.
@@ -168,7 +170,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   setSidebarPanel: (panel) => set({ sidebarPanel: panel }),
   setMobileNavOpen: (open) => set({ mobileNavOpen: open }),
   setLoading: (v) => set({ loading: v }),
-  stopStreaming: () => { activeStream?.abort(); },
+  stopStreaming: () => { streamStopped = true; activeStream?.abort(); },
   setPendingEdit: (s) => set({ pendingEdit: s }),
   setFeedbackStatus: (s) => set({ feedbackStatus: s }),
   storeLearned: (traceId, sigId) =>
@@ -249,7 +251,36 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     get().appendMessage(activeThreadId, { role: "assistant", content: "" });
     const abort = new AbortController();
     activeStream = abort;
+    streamStopped = false;
     set({ loading: true, streaming: true });
+
+    const requestBody = JSON.stringify({
+      user_id: userId,
+      workspace_id: workspaceId,
+      thread_id: activeThreadId,
+      query,
+      canvas_hint: canvasHint,
+      invention_hint: inventionHint,
+      return_trace: true,
+    });
+
+    // Some hosts (AWS Lambda function URLs) BUFFER responses, so SSE never streams.
+    // Fall back to the plain /v1/query endpoint whenever streaming yields nothing,
+    // errors, or stalls — so an answer always appears.
+    const nonStreamFallback = async () => {
+      const r = await fetch(`${apiBase}/v1/query`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...headers },
+        body: requestBody,
+      });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const data = (await r.json()) as ApiResponse;
+      get().replaceLastAssistantMessage(activeThreadId, {
+        role: "assistant",
+        content: data.response || "(no answer returned)",
+        apiResponse: data,
+      });
+    };
 
     let acc = "";
     let meta: Parameters<typeof apiResponseFromMeta>[0] | null = null;
@@ -260,21 +291,15 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         apiResponse: meta ? apiResponseFromMeta(meta, acc) : undefined,
       });
 
+    const stallTimer = setTimeout(() => abort.abort(), 28000);
     try {
       const res = await fetch(`${apiBase}/v1/query/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...headers },
         signal: abort.signal,
-        body: JSON.stringify({
-          user_id: userId,
-          workspace_id: workspaceId,
-          thread_id: activeThreadId,
-          query,
-          canvas_hint: canvasHint,
-          invention_hint: inventionHint,
-          return_trace: true,
-        }),
+        body: requestBody,
       });
+      clearTimeout(stallTimer);
       if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
 
       const reader = res.body.getReader();
@@ -305,22 +330,31 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           }
         }
       }
-      if (!acc) flush();
+      // Streaming produced no text (buffered/empty host) → fall back to /v1/query.
+      if (!acc.trim()) await nonStreamFallback();
+      else flush();
     } catch (err) {
-      if ((err as { name?: string })?.name === "AbortError") {
-        // User pressed Stop — keep whatever streamed so far, mark it.
+      clearTimeout(stallTimer);
+      if ((err as { name?: string })?.name === "AbortError" && streamStopped) {
+        // User pressed Stop — keep whatever streamed so far.
         get().replaceLastAssistantMessage(activeThreadId, {
           role: "assistant",
           content: acc ? `${acc}\n\n_[stopped]_` : "_[stopped]_",
           apiResponse: meta ? apiResponseFromMeta(meta, acc) : undefined,
         });
       } else {
-        get().replaceLastAssistantMessage(activeThreadId, {
-          role: "assistant",
-          content: `⚠️ ${err instanceof Error ? err.message : "Request failed."}`,
-        });
+        // Stream errored or timed out (e.g. Lambda buffering) → non-stream fallback.
+        try {
+          await nonStreamFallback();
+        } catch (err2) {
+          get().replaceLastAssistantMessage(activeThreadId, {
+            role: "assistant",
+            content: `⚠️ ${err2 instanceof Error ? err2.message : "Request failed."}`,
+          });
+        }
       }
     } finally {
+      clearTimeout(stallTimer);
       activeStream = null;
       set({ loading: false, streaming: false });
     }
