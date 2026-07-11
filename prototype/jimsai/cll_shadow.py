@@ -53,11 +53,22 @@ class ConceptShadowIndex:
     """Language-agnostic concept encoder + posting-list index, shadow-only."""
 
     def __init__(self, lexicon_path: str | None = None):
-        path = Path(
-            lexicon_path
-            or os.getenv("JIMS_CONCEPT_LEXICON_PATH", "")
-            or Path(__file__).resolve().parents[2] / "experiments" / "concept_model" / "data" / "lexicon.jsonl"
-        )
+        # The lexicon is a GROWING reference artifact, so it is not bundled in the
+        # deployment package. It lives in R2 (single source of truth for local AND
+        # deploy); the repo's data/ file is only the offline-dev fallback. An
+        # explicit path (arg or JIMS_CONCEPT_LEXICON_PATH) still wins, for tests.
+        repo_data = Path(__file__).resolve().parents[2] / "experiments" / "concept_model" / "data"
+        prefix = os.getenv("JIMS_LEXICON_R2_PREFIX", "concept-model")
+        explicit = lexicon_path or os.getenv("JIMS_CONCEPT_LEXICON_PATH", "")
+        if explicit:
+            path = Path(explicit)
+        else:
+            from .cloud_artifact import artifact_path
+
+            path = artifact_path(
+                f"{prefix}/lexicon.jsonl",
+                local_fallback=repo_data / "lexicon.jsonl",
+            ) or (repo_data / "lexicon.jsonl")
         # surface key → list of concept ids (source/popularity order), all languages pooled:
         # shadow mode cannot trust query language detection, so it matches every language's
         # surfaces at once (recall-first; production 'on' mode can add language priors).
@@ -97,7 +108,15 @@ class ConceptShadowIndex:
         # lowercase prose; without it, "going"/"where" get mistaken for entities.
         # Data, not a hardcoded stop-list — experiments/concept_model/fetch_common_words.py.
         self._common_words: set[str] = set()
-        common_path = path.parent / "common_words.jsonl"
+        if explicit:
+            common_path = path.parent / "common_words.jsonl"
+        else:
+            from .cloud_artifact import artifact_path
+
+            common_path = artifact_path(
+                f"{prefix}/common_words.jsonl",
+                local_fallback=repo_data / "common_words.jsonl",
+            ) or (repo_data / "common_words.jsonl")
         if common_path.exists():
             with common_path.open(encoding="utf-8") as fh:
                 for line in fh:

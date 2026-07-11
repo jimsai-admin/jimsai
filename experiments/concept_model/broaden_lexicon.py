@@ -127,6 +127,14 @@ def main() -> int:
         {"retrieved_at": now, "range": [args.start, args.end], "added": added})
     mpath.write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
     print(f"\nadded per language: {added}")
+    # Publish the grown lexicon to R2 (single source of truth for local + deploy).
+    try:
+        sys.path.insert(0, str(Path(__file__).parent))
+        from seed_lexicon import publish_artifacts
+
+        publish_artifacts(["lexicon.jsonl"])
+    except Exception as e:
+        print(f"note: R2 publish skipped ({e})")
     return 0
 
 

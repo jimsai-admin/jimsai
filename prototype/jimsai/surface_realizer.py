@@ -77,11 +77,20 @@ class ReverseLexicon:
     lexicon file. Singleton, loaded once."""
 
     def __init__(self, lexicon_path: str | None = None):
-        path = Path(
-            lexicon_path
-            or os.getenv("JIMS_CONCEPT_LEXICON_PATH", "")
-            or Path(__file__).resolve().parents[2] / "experiments" / "concept_model" / "data" / "lexicon.jsonl"
-        )
+        # Same single-source-of-truth lexicon as the concept index: loaded from R2
+        # (not bundled in code), sharing one cached download via cloud_artifact.
+        repo_data = Path(__file__).resolve().parents[2] / "experiments" / "concept_model" / "data"
+        explicit = lexicon_path or os.getenv("JIMS_CONCEPT_LEXICON_PATH", "")
+        if explicit:
+            path = Path(explicit)
+        else:
+            from .cloud_artifact import artifact_path
+
+            prefix = os.getenv("JIMS_LEXICON_R2_PREFIX", "concept-model")
+            path = artifact_path(
+                f"{prefix}/lexicon.jsonl",
+                local_fallback=repo_data / "lexicon.jsonl",
+            ) or (repo_data / "lexicon.jsonl")
         self.by_concept: dict[str, dict[str, list[str]]] = defaultdict(lambda: defaultdict(list))
         # Folded single-word surface → set of languages it appears in. This is
         # the evidence for language detection: a token exclusive to one language

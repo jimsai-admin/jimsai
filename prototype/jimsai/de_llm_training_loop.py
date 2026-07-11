@@ -25,6 +25,7 @@ sequential).
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -109,8 +110,20 @@ def common_keys_for(lang: str) -> set[str]:
     frequency-list ingestion). Empty for low-resource languages absent from the
     corpus — which is exactly what makes the honest roll-back happen."""
     keys: set[str] = set()
-    if _COMMON_WORDS_PATH.exists():
-        for line in _COMMON_WORDS_PATH.open(encoding="utf-8"):
+    # Read the common-vocabulary from R2 (single source of truth) so training
+    # validates against the SAME lexicon the deployed service loads; the repo file
+    # is the offline fallback.
+    try:
+        from .cloud_artifact import artifact_path
+
+        prefix = os.getenv("JIMS_LEXICON_R2_PREFIX", "concept-model")
+        cw_path = artifact_path(
+            f"{prefix}/common_words.jsonl", local_fallback=_COMMON_WORDS_PATH
+        ) or _COMMON_WORDS_PATH
+    except Exception:
+        cw_path = _COMMON_WORDS_PATH
+    if cw_path.exists():
+        for line in cw_path.open(encoding="utf-8"):
             row = json.loads(line)
             if row.get("lang") == lang:
                 k = surface_key(row["surface"])

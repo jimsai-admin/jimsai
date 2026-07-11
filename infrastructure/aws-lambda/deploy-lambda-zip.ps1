@@ -64,6 +64,26 @@ Remove-Item -Recurse -Force "$BuildDir\prototype" -ErrorAction SilentlyContinue
 Copy-Item -Recurse -Force "$ServiceDir\app" "$BuildDir\app"
 Copy-Item -Recurse -Force "$RootDir\prototype" "$BuildDir\prototype"
 
+# ── Step 3.5: Prune build (Lambda unzipped limit is 250 MB) ───────────────────
+# The runtime already provides boto3/botocore/s3transfer; dependency test suites
+# and bytecode caches are dead weight; graphify-out is a dev artifact that rides
+# along inside prototype/. Stripping these keeps the unzipped package under 250 MB.
+Write-Host "    Pruning build (runtime-provided SDKs, caches, tests, dev artifacts)..."
+foreach ($d in @("boto3", "botocore", "s3transfer")) {
+    Remove-Item -Recurse -Force "$BuildDir\$d" -ErrorAction SilentlyContinue
+}
+Remove-Item -Recurse -Force "$BuildDir\prototype\graphify-out" -ErrorAction SilentlyContinue
+Remove-Item -Recurse -Force "$BuildDir\prototype\tests" -ErrorAction SilentlyContinue
+Get-ChildItem -Path $BuildDir -Recurse -Directory -Force -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -in @("__pycache__", "tests", "test") } |
+    ForEach-Object { Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue }
+Get-ChildItem -Path $BuildDir -Recurse -File -Filter *.pyc -Force -ErrorAction SilentlyContinue |
+    ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue }
+$unzipMB = [math]::Round((Get-ChildItem -Path $BuildDir -Recurse -File -Force -ErrorAction SilentlyContinue |
+    Measure-Object -Property Length -Sum).Sum / 1MB, 1)
+Write-Host "    Unzipped build size: ${unzipMB} MB (Lambda limit 250 MB)"
+if ($unzipMB -ge 250) { throw "Unzipped build ${unzipMB} MB exceeds Lambda's 250 MB limit — prune more before deploying." }
+
 # ── Step 4: Zip everything ────────────────────────────────────────────────────
 Write-Host "[4/6] Creating zip package..." -ForegroundColor Yellow
 if (Test-Path $ZipPath) { Remove-Item -Force $ZipPath }
@@ -187,7 +207,13 @@ $envVars["JIMS_STRICT_PROVIDER_STARTUP"] = "false"
 $envVars["JIMS_AUTH_PROVIDER"] = "supabase"
 $envVars["JIMS_AUTH_REQUIRED"] = "true"
 $envVars["JIMS_LLM_PROVIDER"] = "local"
-$envVars["JIMS_ENABLE_LOCAL_QWEN"] = "true"
+# De-LLM: no local Qwen in Lambda; the answer path is the deterministic CSSE.
+$envVars["JIMS_ENABLE_LOCAL_QWEN"] = "false"
+# CLL concept index ON — the validated cross-lingual recall mechanism (M1: P4
+# multilingual 0%->67%). The lexicon is NOT bundled; it loads from R2 (seeded via
+# experiments/concept_model/seed_lexicon.py) with the CF_R2_* creds forwarded above.
+$envVars["JIMS_CONCEPT_INDEX"] = "on"
+$envVars["JIMS_LEXICON_R2_PREFIX"] = "concept-model"
 $envVars["JIMS_ENABLE_GROQ_T1"] = "false"
 $envVars["JIMS_ENABLE_GROQ_T2"] = "false"
 $envVars["JIMS_ENABLE_GROQ_CANVAS"] = "false"
@@ -255,26 +281,40 @@ if (-not $functionExists) {
 
 } else {
     Write-Host "    Updating existing Lambda function..."
+    # aws writes progress/info to stderr; under $ErrorActionPreference='Stop',
+    # PowerShell 5.1 wraps that as a terminating NativeCommandError even on exit 0.
+    # Run these under 'Continue' and gate on the REAL exit code (like Step 2's pip).
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+
     Write-Host "    Uploading package to s3://$DeployBucket/$DeployKey..."
     aws s3 cp $ZipPath "s3://$DeployBucket/$DeployKey" --region $Region | Out-Null
+    if ($LASTEXITCODE -ne 0) { $ErrorActionPreference = $prevEAP; throw "s3 upload failed (exit $LASTEXITCODE)" }
 
     aws lambda update-function-code `
         --function-name $FunctionName `
         --s3-bucket $DeployBucket `
         --s3-key $DeployKey `
         --region $Region | Out-Null
+    if ($LASTEXITCODE -ne 0) { $ErrorActionPreference = $prevEAP; throw "update-function-code failed (exit $LASTEXITCODE)" }
 
-    Write-Host "    Waiting for update to complete..."
-    aws lambda wait function-updated --function-name $FunctionName --region $Region
+    Write-Host "    Waiting for code update to complete..."
+    aws lambda wait function-updated --function-name $FunctionName --region $Region | Out-Null
 
     aws lambda update-function-configuration `
         --function-name $FunctionName `
         --environment "file://$environmentPath" `
         --region $Region | Out-Null
+    if ($LASTEXITCODE -ne 0) { $ErrorActionPreference = $prevEAP; throw "update-function-configuration failed (exit $LASTEXITCODE)" }
+
+    Write-Host "    Waiting for configuration update to settle..."
+    aws lambda wait function-updated --function-name $FunctionName --region $Region | Out-Null
 
     $urlConfig = aws lambda get-function-url-config `
         --function-name $FunctionName `
         --region $Region 2>$null | ConvertFrom-Json
+
+    $ErrorActionPreference = $prevEAP
 }
 
 # ── Done ─────────────────────────────────────────────────────────────────────

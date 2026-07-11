@@ -178,6 +178,14 @@ def main() -> int:
     (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
     print(f"\nlexicon entries per language: {lexicon_count}")
     print(f"P279 edges: {edge_count}")
+    # Publish the rebuilt artifacts to R2 (single source of truth for local + deploy).
+    try:
+        sys.path.insert(0, str(Path(__file__).parent))
+        from seed_lexicon import publish_artifacts
+
+        publish_artifacts(["lexicon.jsonl", "edges.jsonl"])
+    except Exception as e:
+        print(f"note: R2 publish skipped ({e})")
     return 0
 
 
