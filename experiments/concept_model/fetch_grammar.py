@@ -38,9 +38,13 @@ LANG_NAME = {
     "zh": "Chinese", "es": "Spanish", "de": "German", "pt": "Portuguese",
 }
 # Wiktionary category suffixes that hold the person-deictic closed-class words.
+# en/fr have specific "possessive determiners" categories; yo/es/… only have the
+# BROAD "determiners" / "pronouns" categories — so we include both. person_number()
+# filters every member to the 1st/2nd-person forms, so the breadth only costs recall
+# of non-person words (articles, demonstratives), never wrong data.
 ROLE_CATS = {
-    "possessive": ["possessive determiners", "possessive pronouns", "possessive adjectives"],
-    "pronoun": ["personal pronouns"],
+    "possessive": ["possessive determiners", "possessive adjectives", "determiners"],
+    "pronoun": ["personal pronouns", "pronouns"],
 }
 
 

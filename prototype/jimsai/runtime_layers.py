@@ -842,6 +842,11 @@ class ReasoningBridgeLayer:
             return False
         candidates: list[tuple[int, float, int, str, RetrievalResult]] = []
         minimum_sentence_score = 2 if len(query_terms) >= 3 else 1
+        # A self-attribute question ("what is my name?") names no entity and leans on
+        # concept anchoring. Such a question wants ONE precise answer, and a fact
+        # DILUTED by concepts it did not ask about ("my brother's name" for "my name")
+        # is a worse match — both handled below (single best claim + specificity).
+        concept_only_query = not entity_keys and bool(query_concepts)
         for result_index, result in enumerate(retrieved):
             raw = result.signature.raw_excerpt
             excerpt = (raw or "").strip()
@@ -888,6 +893,12 @@ class ReasoningBridgeLayer:
                     anchored = True
                 if query_concepts and sentence_concepts:
                     sentence_score += len(query_concepts & sentence_concepts)
+                    # Specificity for self-attribute questions: a fact carrying
+                    # concepts the query did NOT ask about is a poorer answer — the
+                    # extra concept is a DIFFERENT subject ("brother" for a "my name"
+                    # query). Penalise the excess so the exact-attribute fact wins.
+                    if concept_only_query:
+                        sentence_score -= len(sentence_concepts - query_concepts)
                 # A sentence carrying the EXACT queried entity (a nonce literal,
                 # language-neutral) is strongly anchored to what the query asks
                 # about — the entity match is itself the evidence. It needs only
@@ -907,7 +918,10 @@ class ReasoningBridgeLayer:
 
         seen: set[str] = set()
         steps: list[ReasoningStep] = []
-        limit = 6 if wants_explanation else 4
+        # Self-attribute question -> ONE precise answer, not a stack of every fact
+        # that merely shares the concept (the "Your name is X. Your brother is..."
+        # noise the user saw). Other queries keep the multi-claim budget.
+        limit = 1 if concept_only_query else (6 if wants_explanation else 4)
         for _sentence_score, _result_score, _result_index, sentence, result in candidates:
             key = sentence.lower()
             if key in seen:
