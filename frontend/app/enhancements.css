@@ -250,7 +250,36 @@ body:has(.chatRoot) { overflow: hidden; }
 .panelEmpty h3 { margin: 6px 0 0; font-size: 16px; font-weight: 650; color: var(--ink); }
 .panelEmpty p { margin: 0; font-size: 13.5px; line-height: 1.55; max-width: 340px; }
 
+/* ── Training records: pill kind-badge + interactive cards + modern nav ────── */
+.dataRecord {
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.12s ease;
+}
+.dataRecord:hover {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--line));
+  box-shadow: var(--shadow);
+}
+/* The kind label becomes a compact accent pill (globals renders it as a block). */
+.dataRecord .recordKind {
+  display: inline-flex !important;
+  align-items: center;
+  width: fit-content;
+  margin-bottom: 6px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 10px !important;
+  letter-spacing: 0.04em;
+  color: var(--accent) !important;
+  background: var(--accent-soft);
+}
+.dataRecord header h2 { font-weight: 650; }
+/* Active panel gets a left accent bar so the current view reads at a glance. */
+.panelNav a.active {
+  position: relative;
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
 /* Reduced motion respect */
 @media (prefers-reduced-motion: reduce) {
   .typingDots span, .streamCaret, .sourceChevron, .skeletonLine { animation: none; transition: none; }
+  .dataRecord { transition: none; }
 }

@@ -4,8 +4,6 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { ChangeEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  BarChart3,
-  Bot,
   Check,
   ClipboardCheck,
   Cpu,
@@ -15,7 +13,6 @@ import {
   HardDriveUpload,
   History,
   ListChecks,
-  PackageCheck,
   Pencil,
   RefreshCw,
   RotateCcw,
@@ -77,10 +74,7 @@ const panelIcons: Record<TrainingPanelId, ReactNode> = {
   "world-model": <GitBranch size={16} />,
   pipeline: <ListChecks size={16} />,
   sessions: <History size={16} />,
-  feedback: <ShieldCheck size={16} />,
-  autonomous: <Bot size={16} />,
-  artifacts: <PackageCheck size={16} />,
-  evaluation: <BarChart3 size={16} />
+  feedback: <ShieldCheck size={16} />
 };
 
 function wait(ms: number) {
