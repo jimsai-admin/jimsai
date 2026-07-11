@@ -109,6 +109,34 @@ class ReverseLexicon:
                     if key and " " not in key:
                         self.langs_of_surface[key].add(row["lang"])
             self.loaded = True
+        # Also vote with the language-tagged COMMON words. The lexicon is noun-only
+        # (QRank), so it misses the function words ("quel"/"mon"/"ki"/"mi") that are
+        # the STRONGEST language markers — which is why "Quel est mon nom?" fell back
+        # to en (only the noun "nom" voted, weakly). The common-words artifact is
+        # frequency-sourced per language (data, not a word list in code); adding its
+        # surfaces to the language-vote lets bare-Latin queries detect correctly.
+        if not explicit:
+            try:
+                from .cloud_artifact import artifact_path
+
+                prefix = os.getenv("JIMS_LEXICON_R2_PREFIX", "concept-model")
+                cw_path = artifact_path(
+                    f"{prefix}/common_words.jsonl",
+                    local_fallback=repo_data / "common_words.jsonl",
+                ) or (repo_data / "common_words.jsonl")
+                if cw_path.exists():
+                    with cw_path.open(encoding="utf-8") as fh:
+                        for line in fh:
+                            try:
+                                row = json.loads(line)
+                            except Exception:
+                                continue
+                            lang = row.get("lang")
+                            key = _surface_key(row.get("surface", ""))
+                            if lang and key and " " not in key:
+                                self.langs_of_surface[key].add(lang)
+            except Exception:
+                pass
 
     def vote_scores(self, text: str) -> dict[str, float]:
         """Per-language score for a query's tokens by lexicon membership,
