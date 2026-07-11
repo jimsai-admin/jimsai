@@ -27,10 +27,21 @@ export default function MessageList({ apiBase, authHeaders, userId, workspaceId 
   }, [threadMessages.length, lastLen]);
 
   const handleRegenerate = (index: number) => {
-    const userMsg = [...threadMessages].slice(0, index).reverse().find((m) => m.role === "user");
-    if (!userMsg) return;
-    store.setMessages(activeThreadId, threadMessages.slice(0, index));
-    void store.sendQuery(userMsg.content, apiBase, authHeaders(), userId, workspaceId);
+    // Find the user message this assistant reply answered.
+    let userIdx = -1;
+    for (let i = index - 1; i >= 0; i -= 1) {
+      if (threadMessages[i].role === "user") {
+        userIdx = i;
+        break;
+      }
+    }
+    if (userIdx < 0) return;
+    const userContent = threadMessages[userIdx].content;
+    // Fork back to that turn: drop the old user+assistant pair (incl. a failed/500
+    // bubble) so sendQuery re-adds the prompt exactly once — no duplicate user
+    // message, the failed reply is replaced rather than appended.
+    store.setMessages(activeThreadId, threadMessages.slice(0, userIdx));
+    void store.sendQuery(userContent, apiBase, authHeaders(), userId, workspaceId);
   };
 
   return (
