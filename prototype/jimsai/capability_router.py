@@ -172,10 +172,12 @@ class CapabilityRouter:
         try:
             semantic_scores = await self._semantic_embedding_scores(request.query)
         except CriticalServiceUnavailable:
-            if not strong_structural:
-                raise
-            # Structural evidence alone is sufficient to route; losing the
-            # embedding service must not take down structurally-clear queries.
+            # Losing the (optional, external) embedding service must NEVER fail a
+            # query — that violates the router's own memory-first principle below.
+            # Route on structural + workspace-literal (CLL) evidence and fall
+            # through to the memory-first default; retrieval + gap reporting still
+            # decide what can be answered. No hard dependency on any remote service.
+            signals["semantic_router_unavailable"] = True
             semantic_scores = {}
         if semantic_scores:
             signals["semantic_embedding"] = {k.value: round(v, 4) for k, v in semantic_scores.items()}
@@ -222,7 +224,13 @@ class CapabilityRouter:
                 pass
 
         if not strong_structural and self._should_query_classifier(semantic_scores, scores):
-            classifier_scores = await self._zero_shot_classifier_scores(request.query)
+            try:
+                classifier_scores = await self._zero_shot_classifier_scores(request.query)
+            except CriticalServiceUnavailable:
+                # Same guarantee: the zero-shot classifier is optional evidence, not
+                # a hard dependency. Its loss degrades routing to memory-first below.
+                signals["zero_shot_router_unavailable"] = True
+                classifier_scores = {}
 
         if classifier_scores:
             signals["zero_shot_classifier"] = {k.value: round(v, 4) for k, v in classifier_scores.items()}

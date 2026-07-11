@@ -214,6 +214,14 @@ $envVars["JIMS_ENABLE_LOCAL_QWEN"] = "false"
 # experiments/concept_model/seed_lexicon.py) with the CF_R2_* creds forwarded above.
 $envVars["JIMS_CONCEPT_INDEX"] = "on"
 $envVars["JIMS_LEXICON_R2_PREFIX"] = "concept-model"
+# De-LLM / de-Modal: the capability routers call Modal (embedding + classifier) and
+# HARD-FAIL a query when Modal times out (the intermittent 500 on plain-language
+# recall like "Ki ni oruko mi?"). Off -> routing is deterministic: structural
+# signals + CLL workspace-literal evidence + memory-first default. No Modal in the
+# answer path.
+$envVars["JIMS_ENABLE_SEMANTIC_CAPABILITY_ROUTER"] = "false"
+$envVars["JIMS_ENABLE_ZERO_SHOT_CAPABILITY_ROUTER"] = "false"
+$envVars["JIMS_ENABLE_LLM_CAPABILITY_ROUTER"] = "false"
 $envVars["JIMS_ENABLE_GROQ_T1"] = "false"
 $envVars["JIMS_ENABLE_GROQ_T2"] = "false"
 $envVars["JIMS_ENABLE_GROQ_CANVAS"] = "false"
