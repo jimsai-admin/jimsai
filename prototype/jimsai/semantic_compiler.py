@@ -61,6 +61,40 @@ def _looks_like_structural_identifier(value: str) -> bool:
 
 
 
+def _cf_embed_enabled() -> bool:
+    return os.getenv("JIMS_EMBEDDING_PROVIDER", "").strip().lower() == "cloudflare"
+
+
+def _cf_embed_texts(texts: list[str]) -> list[list[float]]:
+    """Cloudflare Workers AI embeddings (@cf/baai/bge-base-en-v1.5, 768-d), sync.
+
+    De-Modal replacement for the intent classifier's embedding calls: an embedding
+    endpoint on a provider already in use, no Modal, no generative model. Returns []
+    on failure so callers degrade gracefully (never raise -> never 500)."""
+    import os as _os
+    import httpx
+
+    account = _os.getenv("CF_ACCOUNT_ID")
+    token = _os.getenv("CF_VECTORIZE_API_TOKEN") or _os.getenv("CF_TOKEN")
+    if not (account and token) or not texts:
+        return []
+    url = f"https://api.cloudflare.com/client/v4/accounts/{account}/ai/run/@cf/baai/bge-base-en-v1.5"
+    try:
+        r = httpx.post(
+            url,
+            json={"text": texts},
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            timeout=float(_os.getenv("JIMS_INTENT_EMBEDDING_TIMEOUT", "8") or "8"),
+        )
+        if r.status_code == 200:
+            data = (r.json().get("result") or {}).get("data")
+            if isinstance(data, list) and len(data) == len(texts):
+                return data
+    except Exception:
+        pass
+    return []
+
+
 class _FallbackClassifier:
     """Intent classifier that routes through the Modal Embedding Service.
 
@@ -146,6 +180,9 @@ class _FallbackClassifier:
         Real embeddings only: failures return [] so semantic routing is skipped
         until the real embedding service recovers.
         """
+        if _cf_embed_enabled():
+            vecs = _cf_embed_texts([text])
+            return vecs[0] if vecs else []
         import httpx
         url = f"{self.api_url}/embed"
         headers = {}
@@ -171,6 +208,8 @@ class _FallbackClassifier:
         """Embed a batch of texts via the Modal Embedding Service."""
         if not texts:
             return []
+        if _cf_embed_enabled():
+            return _cf_embed_texts(texts)
         import httpx
         headers = {}
         if self.api_token:
@@ -253,11 +292,15 @@ class _FallbackClassifier:
         """Return (ir_target, confidence) from real embedding semantics only."""
         prototypes = self._get_prototype_embeddings()
         if not prototypes:
-            raise CriticalServiceUnavailable("intent embedding prototypes unavailable")
+            # De-LLM fail-safe: an unreachable embedding provider must NEVER 500 a
+            # query. Default to workspace/memory recall (low confidence); the CLL
+            # concept index, retrieval, and memory-first routing still answer or emit
+            # an honest gap.
+            return "WORKSPACE_QUERY", 0.30
 
         query_emb = self._fetch_embedding("query: " + query)
         if not query_emb or all(v == 0.0 for v in query_emb):
-            raise CriticalServiceUnavailable("intent query embedding unavailable")
+            return "WORKSPACE_QUERY", 0.30
 
         best_ir = "OP_ESCAPE_TO_SANDBOX"
         best_score = 0.0
@@ -272,7 +315,7 @@ class _FallbackClassifier:
     def is_memory_recall_query(self, query: str, threshold: float = 0.55) -> bool:
         query_emb = self._fetch_embedding("query: " + query)
         if not query_emb or all(v == 0.0 for v in query_emb):
-            raise CriticalServiceUnavailable("memory recall query embedding unavailable")
+            return False  # embeddings unavailable -> can't confirm; downstream still handles
 
         recall_emb = self._get_memory_recall_embedding()
         if not recall_emb:
